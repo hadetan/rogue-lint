@@ -1,0 +1,11 @@
+{
+  "name": "dead-lint",
+  "version": "0.0.1",
+  "description": "A package to find out which file, value, nested value, types are sitting dead on the code.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "hadetan",
+  "license": "ISC"
+}
