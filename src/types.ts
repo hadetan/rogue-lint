@@ -1,4 +1,5 @@
 export type AnalysisMode = "application" | "library";
+export type AnalysisDepth = "surface" | "deep";
 
 export type FindingKind =
   | "unused-file"
@@ -8,7 +9,11 @@ export type FindingKind =
   | "unused-enum-member"
   | "unused-class-member"
   | "unused-object-key"
-  | "unused-nested-path";
+  | "unused-nested-path"
+  | "unused-interface-member"
+  | "dead-store"
+  | "unused-value"
+  | "write-only-state";
 
 export type EntityKind =
   | "file"
@@ -19,7 +24,9 @@ export type EntityKind =
   | "class-member"
   | "interface-member"
   | "object-key"
-  | "nested-path";
+  | "nested-path"
+  | "assignment"
+  | "expression";
 
 export type ReportFormat = "json" | "text";
 
@@ -32,8 +39,12 @@ export interface KeepRules {
 
 export interface DeadLintConfig {
   mode?: AnalysisMode;
+  analysisDepth?: AnalysisDepth;
   tsconfig?: string;
   entrypoints?: string[];
+  hiddenRoots?: string[];
+  include?: string[];
+  exclude?: string[];
   includeKinds?: FindingKind[];
   keep?: KeepRules;
   findingsExitCode?: number;
@@ -48,6 +59,7 @@ export interface CliOptions {
   cwd: string;
   format: ReportFormat;
   mode?: AnalysisMode;
+  analysisDepth?: AnalysisDepth;
   configPath?: string;
   targetPath?: string;
   includeKinds?: FindingKind[];
@@ -104,6 +116,10 @@ export interface AnalysisResult {
   version: string;
   target: string;
   mode: AnalysisMode;
+  exitCodes: {
+    findings: number;
+    failure: number;
+  };
   generatedAt: string;
   summary: SummaryRecord;
   findings: FindingRecord[];
@@ -148,6 +164,7 @@ export interface ProjectContext {
   packageJsonPath?: string;
   packageJson: Record<string, unknown> | null;
   config: ResolvedConfig;
+  analyzableFiles: Set<string>;
   sourceFiles: import("typescript").SourceFile[];
   program: import("typescript").Program;
   checker: import("typescript").TypeChecker;
@@ -167,8 +184,7 @@ export interface TrackedObject {
   sourceFile: string;
   rootEntity: EntityRecord;
   nodes: Map<string, ObjectNode>;
-  escaped: boolean;
-  escapeReason?: string;
+  escapedPaths: Map<string, string>;
   reads: Set<string>;
   writes: Set<string>;
 }

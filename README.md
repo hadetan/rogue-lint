@@ -13,8 +13,15 @@ The current implementation covers:
 - unused exported types
 - unused enum members
 - unused locals reported by TypeScript semantic analysis
+- dead stores for overwritten local assignments in the supported value-flow subset
+- unused side-effect-neutral expression results
+- write-only outer-scope writes in the supported closure subset
 - unused class members with exact declaration/reference tracking
+- unused internal interface members when references remain unambiguous
 - unused object keys and nested object paths inside analyzable local object graphs
+- alias-aware nested path tracking with bounded local helper forwarding
+- source/build entrypoint reconciliation for package self-analysis
+- hidden roots, include/exclude file filters, grouped text output, and configurable exit codes
 - inline suppressions, keep rules, and external visibility declarations
 
 ## Install
@@ -27,8 +34,11 @@ For local development in this repository:
 
 ```bash
 npm install
+npm run lint
 npm run build
 ```
+
+The repository uses ESLint for code-quality checks. Main package source under `src/` is linted with stricter rules, including `no-console`, while CLI, tests, and fixtures are scoped more permissively where console output is intentional.
 
 ## CLI usage
 
@@ -38,14 +48,17 @@ dead-lint path/to/project
 dead-lint path/to/project --json
 dead-lint path/to/project --mode library
 dead-lint path/to/project --kinds unused-export,unused-file
+dead-lint path/to/project --depth surface
 dead-lint path/to/project --config dead-lint.config.json
 ```
 
 ### Exit codes
 
 - `0`: no findings
-- `1`: findings were produced
-- `2`: execution failed
+- `1`: findings were produced by default
+- `2`: execution failed by default
+
+Both non-zero exit codes are configurable.
 
 ## Configuration
 
@@ -54,8 +67,14 @@ Create `dead-lint.config.json` in the target project:
 ```json
 {
   "mode": "application",
+  "analysisDepth": "deep",
   "entrypoints": ["src/index.ts"],
+  "hiddenRoots": ["src/worker.ts"],
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.generated.ts"],
   "includeKinds": ["unused-file", "unused-export"],
+  "findingsExitCode": 1,
+  "failureExitCode": 2,
   "keep": {
     "files": ["src/generated/**"],
     "symbols": ["futureApi"],
@@ -73,6 +92,11 @@ Create `dead-lint.config.json` in the target project:
 
 - `application`: use configured entrypoints as roots and treat the project as a closed world unless code escapes explicitly
 - `library`: preserve configured public entrypoints and externally visible declarations as live surface
+
+### Analysis depth
+
+- `deep`: run declaration analysis plus value-liveness, member, interface-member, and nested-path tiers
+- `surface`: keep the run focused on surface-level entities such as files, exports, types, locals, and enum members
 
 ## Suppressions and external visibility
 
@@ -107,6 +131,7 @@ dead-lint path/to/project --json
 The JSON report includes:
 
 - run metadata
+- configured exit codes
 - summary counts
 - findings
 - kept entities
@@ -120,9 +145,12 @@ This lets an agent distinguish removable code from code that was suppressed or s
 `dead-lint` is most exact when code stays inside analyzable patterns such as:
 
 - explicit entrypoints
+- explicit hidden roots for convention-driven files
 - static imports/exports
 - direct property access
 - local object literals
+- bounded local helper forwarding of tracked object paths
+- simple overwritten local assignments and discarded pure expressions
 - no reflective enumeration on analyzed objects
 
 The analyzer intentionally skips or downgrades exact analysis when code crosses dynamic boundaries such as:
@@ -131,6 +159,7 @@ The analyzer intentionally skips or downgrades exact analysis when code crosses 
 - `Object.keys`, `Object.values`, `Object.entries`, `Reflect.ownKeys`
 - `JSON.stringify`
 - opaque external calls that receive a tracked object
+- unsupported value escapes through opaque call boundaries
 - decorators that can expose class members indirectly
 
 Skipped entities are reported so the gaps remain visible.
@@ -154,6 +183,7 @@ An agent can then:
 ## Development
 
 ```bash
+npm run lint
 npm run build
 npm test
 npm run check

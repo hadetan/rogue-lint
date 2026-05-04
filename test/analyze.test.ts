@@ -2,7 +2,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { runCli } from "../src/cli.js";
 import { analyzeProject } from "../src/index.js";
+import { renderResult } from "../src/reporting.js";
 
 function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
@@ -122,5 +124,113 @@ describe("dead-lint analyzer", () => {
 
     expect(classMember?.entity.owner).toBe("Example");
     expect(nestedPath?.entity.owner).toBe("config");
+  });
+
+  it("supports analysis controls for file filters, hidden roots, and surface depth", async () => {
+    const fixture = fixturePath("controls-basic");
+    const excludedResult = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixture,
+      configPath: "dead-lint.exclude.json",
+      format: "json",
+    });
+    const hiddenRootResult = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixture,
+      configPath: "dead-lint.hidden-roots.json",
+      format: "json",
+    });
+    const surfaceResult = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixture,
+      configPath: "dead-lint.surface.json",
+      format: "json",
+    });
+
+    expect(excludedResult.findings.some((finding) => finding.kind === "unused-export" && finding.entity.name === "onlyExcluded")).toBe(true);
+    expect(excludedResult.findings.some((finding) => finding.kind === "unused-file" && finding.entity.name === "excluded-consumer.ts")).toBe(false);
+
+    expect(hiddenRootResult.findings.some((finding) => finding.kind === "unused-file" && finding.entity.name === "worker.ts")).toBe(false);
+
+    expect(surfaceResult.findings.some((finding) => finding.kind === "unused-class-member")).toBe(false);
+    expect(surfaceResult.findings.some((finding) => finding.kind === "unused-object-key")).toBe(false);
+    expect(surfaceResult.findings.some((finding) => finding.kind === "unused-nested-path")).toBe(false);
+  });
+
+  it("reconciles built package roots back to source entrypoints", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("package-roots-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-file" && finding.entity.name === "cli.ts")).toBe(false);
+  });
+
+  it("honors configured CLI exit codes", async () => {
+    const fixture = fixturePath("controls-basic");
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+
+    const findingsCode = await runCli([fixture, "--config", "dead-lint.exitcodes.json"], {
+      writeStdout: (value) => stdout.push(value),
+      writeStderr: (value) => stderr.push(value),
+    });
+    const failureCode = await runCli([fixture, "--config", "dead-lint.failure.json"], {
+      writeStdout: (value) => stdout.push(value),
+      writeStderr: (value) => stderr.push(value),
+    });
+
+    expect(findingsCode).toBe(7);
+    expect(failureCode).toBe(9);
+    expect(stderr.some((value) => value.length > 0)).toBe(true);
+  });
+
+  it("groups text output by kind and file", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("app-basic"),
+      format: "json",
+    });
+
+    const rendered = renderResult(result, "text");
+
+    expect(rendered).toContain("Findings:");
+    expect(rendered).toContain("unused-export");
+    expect(rendered).toContain("  src/lib.ts");
+    expect(rendered).toContain("Skipped:");
+  });
+
+  it("reports conservative value-liveness findings and skips", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("value-flow-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("dead-store:count");
+    expect(kindsAndNames).toContain("unused-value:1 + 2");
+    expect(kindsAndNames).toContain("write-only-state:status");
+    expect(result.skipped.some((entry) => entry.reason.includes("unsupported call boundary") && entry.name === "escaped")).toBe(true);
+  });
+
+  it("reports internal interface members and preserves safe object siblings when another branch escapes", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("deep-coverage-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-interface-member:stale");
+    expect(kindsAndNames).toContain("unused-nested-path:safe.stale");
+    expect(kindsAndNames).toContain("unused-nested-path:forwarded.stale");
+    expect(kindsAndNames).not.toContain("unused-nested-path:safe.read");
+    expect(kindsAndNames).not.toContain("unused-nested-path:forwarded.keep");
+    expect(result.skipped.some((entry) => entry.name === "escaped" && entry.reason.includes("Object.keys"))).toBe(true);
   });
 });

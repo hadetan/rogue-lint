@@ -5,6 +5,7 @@ import ts from "typescript";
 
 import type { CliOptions, ProjectContext } from "./types.js";
 import { loadPackageJson, resolveConfig } from "./config.js";
+import { matchesPatterns, toRelative } from "./utils.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 
@@ -139,19 +140,32 @@ export function loadProject(cliOptions: CliOptions): ProjectContext {
   });
   const checker = program.getTypeChecker();
   const languageService = createLanguageService(fileNames, compilerOptions, rootPath);
+  const isAnalyzable = (fileName: string): boolean => {
+    const relative = toRelative(rootPath, fileName);
+    if (config.value.include.length > 0 && !matchesPatterns(relative, config.value.include)) {
+      return false;
+    }
+    if (config.value.exclude.length > 0 && matchesPatterns(relative, config.value.exclude)) {
+      return false;
+    }
+    return true;
+  };
   const sourceFiles = program
     .getSourceFiles()
     .filter((sourceFile) => !sourceFile.isDeclarationFile)
     .filter((sourceFile) => sourceFile.fileName.startsWith(rootPath))
     .filter((sourceFile) => !sourceFile.fileName.includes(`${path.sep}node_modules${path.sep}`))
     .filter((sourceFile) => !sourceFile.fileName.includes(`${path.sep}dist${path.sep}`))
-    .filter((sourceFile) => !sourceFile.fileName.includes(`${path.sep}openspec${path.sep}`));
+    .filter((sourceFile) => !sourceFile.fileName.includes(`${path.sep}openspec${path.sep}`))
+    .filter((sourceFile) => isAnalyzable(sourceFile.fileName));
+  const analyzableFiles = new Set(sourceFiles.map((sourceFile) => sourceFile.fileName));
 
   return {
     rootPath,
     packageJsonPath: packageJson.path,
     packageJson: packageJson.value,
     config,
+    analyzableFiles,
     sourceFiles,
     program,
     checker,

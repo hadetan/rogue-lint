@@ -148,6 +148,8 @@ export function kindToFinding(kind: EntityKind): FindingKind | undefined {
       return "unused-enum-member";
     case "class-member":
       return "unused-class-member";
+    case "interface-member":
+      return "unused-interface-member";
     case "object-key":
       return "unused-object-key";
     case "nested-path":

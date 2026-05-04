@@ -16,11 +16,13 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings=0",
+    "lint:fix": "npm run lint -- --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "npm run build && npm test",
+    "check": "npm run lint && npm run build && npm test",
     "pack:check": "npm pack --dry-run",
-    "release:check": "npm run build && npm test && npm run pack:check"
+    "release:check": "npm run check && npm run pack:check"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -32,7 +34,11 @@
     "typescript": "^5.8.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.0.0",
+    "eslint": "^10.3.0",
+    "globals": "^17.6.0",
+    "typescript-eslint": "^8.59.1",
     "vitest": "^3.1.3"
   }
 }

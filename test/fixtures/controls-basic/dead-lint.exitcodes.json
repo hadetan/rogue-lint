@@ -1,0 +1,6 @@
+{
+  "mode": "application",
+  "entrypoints": ["src/index.ts"],
+  "findingsExitCode": 7,
+  "failureExitCode": 9
+}

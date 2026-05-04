@@ -5,8 +5,12 @@ import type { CliOptions, DeadLintConfig, ResolvedConfig } from "./types.js";
 
 const DEFAULT_CONFIG: ResolvedConfig["value"] = {
   mode: "application",
+  analysisDepth: "deep",
   tsconfig: "",
   entrypoints: [],
+  hiddenRoots: [],
+  include: [],
+  exclude: [],
   includeKinds: [],
   findingsExitCode: 1,
   failureExitCode: 2,
@@ -70,6 +74,7 @@ export function resolveConfig(rootPath: string, cliOptions: CliOptions): Resolve
     ...DEFAULT_CONFIG,
     ...rawConfig,
     mode: cliOptions.mode ?? rawConfig.mode ?? DEFAULT_CONFIG.mode,
+    analysisDepth: cliOptions.analysisDepth ?? rawConfig.analysisDepth ?? DEFAULT_CONFIG.analysisDepth,
     includeKinds:
       cliOptions.includeKinds && cliOptions.includeKinds.length > 0
         ? cliOptions.includeKinds

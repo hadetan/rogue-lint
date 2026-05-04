@@ -16,16 +16,24 @@ function isDeclarationReference(reference: ts.ReferenceEntry, position: number):
   return reference.textSpan.start === position;
 }
 
+function isAllowedReference(reference: ts.ReferenceEntry, allowedFiles?: Set<string>): boolean {
+  return !allowedFiles || allowedFiles.has(reference.fileName);
+}
+
 export function countNonDeclarationReferences(
   languageService: ts.LanguageService,
   sourceFile: ts.SourceFile,
   node: ts.Node,
+  allowedFiles?: Set<string>,
 ): number {
   const references = languageService.findReferences(sourceFile.fileName, node.getStart(sourceFile)) ?? [];
   let count = 0;
 
   for (const group of references) {
     for (const reference of group.references) {
+      if (!isAllowedReference(reference, allowedFiles)) {
+        continue;
+      }
       if (reference.fileName !== sourceFile.fileName || !isDeclarationReference(reference, node.getStart(sourceFile))) {
         count += 1;
       }
@@ -39,8 +47,9 @@ export function hasNonDeclarationReferences(
   languageService: ts.LanguageService,
   sourceFile: ts.SourceFile,
   node: ts.Node,
+  allowedFiles?: Set<string>,
 ): boolean {
-  return countNonDeclarationReferences(languageService, sourceFile, node) > 0;
+  return countNonDeclarationReferences(languageService, sourceFile, node, allowedFiles) > 0;
 }
 
 export interface ReferenceUsageSummary {
@@ -54,6 +63,7 @@ export function summarizeReferenceUsage(
   program: ts.Program,
   sourceFile: ts.SourceFile,
   node: ts.Node,
+  allowedFiles?: Set<string>,
 ): ReferenceUsageSummary {
   const references = languageService.findReferences(sourceFile.fileName, node.getStart(sourceFile)) ?? [];
   const summary: ReferenceUsageSummary = {
@@ -64,6 +74,9 @@ export function summarizeReferenceUsage(
 
   for (const group of references) {
     for (const reference of group.references) {
+      if (!isAllowedReference(reference, allowedFiles)) {
+        continue;
+      }
       if (reference.fileName === sourceFile.fileName && isDeclarationReference(reference, node.getStart(sourceFile))) {
         continue;
       }

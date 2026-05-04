@@ -1,0 +1,10 @@
+{
+  "name": "package-roots-basic",
+  "main": "./dist/index.js",
+  "bin": {
+    "package-roots-basic": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  }
+}

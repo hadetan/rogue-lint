@@ -3,6 +3,9 @@ import path from "node:path";
 import ts from "typescript";
 
 import type { DiagnosticRecord, ModuleEdge, ModuleGraph, ProjectContext } from "./types.js";
+import { matchesPatterns, normalizeSlashes, toRelative } from "./utils.js";
+
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
 function resolveModule(
   fromFile: string,
@@ -99,25 +102,96 @@ export function buildModuleGraph(project: ProjectContext): ModuleGraph {
   return { edges, outgoing, unresolved };
 }
 
-export function discoverEntrypoints(project: ProjectContext): string[] {
+function resolveProjectSourceFile(project: ProjectContext, candidate: string): string | undefined {
+  const absolute = path.resolve(project.rootPath, candidate);
+  return project.sourceFiles.find((sourceFile) => sourceFile.fileName === absolute)?.fileName;
+}
+
+function reconcilePackagePath(project: ProjectContext, value: string): string | undefined {
+  const normalized = normalizeSlashes(value).replace(/^\.\//, "");
+  const withoutExtension = normalized.replace(/\.[^/.]+$/, "");
+  const candidateBases = new Set<string>([withoutExtension]);
+
+  for (const prefix of ["dist/", "build/", "lib/", "out/"]) {
+    if (withoutExtension.startsWith(prefix)) {
+      const suffix = withoutExtension.slice(prefix.length);
+      candidateBases.add(`src/${suffix}`);
+      candidateBases.add(suffix);
+    }
+  }
+
+  for (const base of candidateBases) {
+    for (const extension of SOURCE_EXTENSIONS) {
+      const resolved = resolveProjectSourceFile(project, `${base}${extension}`);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function resolveEntrypoint(project: ProjectContext, value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  return resolveProjectSourceFile(project, value) ?? reconcilePackagePath(project, value);
+}
+
+function collectHiddenRoots(project: ProjectContext): {
+  roots: string[];
+  diagnostics: DiagnosticRecord[];
+} {
+  const roots = new Set<string>();
+  const diagnostics: DiagnosticRecord[] = [];
+
+  for (const pattern of project.config.value.hiddenRoots) {
+    const matches = project.sourceFiles.filter((sourceFile) =>
+      matchesPatterns(toRelative(project.rootPath, sourceFile.fileName), [pattern]),
+    );
+    if (matches.length === 0) {
+      diagnostics.push({
+        kind: "project-warning",
+        message: `Configured hidden root pattern '${pattern}' did not match any analyzable source files`,
+      });
+      continue;
+    }
+
+    for (const match of matches) {
+      roots.add(match.fileName);
+    }
+  }
+
+  return { roots: [...roots], diagnostics };
+}
+
+export function discoverEntrypoints(project: ProjectContext): {
+  entrypoints: string[];
+  diagnostics: DiagnosticRecord[];
+} {
+  const diagnostics: DiagnosticRecord[] = [];
   const configured = project.config.value.entrypoints
-    .map((entrypoint) => path.resolve(project.rootPath, entrypoint))
-    .filter((entrypoint) => project.sourceFiles.some((sourceFile) => sourceFile.fileName === entrypoint));
+    .map((entrypoint) => resolveEntrypoint(project, entrypoint))
+    .filter(Boolean) as string[];
+  const hiddenRoots = collectHiddenRoots(project);
+  diagnostics.push(...hiddenRoots.diagnostics);
 
   if (configured.length > 0) {
-    return configured;
+    return {
+      entrypoints: [...new Set([...configured, ...hiddenRoots.roots])],
+      diagnostics,
+    };
   }
 
   const roots = new Set<string>();
   const packageJson = project.packageJson ?? {};
 
   const addIfPresent = (value: unknown): void => {
-    if (typeof value !== "string") {
-      return;
-    }
-    const absolute = path.resolve(project.rootPath, value);
-    if (project.sourceFiles.some((sourceFile) => sourceFile.fileName === absolute)) {
-      roots.add(absolute);
+    const resolved = resolveEntrypoint(project, value);
+    if (resolved) {
+      roots.add(resolved);
     }
   };
 
@@ -149,7 +223,10 @@ export function discoverEntrypoints(project: ProjectContext): string[] {
   }
 
   if (roots.size > 0) {
-    return [...roots];
+    return {
+      entrypoints: [...new Set([...roots, ...hiddenRoots.roots])],
+      diagnostics,
+    };
   }
 
   const defaults = ["src/index.ts", "src/main.ts", "index.ts", "index.js"]
@@ -157,10 +234,19 @@ export function discoverEntrypoints(project: ProjectContext): string[] {
     .filter((candidate) => project.sourceFiles.some((sourceFile) => sourceFile.fileName === candidate));
 
   if (defaults.length > 0) {
-    return defaults;
+    return {
+      entrypoints: [...new Set([...defaults, ...hiddenRoots.roots])],
+      diagnostics,
+    };
   }
 
-  return project.sourceFiles.length > 0 ? [project.sourceFiles[0]!.fileName] : [];
+  return {
+    entrypoints:
+      project.sourceFiles.length > 0
+        ? [...new Set([project.sourceFiles[0]!.fileName, ...hiddenRoots.roots])]
+        : hiddenRoots.roots,
+    diagnostics,
+  };
 }
 
 export function computeReachableFiles(entrypoints: string[], graph: ModuleGraph): Set<string> {

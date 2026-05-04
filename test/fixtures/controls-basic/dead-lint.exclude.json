@@ -1,0 +1,5 @@
+{
+  "mode": "application",
+  "entrypoints": ["src/index.ts"],
+  "exclude": ["src/excluded-consumer.ts"]
+}
