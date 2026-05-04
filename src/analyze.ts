@@ -6,6 +6,7 @@ import { buildModuleGraph, computeReachableFiles, discoverEntrypoints } from "./
 import { loadProject } from "./project.js";
 import {
   hasNonDeclarationReferences,
+  summarizeNonDeclarationReferences,
   summarizeReferenceUsage,
 } from "./references.js";
 import { buildSuppressionContext, getSuppressionAudit } from "./suppressions.js";
@@ -14,11 +15,13 @@ import type {
   AuditRecord,
   CliOptions,
   DiagnosticRecord,
+  EscapedPathRecord,
   EntityKind,
   EntityRecord,
   FindingKind,
   FindingRecord,
   ProjectContext,
+  SkipCategory,
   TrackedObject,
 } from "./types.js";
 import {
@@ -43,6 +46,7 @@ interface AnalysisState {
 
 interface ReferenceCaches {
   hasReference: Map<string, boolean>;
+  exportReferences: Map<string, ReturnType<typeof summarizeNonDeclarationReferences>>;
   usage: Map<string, ReturnType<typeof summarizeReferenceUsage>>;
 }
 
@@ -64,6 +68,16 @@ interface ValueAccess {
   escapeReason?: string;
 }
 
+interface TrackedValueBinding {
+  declaration: ts.Identifier;
+  name: string;
+  declarationDepth: number;
+}
+
+interface ValueAnalysisCaches {
+  parameterMeaningfulUse: Map<string, boolean | null>;
+}
+
 interface TrackedObjectBinding {
   trackedObject: TrackedObject;
   prefix: string[];
@@ -73,6 +87,17 @@ interface ForwardedParameterBinding {
   index: number;
   paramSymbolKey: string;
   binding: TrackedObjectBinding;
+}
+
+interface AnalyzableCallableBinding {
+  declaration: ts.FunctionLikeDeclaration;
+  symbolKey: string;
+}
+
+interface ResolvedTrackedObjectAccess {
+  binding: TrackedObjectBinding;
+  dynamic: boolean;
+  segments: string[];
 }
 
 function createState(): AnalysisState {
@@ -259,6 +284,61 @@ function addAudit(target: AuditRecord[], record: AuditRecord | undefined): boole
   return true;
 }
 
+function addSkipped(
+  state: AnalysisState,
+  entity: EntityRecord,
+  category: SkipCategory,
+  reason: string,
+): void {
+  state.skipped.push({
+    id: entity.id,
+    kind: entity.kind,
+    name: entity.name,
+    reason,
+    category,
+    location: entity.location,
+  });
+}
+
+function sameTrackedBinding(left: TrackedObjectBinding, right: TrackedObjectBinding): boolean {
+  return left.trackedObject.id === right.trackedObject.id && left.prefix.join(".") === right.prefix.join(".");
+}
+
+function extendTrackedBinding(binding: TrackedObjectBinding, segments: string[]): TrackedObjectBinding {
+  return {
+    trackedObject: binding.trackedObject,
+    prefix: [...binding.prefix, ...segments],
+  };
+}
+
+function setTrackedBinding(
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  symbolKey: string,
+  binding: TrackedObjectBinding,
+): boolean {
+  const existing = trackedBySymbolId.get(symbolKey);
+  if (existing && sameTrackedBinding(existing, binding)) {
+    return false;
+  }
+
+  trackedBySymbolId.set(symbolKey, binding);
+  return true;
+}
+
+function setFunctionReturnBinding(
+  functionReturnBindings: Map<string, TrackedObjectBinding | null>,
+  symbolKey: string,
+  binding: TrackedObjectBinding | null,
+): boolean {
+  const existing = functionReturnBindings.get(symbolKey);
+  if (existing === binding || (existing && binding && sameTrackedBinding(existing, binding))) {
+    return false;
+  }
+
+  functionReturnBindings.set(symbolKey, binding);
+  return true;
+}
+
 function createReferenceKey(sourceFile: ts.SourceFile, node: ts.Node): string {
   return `${sourceFile.fileName}:${node.getStart(sourceFile)}`;
 }
@@ -273,6 +353,16 @@ function buildFileEntity(project: ProjectContext, sourceFile: ts.SourceFile): En
       line: 1,
       column: 1,
     },
+  };
+}
+
+function buildPublicSurfaceAudit(entity: EntityRecord): AuditRecord {
+  return {
+    id: entity.id,
+    kind: entity.kind,
+    name: entity.name,
+    reason: "kept as public package surface",
+    location: entity.location,
   };
 }
 
@@ -462,34 +552,27 @@ function analyzeUnusedExports(
     }
 
     for (const candidate of collectExportCandidates(project, sourceFile)) {
-      const keepReason =
-        publicSurfaceIds.has(candidate.entity.id)
-          ? {
-              id: candidate.entity.id,
-              kind: candidate.entity.kind,
-              name: candidate.entity.name,
-              reason: "kept as public library surface",
-              location: candidate.entity.location,
-            }
-          : getSuppressionAudit(project, suppressionContext, candidate.entity, candidate.node);
-
-      if (addAudit(state.kept, keepReason)) {
-        continue;
-      }
-
       const cacheKey = createReferenceKey(sourceFile, candidate.node);
-      let hasReferences = caches.hasReference.get(cacheKey);
-      if (hasReferences === undefined) {
-        hasReferences = hasNonDeclarationReferences(
+      let referenceSummary = caches.exportReferences.get(cacheKey);
+      if (!referenceSummary) {
+        referenceSummary = summarizeNonDeclarationReferences(
           project.languageService,
           sourceFile,
           candidate.node,
           project.analyzableFiles,
         );
-        caches.hasReference.set(cacheKey, hasReferences);
+        caches.exportReferences.set(cacheKey, referenceSummary);
       }
 
-      if (hasReferences) {
+      if (referenceSummary.crossFileReferences > 0) {
+        continue;
+      }
+
+      const keepReason = publicSurfaceIds.has(candidate.entity.id)
+        ? buildPublicSurfaceAudit(candidate.entity)
+        : getSuppressionAudit(project, suppressionContext, candidate.entity, candidate.node);
+
+      if (addAudit(state.kept, keepReason)) {
         continue;
       }
 
@@ -502,8 +585,12 @@ function analyzeUnusedExports(
         state,
         candidate.entity,
         findingKind,
-        "exported declaration has no non-declaration references",
-        `Unused exported ${candidate.entity.name}`,
+        referenceSummary.sameFileReferences > 0
+          ? "exported declaration is only referenced within its declaring file"
+          : "exported declaration has no non-declaration references outside its declaring file",
+        referenceSummary.sameFileReferences > 0
+          ? `Exported ${candidate.entity.name} is only used within ${candidate.entity.location.file}`
+          : `Unused exported ${candidate.entity.name}`,
       );
     }
   }
@@ -596,24 +683,12 @@ function analyzeClassMembers(
             : false;
 
           if (classHasDecorators || memberHasDecorators) {
-            state.skipped.push({
-              id: entity.id,
-              kind: entity.kind,
-              name: entity.name,
-              reason: "member skipped because decorators can make it externally visible",
-              location: entity.location,
-            });
+            addSkipped(state, entity, "decorator-visibility", "member skipped because decorators can make it externally visible");
             continue;
           }
 
           if (ts.isPropertyDeclaration(member) && member.name && ts.isComputedPropertyName(member.name)) {
-            state.skipped.push({
-              id: entity.id,
-              kind: entity.kind,
-              name: entity.name,
-              reason: "member skipped because computed property names are dynamic",
-              location: entity.location,
-            });
+            addSkipped(state, entity, "computed-member-name", "member skipped because computed property names are dynamic");
             continue;
           }
 
@@ -797,19 +872,167 @@ function isTrackablePureExpression(expression: ts.Expression): boolean {
   return false;
 }
 
-function getUnsupportedEscapeReason(node: ts.Identifier): string | undefined {
-  const parent = node.parent;
-  if (!parent) {
+function getAnalyzableCallableBinding(
+  project: ProjectContext,
+  expression: ts.LeftHandSideExpression,
+): AnalyzableCallableBinding | undefined {
+  if (!ts.isIdentifier(expression)) {
     return undefined;
   }
 
-  if (ts.isCallExpression(parent) || ts.isNewExpression(parent)) {
-    if ((parent.arguments ?? []).some((argument) => argument === node)) {
-      return "value passed to unsupported call boundary";
+  const calleeSymbol = project.checker.getSymbolAtLocation(expression);
+  const declaration = calleeSymbol?.declarations?.[0];
+  const callable =
+    declaration && (ts.isFunctionDeclaration(declaration) || ts.isFunctionExpression(declaration) || ts.isArrowFunction(declaration))
+      ? declaration
+      : declaration
+          && ts.isVariableDeclaration(declaration)
+          && declaration.initializer
+          && (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
+        ? declaration.initializer
+        : undefined;
+
+  if (!calleeSymbol || !callable?.body) {
+    return undefined;
+  }
+
+  return callable.getSourceFile().fileName.startsWith(project.rootPath)
+    ? {
+        declaration: callable,
+        symbolKey: getSymbolKey(calleeSymbol),
+      }
+    : undefined;
+}
+
+function getAnalyzableCallableBindingFromDeclaration(
+  project: ProjectContext,
+  declaration: ts.FunctionLikeDeclaration,
+): AnalyzableCallableBinding | undefined {
+  if (!declaration.body || !declaration.getSourceFile().fileName.startsWith(project.rootPath)) {
+    return undefined;
+  }
+
+  if (declaration.name && ts.isIdentifier(declaration.name)) {
+    const symbol = project.checker.getSymbolAtLocation(declaration.name);
+    if (symbol) {
+      return {
+        declaration,
+        symbolKey: getSymbolKey(symbol),
+      };
+    }
+  }
+
+  if (ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration)) {
+    const parent = declaration.parent;
+    if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+      const symbol = project.checker.getSymbolAtLocation(parent.name);
+      if (symbol) {
+        return {
+          declaration,
+          symbolKey: getSymbolKey(symbol),
+        };
+      }
     }
   }
 
   return undefined;
+}
+
+function resolveAnalyzableFunctionDeclaration(
+  project: ProjectContext,
+  expression: ts.LeftHandSideExpression,
+): ts.FunctionLikeDeclaration | undefined {
+  return getAnalyzableCallableBinding(project, expression)?.declaration;
+}
+
+function isUpdateRead(node: ts.Identifier): boolean {
+  return (ts.isPrefixUnaryExpression(node.parent) || ts.isPostfixUnaryExpression(node.parent))
+    && (node.parent.operator === ts.SyntaxKind.PlusPlusToken || node.parent.operator === ts.SyntaxKind.MinusMinusToken);
+}
+
+function getCallArgumentUse(
+  project: ProjectContext,
+  node: ts.Identifier,
+  caches: ValueAnalysisCaches,
+): "read" | "ignore" | undefined {
+  const parent = node.parent;
+  if (!(ts.isCallExpression(parent) || ts.isNewExpression(parent))) {
+    return undefined;
+  }
+
+  const argumentIndex = (parent.arguments ?? []).findIndex((argument) => argument === node);
+  if (argumentIndex < 0) {
+    return undefined;
+  }
+
+  const callable = resolveAnalyzableFunctionDeclaration(project, parent.expression);
+  if (!callable) {
+    return "read";
+  }
+
+  const parameter = callable.parameters[argumentIndex];
+  if (!parameter || !ts.isIdentifier(parameter.name)) {
+    return "read";
+  }
+
+  return hasMeaningfulParameterUse(project, callable, parameter.name, caches) ? "read" : "ignore";
+}
+
+function hasMeaningfulParameterUse(
+  project: ProjectContext,
+  declaration: ts.FunctionLikeDeclaration,
+  parameterName: ts.Identifier,
+  caches: ValueAnalysisCaches,
+): boolean {
+  const parameterSymbol = project.checker.getSymbolAtLocation(parameterName);
+  if (!parameterSymbol || !declaration.body) {
+    return true;
+  }
+
+  const parameterKey = getSymbolKey(parameterSymbol);
+  const cached = caches.parameterMeaningfulUse.get(parameterKey);
+  if (cached === null) {
+    return true;
+  }
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  caches.parameterMeaningfulUse.set(parameterKey, null);
+  let meaningful = false;
+
+  const visit = (node: ts.Node): void => {
+    if (meaningful) {
+      return;
+    }
+
+    if (ts.isIdentifier(node)) {
+      const symbol = project.checker.getSymbolAtLocation(node);
+      if (!symbol || getSymbolKey(symbol) !== parameterKey || node === parameterName) {
+        return ts.forEachChild(node, visit);
+      }
+
+      const callArgumentUse = getCallArgumentUse(project, node, caches);
+      if (callArgumentUse === "read") {
+        meaningful = true;
+        return;
+      }
+      if (callArgumentUse === "ignore") {
+        return ts.forEachChild(node, visit);
+      }
+
+      if (isUpdateRead(node) || isReadLikeUse(node)) {
+        meaningful = true;
+        return;
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  ts.forEachChild(declaration.body, visit);
+  caches.parameterMeaningfulUse.set(parameterKey, meaningful);
+  return meaningful;
 }
 
 function analyzeValueLiveness(
@@ -823,11 +1046,11 @@ function analyzeValueLiveness(
       continue;
     }
 
-    const trackedBindings = new Map<
-      string,
-      { declaration: ts.Identifier; name: string; declarationDepth: number }
-    >();
+    const trackedBindings = new Map<string, TrackedValueBinding>();
     const accesses = new Map<string, ValueAccess[]>();
+    const valueAnalysisCaches: ValueAnalysisCaches = {
+      parameterMeaningfulUse: new Map(),
+    };
 
     const pushAccess = (symbolKey: string, access: ValueAccess): void => {
       const entries = accesses.get(symbolKey) ?? [];
@@ -943,25 +1166,26 @@ function analyzeValueLiveness(
 
         if (
           (ts.isBinaryExpression(node.parent) && node.parent.left === node)
-          || ((ts.isPrefixUnaryExpression(node.parent) || ts.isPostfixUnaryExpression(node.parent))
-            && node.parent.operand === node)
+          || isUpdateRead(node)
         ) {
           return ts.forEachChild(node, visit);
         }
 
         const symbolKey = getSymbolKey(symbol);
-        const escapeReason = getUnsupportedEscapeReason(node);
-        if (escapeReason) {
+        const callArgumentUse = getCallArgumentUse(project, node, valueAnalysisCaches);
+        if (callArgumentUse === "read") {
           pushAccess(symbolKey, {
             entity: makeEntity(project.rootPath, "assignment", sourceFile, tracked.declaration, tracked.name),
             position: node.getStart(sourceFile),
-            kind: "escape",
+            kind: "read",
             nestedWrite: false,
             controlFlowDepth: getControlFlowDepth(node),
             functionDepth: getFunctionDepth(node),
             flowSignature: getControlFlowSignature(node),
-            escapeReason,
           });
+          return ts.forEachChild(node, visit);
+        }
+        if (callArgumentUse === "ignore") {
           return ts.forEachChild(node, visit);
         }
 
@@ -1032,13 +1256,7 @@ function analyzeValueLiveness(
         }
 
         if (access.kind === "escape" && pendingWrite) {
-          state.skipped.push({
-            id: pendingWrite.entity.id,
-            kind: pendingWrite.entity.kind,
-            name: pendingWrite.entity.name,
-            reason: access.escapeReason ?? "value escaped exact analysis",
-            location: pendingWrite.entity.location,
-          });
+          addSkipped(state, pendingWrite.entity, "opaque-object-call", access.escapeReason ?? "value escaped exact analysis");
           pendingWrite = undefined;
         }
       }
@@ -1081,7 +1299,7 @@ function addTrackedObjectNode(
   if (ts.isObjectLiteralExpression(node)) {
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
-        markEscaped(trackedObject, segments, "object spread introduces opaque properties");
+        markEscaped(trackedObject, segments, "object-spread", "object spread introduces opaque properties");
         continue;
       }
 
@@ -1096,7 +1314,12 @@ function addTrackedObjectNode(
           : undefined;
 
       if (!propertyName) {
-        markEscaped(trackedObject, segments, "computed property names are not eligible for exact analysis");
+        markEscaped(
+          trackedObject,
+          segments,
+          "computed-property-name",
+          "computed property names are not eligible for exact analysis",
+        );
         continue;
       }
 
@@ -1123,7 +1346,7 @@ function addTrackedObjectNode(
   } else {
     node.elements.forEach((element, index) => {
       if (!element || ts.isSpreadElement(element)) {
-        markEscaped(trackedObject, segments, "array spread introduces opaque values");
+        markEscaped(trackedObject, segments, "array-spread", "array spread introduces opaque values");
         return;
       }
 
@@ -1147,16 +1370,6 @@ function addTrackedObjectNode(
       }
     });
   }
-}
-
-function getRootIdentifier(node: ts.Node): ts.Identifier | undefined {
-  if (ts.isIdentifier(node)) {
-    return node;
-  }
-  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-    return getRootIdentifier(node.expression);
-  }
-  return undefined;
 }
 
 function getAccessPath(node: ts.Node): { root: ts.Identifier; segments: string[]; dynamic: boolean } | undefined {
@@ -1190,6 +1403,113 @@ function getAccessPath(node: ts.Node): { root: ts.Identifier; segments: string[]
   return undefined;
 }
 
+function resolveTrackedObjectAccess(
+  project: ProjectContext,
+  node: ts.Node,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnBindings: Map<string, TrackedObjectBinding | null>,
+): ResolvedTrackedObjectAccess | undefined {
+  if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
+    return resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
+  }
+
+  if (ts.isIdentifier(node)) {
+    const symbol = project.checker.getSymbolAtLocation(node);
+    const binding = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
+    return binding ? { binding, segments: [], dynamic: false } : undefined;
+  }
+
+  if (ts.isPropertyAccessExpression(node)) {
+    const nested = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
+    return nested
+      ? {
+          binding: nested.binding,
+          segments: [...nested.segments, node.name.text],
+          dynamic: nested.dynamic,
+        }
+      : undefined;
+  }
+
+  if (ts.isElementAccessExpression(node)) {
+    const nested = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
+    if (!nested) {
+      return undefined;
+    }
+
+    if (ts.isStringLiteral(node.argumentExpression) || ts.isNumericLiteral(node.argumentExpression)) {
+      return {
+        binding: nested.binding,
+        segments: [...nested.segments, node.argumentExpression.text],
+        dynamic: nested.dynamic,
+      };
+    }
+
+    return {
+      binding: nested.binding,
+      segments: nested.segments,
+      dynamic: true,
+    };
+  }
+
+  if (ts.isCallExpression(node)) {
+    const callable = getAnalyzableCallableBinding(project, node.expression);
+    const binding = callable ? functionReturnBindings.get(callable.symbolKey) : undefined;
+    return binding
+      ? {
+          binding,
+          segments: [],
+          dynamic: false,
+        }
+      : undefined;
+  }
+
+  if (
+    ts.isBinaryExpression(node)
+    && (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      || node.operatorToken.kind === ts.SyntaxKind.BarBarToken
+      || node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+  ) {
+    const left = resolveTrackedObjectAccess(project, node.left, trackedBySymbolId, functionReturnBindings);
+    const right = resolveTrackedObjectAccess(project, node.right, trackedBySymbolId, functionReturnBindings);
+    if (!left) {
+      return right;
+    }
+    if (!right) {
+      return left;
+    }
+    return sameTrackedBinding(extendTrackedBinding(left.binding, left.segments), extendTrackedBinding(right.binding, right.segments))
+      ? {
+          binding: left.binding,
+          segments: left.segments,
+          dynamic: left.dynamic || right.dynamic,
+        }
+      : undefined;
+  }
+
+  if (ts.isConditionalExpression(node)) {
+    const whenTrue = resolveTrackedObjectAccess(project, node.whenTrue, trackedBySymbolId, functionReturnBindings);
+    const whenFalse = resolveTrackedObjectAccess(project, node.whenFalse, trackedBySymbolId, functionReturnBindings);
+    if (!whenTrue) {
+      return whenFalse;
+    }
+    if (!whenFalse) {
+      return whenTrue;
+    }
+    return sameTrackedBinding(
+      extendTrackedBinding(whenTrue.binding, whenTrue.segments),
+      extendTrackedBinding(whenFalse.binding, whenFalse.segments),
+    )
+      ? {
+          binding: whenTrue.binding,
+          segments: whenTrue.segments,
+          dynamic: whenTrue.dynamic || whenFalse.dynamic,
+        }
+      : undefined;
+  }
+
+  return undefined;
+}
+
 function markRead(trackedObject: TrackedObject, segments: string[]): void {
   for (let index = 1; index <= segments.length; index += 1) {
     trackedObject.reads.add(segments.slice(0, index).join("."));
@@ -1213,16 +1533,21 @@ function markWrite(trackedObject: TrackedObject, segments: string[]): void {
   trackedObject.writes.add(segments.join("."));
 }
 
-function markEscaped(trackedObject: TrackedObject, segments: string[], reason: string): void {
-  trackedObject.escapedPaths.set(segments.join("."), reason);
+function markEscaped(
+  trackedObject: TrackedObject,
+  segments: string[],
+  category: SkipCategory,
+  reason: string,
+): void {
+  trackedObject.escapedPaths.set(segments.join("."), { category, reason });
 }
 
-function getEscapedReason(trackedObject: TrackedObject, segments: string[]): string | undefined {
+function getEscapedReason(trackedObject: TrackedObject, segments: string[]): EscapedPathRecord | undefined {
   for (let index = segments.length; index >= 0; index -= 1) {
     const key = segments.slice(0, index).join(".");
-    const reason = trackedObject.escapedPaths.get(key);
-    if (reason) {
-      return reason;
+    const escaped = trackedObject.escapedPaths.get(key);
+    if (escaped) {
+      return escaped;
     }
   }
   return undefined;
@@ -1232,53 +1557,35 @@ function getForwardedParameterBindings(
   project: ProjectContext,
   node: ts.CallExpression,
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnBindings: Map<string, TrackedObjectBinding | null>,
 ): ForwardedParameterBinding[] {
-  if (!ts.isIdentifier(node.expression)) {
-    return [];
-  }
-
-  const calleeSymbol = project.checker.getSymbolAtLocation(node.expression);
-  const declaration = calleeSymbol?.declarations?.[0];
-  if (
-    !declaration
-    || (!ts.isFunctionDeclaration(declaration)
-      && !ts.isFunctionExpression(declaration)
-      && !ts.isArrowFunction(declaration))
-  ) {
-    return [];
-  }
-
-  if (!declaration.getSourceFile().fileName.startsWith(project.rootPath)) {
+  const callable = getAnalyzableCallableBinding(project, node.expression);
+  if (!callable) {
     return [];
   }
 
   const forwarded: ForwardedParameterBinding[] = [];
 
   node.arguments.forEach((argument, index) => {
-    const parameter = declaration.parameters[index];
+    const parameter = callable.declaration.parameters[index];
     if (!parameter || !ts.isIdentifier(parameter.name)) {
       return;
     }
 
-    const accessPath = getAccessPath(argument);
-    if (!accessPath || accessPath.dynamic) {
+    const resolved = resolveTrackedObjectAccess(project, argument, trackedBySymbolId, functionReturnBindings);
+    if (!resolved || resolved.dynamic) {
       return;
     }
 
-    const sourceSymbol = project.checker.getSymbolAtLocation(accessPath.root);
-    const existing = sourceSymbol ? trackedBySymbolId.get(getSymbolKey(sourceSymbol)) : undefined;
     const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
-    if (!existing || !parameterSymbol) {
+    if (!parameterSymbol) {
       return;
     }
 
     forwarded.push({
       index,
       paramSymbolKey: getSymbolKey(parameterSymbol),
-      binding: {
-        trackedObject: existing.trackedObject,
-        prefix: [...existing.prefix, ...accessPath.segments],
-      },
+      binding: extendTrackedBinding(resolved.binding, resolved.segments),
     });
   });
 
@@ -1329,92 +1636,175 @@ function isTrackableObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayL
 function buildTrackedObjects(
   project: ProjectContext,
   reachableFiles: Set<string>,
-): Map<string, TrackedObjectBinding> {
+): {
+  trackedBySymbolId: Map<string, TrackedObjectBinding>;
+  functionReturnBindings: Map<string, TrackedObjectBinding | null>;
+} {
   const trackedBySymbolId = new Map<string, TrackedObjectBinding>();
+  const functionReturnBindings = new Map<string, TrackedObjectBinding | null>();
 
-  for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
-      continue;
+  const collectFunctionReturnBinding = (declaration: ts.FunctionLikeDeclaration): TrackedObjectBinding | null | undefined => {
+    const callable = getAnalyzableCallableBindingFromDeclaration(project, declaration);
+    if (!callable?.declaration.body) {
+      return undefined;
     }
 
+    let binding: TrackedObjectBinding | undefined;
+    let sawReturn = false;
+    let unsupported = false;
+
     const visit = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-        const symbol = project.checker.getSymbolAtLocation(node.name);
-        if (!symbol) {
+      if (unsupported) {
+        return;
+      }
+
+      if (ts.isFunctionLike(node) && node !== callable.declaration) {
+        return;
+      }
+
+      if (ts.isReturnStatement(node) && node.expression) {
+        sawReturn = true;
+        const resolved = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
+        if (!resolved || resolved.dynamic) {
+          unsupported = true;
           return;
         }
 
-        if (
-          (ts.isObjectLiteralExpression(node.initializer) || ts.isArrayLiteralExpression(node.initializer))
-          && isTrackableObjectStructure(node.initializer)
-        ) {
-          const rootEntity = makeEntity(project.rootPath, "local", sourceFile, node.name, node.name.text);
-          const trackedObject: TrackedObject = {
-            id: rootEntity.id,
-            rootName: node.name.text,
-            sourceFile: sourceFile.fileName,
-            rootEntity,
-            nodes: new Map(),
-            escapedPaths: new Map(),
-            reads: new Set(),
-            writes: new Set(),
-          };
-          addTrackedObjectNode(
-            project,
-            trackedObject,
-            sourceFile,
-            node.initializer,
-            node.name.text,
+        const nextBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+        if (!binding) {
+          binding = nextBinding;
+          return;
+        }
+
+        if (!sameTrackedBinding(binding, nextBinding)) {
+          unsupported = true;
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(callable.declaration.body, visit);
+
+    if (!sawReturn) {
+      return undefined;
+    }
+
+    return unsupported ? null : binding ?? null;
+  };
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+
+    for (const sourceFile of project.sourceFiles) {
+      if (!reachableFiles.has(sourceFile.fileName)) {
+        continue;
+      }
+
+      const visit = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+          const symbol = project.checker.getSymbolAtLocation(node.name);
+          if (!symbol) {
+            return ts.forEachChild(node, visit);
+          }
+
+          if (
+            (ts.isObjectLiteralExpression(node.initializer) || ts.isArrayLiteralExpression(node.initializer))
+            && isTrackableObjectStructure(node.initializer)
+          ) {
+            const rootEntity = makeEntity(project.rootPath, "local", sourceFile, node.name, node.name.text);
+            const trackedObject: TrackedObject = {
+              id: rootEntity.id,
+              rootName: node.name.text,
+              sourceFile: sourceFile.fileName,
+              rootEntity,
+              nodes: new Map(),
+              escapedPaths: new Map(),
+              reads: new Set(),
+              writes: new Set(),
+            };
+            addTrackedObjectNode(
+              project,
+              trackedObject,
+              sourceFile,
+              node.initializer,
+              node.name.text,
               node.name.text,
               [],
               project.config.value.objectAnalysis.maxPathDepth,
             );
-          trackedBySymbolId.set(getSymbolKey(symbol), {
-            trackedObject,
-            prefix: [],
-          });
-        } else {
-          const accessPath = getAccessPath(node.initializer);
-          if (accessPath && !accessPath.dynamic) {
-            const sourceSymbol = project.checker.getSymbolAtLocation(accessPath.root);
-            if (sourceSymbol) {
-              const existing = trackedBySymbolId.get(getSymbolKey(sourceSymbol));
-              if (existing) {
-                trackedBySymbolId.set(getSymbolKey(symbol), {
-                  trackedObject: existing.trackedObject,
-                  prefix: [...existing.prefix, ...accessPath.segments],
-                });
-              }
+            changed = setTrackedBinding(trackedBySymbolId, getSymbolKey(symbol), {
+              trackedObject,
+              prefix: [],
+            }) || changed;
+          } else {
+            const resolved = resolveTrackedObjectAccess(project, node.initializer, trackedBySymbolId, functionReturnBindings);
+            if (resolved && !resolved.dynamic) {
+              changed = setTrackedBinding(
+                trackedBySymbolId,
+                getSymbolKey(symbol),
+                extendTrackedBinding(resolved.binding, resolved.segments),
+              ) || changed;
             }
           }
         }
-      }
 
-      ts.forEachChild(node, visit);
-    };
+        if (
+          ts.isBinaryExpression(node)
+          && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          && ts.isIdentifier(node.left)
+        ) {
+          const target = project.checker.getSymbolAtLocation(node.left);
+          const resolved = resolveTrackedObjectAccess(project, node.right, trackedBySymbolId, functionReturnBindings);
+          if (target && resolved && !resolved.dynamic) {
+            changed = setTrackedBinding(
+              trackedBySymbolId,
+              getSymbolKey(target),
+              extendTrackedBinding(resolved.binding, resolved.segments),
+            ) || changed;
+          }
+        }
 
-    ts.forEachChild(sourceFile, visit);
-  }
+        if (ts.isCallExpression(node)) {
+          for (const forwarded of getForwardedParameterBindings(project, node, trackedBySymbolId, functionReturnBindings)) {
+            changed = setTrackedBinding(trackedBySymbolId, forwarded.paramSymbolKey, forwarded.binding) || changed;
+          }
+        }
 
-  for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
-      continue;
+        ts.forEachChild(node, visit);
+      };
+
+      ts.forEachChild(sourceFile, visit);
     }
 
-    const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node)) {
-        for (const forwarded of getForwardedParameterBindings(project, node, trackedBySymbolId)) {
-          trackedBySymbolId.set(forwarded.paramSymbolKey, forwarded.binding);
-        }
+    for (const sourceFile of project.sourceFiles) {
+      if (!reachableFiles.has(sourceFile.fileName)) {
+        continue;
       }
 
-      ts.forEachChild(node, visit);
-    };
+      const visit = (node: ts.Node): void => {
+        if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) {
+          const callable = getAnalyzableCallableBindingFromDeclaration(project, node);
+          if (callable) {
+            const binding = collectFunctionReturnBinding(node);
+            if (binding !== undefined) {
+              changed = setFunctionReturnBinding(functionReturnBindings, callable.symbolKey, binding) || changed;
+            }
+          }
+        }
 
-    ts.forEachChild(sourceFile, visit);
+        ts.forEachChild(node, visit);
+      };
+
+      ts.forEachChild(sourceFile, visit);
+    }
   }
 
-  return trackedBySymbolId;
+  return {
+    trackedBySymbolId,
+    functionReturnBindings,
+  };
 }
 
 function analyzeObjectPaths(
@@ -1427,7 +1817,7 @@ function analyzeObjectPaths(
     return;
   }
 
-  const trackedBySymbolId = buildTrackedObjects(project, reachableFiles);
+  const { trackedBySymbolId, functionReturnBindings } = buildTrackedObjects(project, reachableFiles);
   const trackedObjects = new Set<TrackedObject>(
     [...trackedBySymbolId.values()].map((binding) => binding.trackedObject),
   );
@@ -1438,26 +1828,26 @@ function analyzeObjectPaths(
     }
 
     const visit = (node: ts.Node): void => {
-      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && ts.isIdentifier(node.initializer ?? ts.factory.createIdentifier(""))) {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
         const target = project.checker.getSymbolAtLocation(node.name);
-        const source = project.checker.getSymbolAtLocation(node.initializer as ts.Identifier);
-        if (target && source) {
-          const existing = trackedBySymbolId.get(getSymbolKey(source));
-          if (existing) {
-            trackedBySymbolId.set(getSymbolKey(target), existing);
-          }
+        const resolved = resolveTrackedObjectAccess(project, node.initializer, trackedBySymbolId, functionReturnBindings);
+        if (target && resolved && !resolved.dynamic) {
+          trackedBySymbolId.set(getSymbolKey(target), extendTrackedBinding(resolved.binding, resolved.segments));
         }
       }
 
       if (ts.isReturnStatement(node) && node.expression) {
-        const accessPath = getAccessPath(node.expression);
-        if (accessPath && !accessPath.dynamic) {
-          const symbol = project.checker.getSymbolAtLocation(accessPath.root);
-          const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
-          if (tracked) {
+        const resolved = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
+        if (resolved && !resolved.dynamic) {
+          const returnBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          const enclosingFunction = ts.findAncestor(node, (candidate): candidate is ts.FunctionLikeDeclaration => ts.isFunctionLike(candidate));
+          const callable = enclosingFunction ? getAnalyzableCallableBindingFromDeclaration(project, enclosingFunction) : undefined;
+          const propagated = callable ? functionReturnBindings.get(callable.symbolKey) : undefined;
+          if (!propagated || !sameTrackedBinding(propagated, returnBinding)) {
             markEscaped(
-              tracked.trackedObject,
-              [...tracked.prefix, ...accessPath.segments],
+              returnBinding.trackedObject,
+              returnBinding.prefix,
+              "returned-object",
               "returned object escapes local analysis",
             );
           }
@@ -1480,23 +1870,22 @@ function analyzeObjectPaths(
 
         const calleeText = node.expression.getText(sourceFile);
         const forwardedIndices = new Set(
-          getForwardedParameterBindings(project, node, trackedBySymbolId).map((forwarded) => forwarded.index),
+          getForwardedParameterBindings(project, node, trackedBySymbolId, functionReturnBindings).map((forwarded) => forwarded.index),
         );
         for (const [index, argument] of node.arguments.entries()) {
-          const accessPath = getAccessPath(argument);
-          if (!accessPath) {
+          const resolved = resolveTrackedObjectAccess(project, argument, trackedBySymbolId, functionReturnBindings);
+          if (!resolved) {
             continue;
           }
 
-          const symbol = project.checker.getSymbolAtLocation(accessPath.root);
-          const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
-          if (!tracked) {
-            continue;
-          }
-
-          const fullPath = [...tracked.prefix, ...accessPath.segments];
-          if (accessPath.dynamic) {
-            markEscaped(tracked.trackedObject, tracked.prefix, "computed property access prevents exact path analysis");
+          const fullPath = [...resolved.binding.prefix, ...resolved.segments];
+          if (resolved.dynamic) {
+            markEscaped(
+              resolved.binding.trackedObject,
+              resolved.binding.prefix,
+              "computed-property-access",
+              "computed property access prevents exact path analysis",
+            );
             continue;
           }
 
@@ -1504,10 +1893,24 @@ function analyzeObjectPaths(
             calleeText === "Object.keys" ||
             calleeText === "Object.values" ||
             calleeText === "Object.entries" ||
-            calleeText === "Reflect.ownKeys" ||
-            calleeText === "JSON.stringify"
+            calleeText === "Reflect.ownKeys"
           ) {
-            markEscaped(tracked.trackedObject, fullPath, `${calleeText} makes object properties externally observable`);
+            markEscaped(
+              resolved.binding.trackedObject,
+              fullPath,
+              "reflective-enumeration",
+              `${calleeText} makes object properties externally observable`,
+            );
+            continue;
+          }
+
+          if (calleeText === "JSON.stringify") {
+            markEscaped(
+              resolved.binding.trackedObject,
+              fullPath,
+              "serialization",
+              "JSON.stringify makes object properties externally observable",
+            );
             continue;
           }
 
@@ -1515,10 +1918,18 @@ function analyzeObjectPaths(
             continue;
           }
 
+          const joinedPath = fullPath.join(".");
+          const hasTrackedChildren = [...resolved.binding.trackedObject.nodes.keys()].some((key) => key.startsWith(`${joinedPath}.`));
+          if (resolved.segments.length > 0 && !hasTrackedChildren) {
+            markRead(resolved.binding.trackedObject, fullPath);
+            continue;
+          }
+
           markEscaped(
-            tracked.trackedObject,
+            resolved.binding.trackedObject,
             fullPath,
-            accessPath.segments.length === 0
+            "opaque-object-call",
+            resolved.segments.length === 0
               ? "object passed to call expression escapes exact local analysis"
               : "object path passed to call expression escapes exact local analysis",
           );
@@ -1526,58 +1937,49 @@ function analyzeObjectPaths(
       }
 
       if (ts.isForOfStatement(node)) {
-        const accessPath = getAccessPath(node.expression);
-        if (accessPath && !accessPath.dynamic) {
-          const symbol = project.checker.getSymbolAtLocation(accessPath.root);
-          const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
-          if (tracked) {
-            markObservedSubtree(tracked.trackedObject, [...tracked.prefix, ...accessPath.segments]);
-          }
+        const resolved = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
+        if (resolved && !resolved.dynamic) {
+          markObservedSubtree(resolved.binding.trackedObject, [...resolved.binding.prefix, ...resolved.segments]);
         }
       }
 
       if (ts.isSpreadAssignment(node)) {
-        const accessPath = getAccessPath(node.expression);
-        if (accessPath && !accessPath.dynamic) {
-          const symbol = project.checker.getSymbolAtLocation(accessPath.root);
-          const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
-          if (tracked) {
-            markObservedSubtree(tracked.trackedObject, [...tracked.prefix, ...accessPath.segments]);
-          }
+        const resolved = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
+        if (resolved && !resolved.dynamic) {
+          markObservedSubtree(resolved.binding.trackedObject, [...resolved.binding.prefix, ...resolved.segments]);
         }
       }
 
       if (ts.isSpreadElement(node)) {
-        const root = getRootIdentifier(node.expression);
-        const symbol = root ? project.checker.getSymbolAtLocation(root) : undefined;
-        const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
-        if (tracked) {
-          if (ts.isArrayLiteralExpression(node.parent)) {
-            const accessPath = getAccessPath(node.expression);
-            if (accessPath && !accessPath.dynamic) {
-              markObservedSubtree(tracked.trackedObject, [...tracked.prefix, ...accessPath.segments]);
-            }
+        const resolved = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
+        if (resolved) {
+          if (ts.isArrayLiteralExpression(node.parent) && !resolved.dynamic) {
+            markObservedSubtree(resolved.binding.trackedObject, [...resolved.binding.prefix, ...resolved.segments]);
           } else {
-            markEscaped(tracked.trackedObject, tracked.prefix, "spread element escapes exact local analysis");
+            markEscaped(
+              resolved.binding.trackedObject,
+              resolved.binding.prefix,
+              "spread-escape",
+              "spread element escapes exact local analysis",
+            );
           }
         }
       }
 
       if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-        const accessPath = getAccessPath(node);
-        if (!accessPath) {
+        const resolved = resolveTrackedObjectAccess(project, node, trackedBySymbolId, functionReturnBindings);
+        if (!resolved) {
           return ts.forEachChild(node, visit);
         }
 
-        const symbol = project.checker.getSymbolAtLocation(accessPath.root);
-        const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
-        if (!tracked) {
-          return ts.forEachChild(node, visit);
-        }
-
-        const fullPath = [...tracked.prefix, ...accessPath.segments];
-        if (accessPath.dynamic) {
-          markEscaped(tracked.trackedObject, tracked.prefix, "computed property access prevents exact path analysis");
+        const fullPath = [...resolved.binding.prefix, ...resolved.segments];
+        if (resolved.dynamic) {
+          markEscaped(
+            resolved.binding.trackedObject,
+            resolved.binding.prefix,
+            "computed-property-access",
+            "computed property access prevents exact path analysis",
+          );
           return ts.forEachChild(node, visit);
         }
 
@@ -1587,35 +1989,38 @@ function analyzeObjectPaths(
 
         if (isAssignmentLeft(node)) {
           if (fullPath.length > 1) {
-            markRead(tracked.trackedObject, fullPath.slice(0, -1));
+            markRead(resolved.binding.trackedObject, fullPath.slice(0, -1));
           }
-          markWrite(tracked.trackedObject, fullPath);
+          markWrite(resolved.binding.trackedObject, fullPath);
         } else {
-          markRead(tracked.trackedObject, fullPath);
+          markRead(resolved.binding.trackedObject, fullPath);
         }
       }
 
       if (
         ts.isVariableDeclaration(node) &&
         ts.isObjectBindingPattern(node.name) &&
-        node.initializer &&
-        ts.isIdentifier(node.initializer)
+        node.initializer
       ) {
-        const symbol = project.checker.getSymbolAtLocation(node.initializer);
-        const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
-        if (!tracked) {
+        const resolved = resolveTrackedObjectAccess(project, node.initializer, trackedBySymbolId, functionReturnBindings);
+        if (!resolved || resolved.dynamic) {
           return ts.forEachChild(node, visit);
         }
 
         for (const element of node.name.elements) {
           if (element.dotDotDotToken) {
-            markEscaped(tracked.trackedObject, tracked.prefix, "object rest pattern escapes remaining properties");
+            markEscaped(
+              resolved.binding.trackedObject,
+              [...resolved.binding.prefix, ...resolved.segments],
+              "object-rest",
+              "object rest pattern escapes remaining properties",
+            );
             continue;
           }
 
           const keyNode = element.propertyName ?? element.name;
           if (ts.isIdentifier(keyNode) || ts.isStringLiteral(keyNode) || ts.isNumericLiteral(keyNode)) {
-            markRead(tracked.trackedObject, [...tracked.prefix, keyNode.text]);
+            markRead(resolved.binding.trackedObject, [...resolved.binding.prefix, ...resolved.segments, keyNode.text]);
           }
         }
       }
@@ -1630,13 +2035,7 @@ function analyzeObjectPaths(
     for (const [joinedPath, objectNode] of tracked.nodes) {
       const escapedReason = getEscapedReason(tracked, objectNode.fullPath);
       if (escapedReason) {
-        state.skipped.push({
-          id: objectNode.entity.id,
-          kind: objectNode.entity.kind,
-          name: objectNode.entity.name,
-          reason: escapedReason,
-          location: objectNode.entity.location,
-        });
+        addSkipped(state, objectNode.entity, escapedReason.category, escapedReason.reason);
         continue;
       }
 
@@ -1669,9 +2068,10 @@ export async function analyzeProject(cliOptions: CliOptions): Promise<AnalysisRe
   const graph = buildModuleGraph(project);
   const entrypointDiscovery = discoverEntrypoints(project);
   const reachableFiles = computeReachableFiles(entrypointDiscovery.entrypoints, graph);
-  const publicSurfaceIds = collectPublicSurfaceIds(project, entrypointDiscovery.entrypoints);
+  const publicSurfaceIds = collectPublicSurfaceIds(project, entrypointDiscovery.publicSurfaceEntrypoints);
   const caches: ReferenceCaches = {
     hasReference: new Map(),
+    exportReferences: new Map(),
     usage: new Map(),
   };
 

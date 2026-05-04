@@ -30,6 +30,20 @@ export type EntityKind =
 
 export type ReportFormat = "json" | "text";
 
+export type SkipCategory =
+  | "decorator-visibility"
+  | "computed-member-name"
+  | "computed-property-name"
+  | "computed-property-access"
+  | "object-spread"
+  | "array-spread"
+  | "returned-object"
+  | "reflective-enumeration"
+  | "serialization"
+  | "opaque-object-call"
+  | "spread-escape"
+  | "object-rest";
+
 interface KeepRules {
   files?: string[];
   symbols?: string[];
@@ -93,6 +107,7 @@ export interface AuditRecord {
   kind: EntityKind;
   name: string;
   reason: string;
+  category?: SkipCategory;
   location?: Location;
 }
 
@@ -178,13 +193,18 @@ interface ObjectNode {
   fullPath: string[];
 }
 
+export interface EscapedPathRecord {
+  category: SkipCategory;
+  reason: string;
+}
+
 export interface TrackedObject {
   id: string;
   rootName: string;
   sourceFile: string;
   rootEntity: EntityRecord;
   nodes: Map<string, ObjectNode>;
-  escapedPaths: Map<string, string>;
+  escapedPaths: Map<string, EscapedPathRecord>;
   reads: Set<string>;
   writes: Set<string>;
 }

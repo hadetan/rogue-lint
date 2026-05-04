@@ -35,6 +35,7 @@ function parseCliOptions(argv: string[]): CliOptions {
   };
 }
 
+// dead-lint-ignore-next
 export async function runCli(
   argv: string[],
   io: {

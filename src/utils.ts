@@ -124,9 +124,11 @@ export function isReadLikeUse(node: ts.Node): boolean {
   }
 
   if (
-    ts.isPrefixUnaryExpression(parent) ||
-    ts.isPostfixUnaryExpression(parent) ||
-    ts.isDeleteExpression(parent)
+    (ts.isPrefixUnaryExpression(parent)
+      && (parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken))
+    || (ts.isPostfixUnaryExpression(parent)
+      && (parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken))
+    || ts.isDeleteExpression(parent)
   ) {
     return false;
   }

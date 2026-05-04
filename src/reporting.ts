@@ -6,20 +6,24 @@ function formatFinding(finding: FindingRecord): string {
 
 function formatAudit(record: AuditRecord): string {
   if (!record.location) {
-    return `${record.kind.padEnd(20)} ${record.name}`;
+    return `${record.kind.padEnd(20)} ${record.name} - ${record.reason}`;
   }
 
-  return `${record.kind.padEnd(20)} ${record.location.file}:${record.location.line}:${record.location.column} ${record.name}`;
+  return `${record.kind.padEnd(20)} ${record.location.file}:${record.location.line}:${record.location.column} ${record.name} - ${record.reason}`;
 }
 
-function groupByKindAndFile<T extends { kind: string; location?: { file: string } }>(
+function getRecordFile(record: { location?: { file: string }; entity?: { location: { file: string } } }): string {
+  return record.location?.file ?? record.entity?.location.file ?? "(unknown)";
+}
+
+function groupByKindAndFile<T extends { kind: string; location?: { file: string }; entity?: { location: { file: string } } }>(
   records: T[],
 ): Array<[string, Map<string, T[]>]> {
   const grouped = new Map<string, Map<string, T[]>>();
 
   for (const record of records) {
     const byFile = grouped.get(record.kind) ?? new Map<string, T[]>();
-    const file = record.location?.file ?? "(unknown)";
+    const file = getRecordFile(record);
     const entries = byFile.get(file) ?? [];
     entries.push(record);
     byFile.set(file, entries);
@@ -29,7 +33,7 @@ function groupByKindAndFile<T extends { kind: string; location?: { file: string 
   return [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right));
 }
 
-function renderGroupedSection<T extends { kind: string; location?: { file: string } }>(
+function renderGroupedSection<T extends { kind: string; location?: { file: string }; entity?: { location: { file: string } } }>(
   title: string,
   records: T[],
   formatRecord: (record: T) => string,
@@ -70,6 +74,7 @@ export function renderResult(result: AnalysisResult, format: ReportFormat): stri
   ];
 
   lines.push(...renderGroupedSection("Findings", result.findings, formatFinding));
+  lines.push(...renderGroupedSection("Kept", result.kept, formatAudit));
   lines.push(...renderGroupedSection("Skipped", result.skipped, formatAudit));
 
   if (result.diagnostics.length > 0) {

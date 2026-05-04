@@ -186,6 +186,7 @@ function collectHiddenRoots(project: ProjectContext): {
 
 export function discoverEntrypoints(project: ProjectContext): {
   entrypoints: string[];
+  publicSurfaceEntrypoints: string[];
   diagnostics: DiagnosticRecord[];
 } {
   const diagnostics: DiagnosticRecord[] = [];
@@ -198,21 +199,26 @@ export function discoverEntrypoints(project: ProjectContext): {
   if (configured.length > 0) {
     return {
       entrypoints: [...new Set([...configured, ...hiddenRoots.roots])],
+      publicSurfaceEntrypoints: [...new Set(configured)],
       diagnostics,
     };
   }
 
   const roots = new Set<string>();
+  const publicSurfaceRoots = new Set<string>();
   const packageJson = project.packageJson ?? {};
 
-  const addIfPresent = (value: unknown): void => {
+  const addIfPresent = (value: unknown, options: { publicSurface?: boolean } = {}): void => {
     const resolved = resolveEntrypoint(project, value);
     if (resolved) {
       roots.add(resolved);
+      if (options.publicSurface) {
+        publicSurfaceRoots.add(resolved);
+      }
     }
   };
 
-  addIfPresent(packageJson.main);
+  addIfPresent(packageJson.main, { publicSurface: true });
 
   if (typeof packageJson.bin === "string") {
     addIfPresent(packageJson.bin);
@@ -225,7 +231,7 @@ export function discoverEntrypoints(project: ProjectContext): {
   if (packageJson.exports && typeof packageJson.exports === "object") {
     const walk = (value: unknown): void => {
       if (typeof value === "string") {
-        addIfPresent(value);
+        addIfPresent(value, { publicSurface: true });
         return;
       }
 
@@ -242,6 +248,7 @@ export function discoverEntrypoints(project: ProjectContext): {
   if (roots.size > 0) {
     return {
       entrypoints: [...new Set([...roots, ...hiddenRoots.roots])],
+      publicSurfaceEntrypoints: [...publicSurfaceRoots],
       diagnostics,
     };
   }
@@ -253,6 +260,7 @@ export function discoverEntrypoints(project: ProjectContext): {
   if (defaults.length > 0) {
     return {
       entrypoints: [...new Set([...defaults, ...hiddenRoots.roots])],
+      publicSurfaceEntrypoints: defaults,
       diagnostics,
     };
   }
@@ -262,6 +270,7 @@ export function discoverEntrypoints(project: ProjectContext): {
       project.sourceFiles.length > 0
         ? [...new Set([project.sourceFiles[0]!.fileName, ...hiddenRoots.roots])]
         : hiddenRoots.roots,
+    publicSurfaceEntrypoints: project.sourceFiles.length > 0 ? [project.sourceFiles[0]!.fileName] : [],
     diagnostics,
   };
 }

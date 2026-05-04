@@ -20,27 +20,42 @@ function isAllowedReference(reference: ts.ReferenceEntry, allowedFiles?: Set<str
   return !allowedFiles || allowedFiles.has(reference.fileName);
 }
 
-function countNonDeclarationReferences(
+export function summarizeNonDeclarationReferences(
   languageService: ts.LanguageService,
   sourceFile: ts.SourceFile,
   node: ts.Node,
   allowedFiles?: Set<string>,
-): number {
+): {
+  references: number;
+  sameFileReferences: number;
+  crossFileReferences: number;
+} {
   const references = languageService.findReferences(sourceFile.fileName, node.getStart(sourceFile)) ?? [];
-  let count = 0;
+  const summary = {
+    references: 0,
+    sameFileReferences: 0,
+    crossFileReferences: 0,
+  };
 
   for (const group of references) {
     for (const reference of group.references) {
       if (!isAllowedReference(reference, allowedFiles)) {
         continue;
       }
-      if (reference.fileName !== sourceFile.fileName || !isDeclarationReference(reference, node.getStart(sourceFile))) {
-        count += 1;
+      if (reference.fileName === sourceFile.fileName && isDeclarationReference(reference, node.getStart(sourceFile))) {
+        continue;
+      }
+
+      summary.references += 1;
+      if (reference.fileName === sourceFile.fileName) {
+        summary.sameFileReferences += 1;
+      } else {
+        summary.crossFileReferences += 1;
       }
     }
   }
 
-  return count;
+  return summary;
 }
 
 export function hasNonDeclarationReferences(
@@ -49,7 +64,7 @@ export function hasNonDeclarationReferences(
   node: ts.Node,
   allowedFiles?: Set<string>,
 ): boolean {
-  return countNonDeclarationReferences(languageService, sourceFile, node, allowedFiles) > 0;
+  return summarizeNonDeclarationReferences(languageService, sourceFile, node, allowedFiles).references > 0;
 }
 
 interface ReferenceUsageSummary {
