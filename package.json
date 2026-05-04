@@ -20,9 +20,13 @@
     "lint:fix": "npm run lint -- --fix",
     "test": "vitest run",
     "test:watch": "vitest",
+    "self:validate": "npm run build && node dist/cli.js . --mode library --depth surface",
+    "self:validate:json": "npm run build && node dist/cli.js . --mode library --depth surface --json",
+    "self:validate:deep": "npm run build && node dist/cli.js . --mode library",
+    "self:validate:deep:json": "npm run build && node dist/cli.js . --mode library --json",
     "check": "npm run lint && npm run build && npm test",
     "pack:check": "npm pack --dry-run",
-    "release:check": "npm run check && npm run pack:check"
+    "release:check": "npm run check && npm run self:validate:deep && npm run pack:check"
   },
   "engines": {
     "node": ">=20.0.0"

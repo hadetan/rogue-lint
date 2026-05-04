@@ -233,4 +233,21 @@ describe("dead-lint analyzer", () => {
     expect(kindsAndNames).not.toContain("unused-nested-path:forwarded.keep");
     expect(result.skipped.some((entry) => entry.name === "escaped" && entry.reason.includes("Object.keys"))).toBe(true);
   });
+
+  it("treats external imports as boundaries and preserves structural whole-object usage", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("self-host-hardening-basic"),
+      format: "json",
+    });
+
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("node:path"))).toBe(false);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("minimatch"))).toBe(false);
+    expect(result.diagnostics.some((diagnostic) => diagnostic.message.includes("./missing.js"))).toBe(true);
+    expect(
+      result.findings.some((finding) =>
+        ["dead-store", "unused-value", "unused-object-key", "unused-nested-path"].includes(finding.kind),
+      ),
+    ).toBe(false);
+  });
 });

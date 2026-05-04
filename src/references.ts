@@ -20,7 +20,7 @@ function isAllowedReference(reference: ts.ReferenceEntry, allowedFiles?: Set<str
   return !allowedFiles || allowedFiles.has(reference.fileName);
 }
 
-export function countNonDeclarationReferences(
+function countNonDeclarationReferences(
   languageService: ts.LanguageService,
   sourceFile: ts.SourceFile,
   node: ts.Node,
@@ -52,7 +52,7 @@ export function hasNonDeclarationReferences(
   return countNonDeclarationReferences(languageService, sourceFile, node, allowedFiles) > 0;
 }
 
-export interface ReferenceUsageSummary {
+interface ReferenceUsageSummary {
   references: number;
   reads: number;
   writes: number;

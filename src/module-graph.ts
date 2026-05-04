@@ -1,3 +1,4 @@
+import { builtinModules } from "node:module";
 import path from "node:path";
 
 import ts from "typescript";
@@ -6,12 +7,24 @@ import type { DiagnosticRecord, ModuleEdge, ModuleGraph, ProjectContext } from "
 import { matchesPatterns, normalizeSlashes, toRelative } from "./utils.js";
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+const BUILTIN_MODULES = new Set(
+  builtinModules.flatMap((name) => (name.startsWith("node:") ? [name, name.slice(5)] : [name, `node:${name}`])),
+);
+
+type ModuleResolutionResult =
+  | { kind: "internal"; fileName: string }
+  | { kind: "external" }
+  | { kind: "unresolved" };
 
 function resolveModule(
   fromFile: string,
   specifier: string,
   project: ProjectContext,
-): string | undefined {
+): ModuleResolutionResult {
+  if (BUILTIN_MODULES.has(specifier)) {
+    return { kind: "external" };
+  }
+
   const resolved = ts.resolveModuleName(
     specifier,
     fromFile,
@@ -20,19 +33,23 @@ function resolveModule(
   ).resolvedModule;
 
   if (!resolved?.resolvedFileName) {
-    return undefined;
+    return { kind: "unresolved" };
   }
 
   const fileName = resolved.resolvedFileName;
-  if (fileName.endsWith(".d.ts")) {
-    return undefined;
+  if (
+    resolved.isExternalLibraryImport
+    || fileName.endsWith(".d.ts")
+    || fileName.includes(`${path.sep}node_modules${path.sep}`)
+  ) {
+    return { kind: "external" };
   }
 
   if (!fileName.startsWith(project.rootPath)) {
-    return undefined;
+    return { kind: "external" };
   }
 
-  return path.normalize(fileName);
+  return { kind: "internal", fileName: path.normalize(fileName) };
 }
 
 export function buildModuleGraph(project: ProjectContext): ModuleGraph {
@@ -46,15 +63,15 @@ export function buildModuleGraph(project: ProjectContext): ModuleGraph {
         node.moduleSpecifier &&
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
-        const target = resolveModule(sourceFile.fileName, node.moduleSpecifier.text, project);
-        if (target) {
+        const resolution = resolveModule(sourceFile.fileName, node.moduleSpecifier.text, project);
+        if (resolution.kind === "internal") {
           edges.push({
             from: sourceFile.fileName,
-            to: target,
+            to: resolution.fileName,
             specifier: node.moduleSpecifier.text,
             dynamic: false,
           });
-        } else {
+        } else if (resolution.kind === "unresolved") {
           unresolved.push({
             kind: "project-warning",
             message: `Could not resolve module '${node.moduleSpecifier.text}' from ${sourceFile.fileName}`,
@@ -69,15 +86,15 @@ export function buildModuleGraph(project: ProjectContext): ModuleGraph {
         node.arguments.length === 1 &&
         ts.isStringLiteral(node.arguments[0])
       ) {
-        const target = resolveModule(sourceFile.fileName, node.arguments[0].text, project);
-        if (target) {
+        const resolution = resolveModule(sourceFile.fileName, node.arguments[0].text, project);
+        if (resolution.kind === "internal") {
           edges.push({
             from: sourceFile.fileName,
-            to: target,
+            to: resolution.fileName,
             specifier: node.arguments[0].text,
             dynamic: true,
           });
-        } else {
+        } else if (resolution.kind === "unresolved") {
           unresolved.push({
             kind: "project-warning",
             message: `Could not resolve dynamic import '${node.arguments[0].text}' from ${sourceFile.fileName}`,

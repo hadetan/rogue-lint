@@ -13,7 +13,7 @@ export function toRelative(rootPath: string, absolutePath: string): string {
   return normalizeSlashes(relative || ".");
 }
 
-export function createEntityId(
+function createEntityId(
   kind: EntityKind,
   file: string,
   position: number,
@@ -22,7 +22,7 @@ export function createEntityId(
   return `${kind}:${normalizeSlashes(file)}:${position}:${name}`;
 }
 
-export function toLocation(
+function toLocation(
   rootPath: string,
   sourceFile: ts.SourceFile,
   position: number,

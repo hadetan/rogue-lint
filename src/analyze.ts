@@ -57,8 +57,10 @@ interface ValueAccess {
   entity: EntityRecord;
   position: number;
   kind: ValueAccessKind;
-  declarationWrite: boolean;
   nestedWrite: boolean;
+  controlFlowDepth: number;
+  functionDepth: number;
+  flowSignature: string;
   escapeReason?: string;
 }
 
@@ -97,6 +99,139 @@ function getFunctionDepth(node: ts.Node): number {
   }
   return depth;
 }
+
+function getControlFlowDepth(node: ts.Node): number {
+  let depth = 0;
+  let current: ts.Node | undefined = node;
+  while (current) {
+    if (
+      ts.isIfStatement(current)
+      || ts.isConditionalExpression(current)
+      || ts.isSwitchStatement(current)
+      || ts.isCaseClause(current)
+      || ts.isDefaultClause(current)
+      || ts.isTryStatement(current)
+      || ts.isCatchClause(current)
+      || ts.isForStatement(current)
+      || ts.isForInStatement(current)
+      || ts.isForOfStatement(current)
+      || ts.isWhileStatement(current)
+      || ts.isDoStatement(current)
+    ) {
+      depth += 1;
+    }
+    current = current.parent;
+  }
+  return depth;
+}
+
+function isWithinNode(node: ts.Node, container: ts.Node): boolean {
+  return node.getStart() >= container.getStart() && node.getEnd() <= container.getEnd();
+}
+
+function getControlFlowSignature(node: ts.Node): string {
+  const parts: string[] = [];
+  let current: ts.Node | undefined = node.parent;
+
+  while (current) {
+    if (ts.isIfStatement(current)) {
+      const branch = isWithinNode(node, current.thenStatement)
+        ? "then"
+        : current.elseStatement && isWithinNode(node, current.elseStatement)
+          ? "else"
+          : "condition";
+      parts.push(`if:${current.getStart()}:${branch}`);
+    } else if (ts.isConditionalExpression(current)) {
+      const branch = isWithinNode(node, current.whenTrue)
+        ? "when-true"
+        : isWithinNode(node, current.whenFalse)
+          ? "when-false"
+          : "condition";
+      parts.push(`conditional:${current.getStart()}:${branch}`);
+    } else if (ts.isTryStatement(current)) {
+      const branch = isWithinNode(node, current.tryBlock)
+        ? "try"
+        : current.catchClause && isWithinNode(node, current.catchClause)
+          ? "catch"
+          : current.finallyBlock && isWithinNode(node, current.finallyBlock)
+            ? "finally"
+            : "body";
+      parts.push(`try:${current.getStart()}:${branch}`);
+    } else if (ts.isForStatement(current)) {
+      const branch = isWithinNode(node, current.statement)
+        ? "body"
+        : current.initializer && isWithinNode(node, current.initializer)
+          ? "initializer"
+          : current.condition && isWithinNode(node, current.condition)
+            ? "condition"
+            : current.incrementor && isWithinNode(node, current.incrementor)
+              ? "incrementor"
+              : "body";
+      parts.push(`for:${current.getStart()}:${branch}`);
+    } else if (ts.isForInStatement(current) || ts.isForOfStatement(current)) {
+      const branch = isWithinNode(node, current.statement)
+        ? "body"
+        : isWithinNode(node, current.initializer)
+          ? "initializer"
+          : "expression";
+      parts.push(`loop:${current.getStart()}:${branch}`);
+    } else if (ts.isWhileStatement(current) || ts.isDoStatement(current)) {
+      const statement = ts.isWhileStatement(current) ? current.statement : current.statement;
+      const branch = isWithinNode(node, statement) ? "body" : "condition";
+      parts.push(`loop:${current.getStart()}:${branch}`);
+    } else if (ts.isCaseClause(current) || ts.isDefaultClause(current)) {
+      parts.push(`case:${current.getStart()}`);
+    }
+
+    current = current.parent;
+  }
+
+  return parts.reverse().join("|");
+}
+
+const ASSIGNMENT_OPERATORS = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.EqualsToken,
+  ts.SyntaxKind.PlusEqualsToken,
+  ts.SyntaxKind.MinusEqualsToken,
+  ts.SyntaxKind.AsteriskEqualsToken,
+  ts.SyntaxKind.AsteriskAsteriskEqualsToken,
+  ts.SyntaxKind.SlashEqualsToken,
+  ts.SyntaxKind.PercentEqualsToken,
+  ts.SyntaxKind.LessThanLessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+  ts.SyntaxKind.AmpersandEqualsToken,
+  ts.SyntaxKind.BarEqualsToken,
+  ts.SyntaxKind.CaretEqualsToken,
+  ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
+
+const WHOLE_ARRAY_CONSUMPTION_METHODS = new Set([
+  "every",
+  "entries",
+  "filter",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "flatMap",
+  "forEach",
+  "includes",
+  "indexOf",
+  "join",
+  "keys",
+  "lastIndexOf",
+  "map",
+  "pop",
+  "reduce",
+  "reduceRight",
+  "shift",
+  "slice",
+  "some",
+  "values",
+]);
 
 function addFinding(
   state: AnalysisState,
@@ -632,14 +767,8 @@ function isTrackablePureExpression(expression: ts.Expression): boolean {
   }
 
   if (ts.isBinaryExpression(expression)) {
-    const disallowedOperators = new Set<ts.SyntaxKind>([
-      ts.SyntaxKind.EqualsToken,
-      ts.SyntaxKind.BarBarEqualsToken,
-      ts.SyntaxKind.AmpersandAmpersandEqualsToken,
-      ts.SyntaxKind.QuestionQuestionEqualsToken,
-      ts.SyntaxKind.CommaToken,
-    ]);
-    return !disallowedOperators.has(expression.operatorToken.kind)
+    return expression.operatorToken.kind !== ts.SyntaxKind.CommaToken
+      && !ASSIGNMENT_OPERATORS.has(expression.operatorToken.kind)
       && isTrackablePureExpression(expression.left)
       && isTrackablePureExpression(expression.right);
   }
@@ -723,13 +852,18 @@ function analyzeValueLiveness(
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && !isExportedVariableDeclaration(node)) {
         trackBinding(node.name);
         const symbol = project.checker.getSymbolAtLocation(node.name);
+        const functionDepth = getFunctionDepth(node);
+        const controlFlowDepth = getControlFlowDepth(node);
+        const flowSignature = getControlFlowSignature(node);
         if (symbol && node.initializer) {
           pushAccess(getSymbolKey(symbol), {
             entity: makeEntity(project.rootPath, "assignment", sourceFile, node.name, node.name.text),
             position: node.name.getStart(sourceFile),
             kind: "write",
-            declarationWrite: true,
             nestedWrite: false,
+            controlFlowDepth,
+            functionDepth,
+            flowSignature,
           });
         }
       }
@@ -742,12 +876,16 @@ function analyzeValueLiveness(
         const symbol = project.checker.getSymbolAtLocation(node.left);
         const tracked = symbol ? trackedBindings.get(getSymbolKey(symbol)) : undefined;
         if (symbol && tracked) {
+          const functionDepth = getFunctionDepth(node);
+          const flowSignature = getControlFlowSignature(node);
           pushAccess(getSymbolKey(symbol), {
             entity: makeEntity(project.rootPath, "assignment", sourceFile, node.left, tracked.name),
             position: node.left.getStart(sourceFile),
             kind: node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? "write" : "read-write",
-            declarationWrite: false,
-            nestedWrite: getFunctionDepth(node) > tracked.declarationDepth,
+            nestedWrite: functionDepth > tracked.declarationDepth,
+            controlFlowDepth: getControlFlowDepth(node),
+            functionDepth,
+            flowSignature,
           });
         }
       }
@@ -760,12 +898,16 @@ function analyzeValueLiveness(
           && tracked
           && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)
         ) {
+          const functionDepth = getFunctionDepth(node);
+          const flowSignature = getControlFlowSignature(node);
           pushAccess(getSymbolKey(symbol), {
             entity: makeEntity(project.rootPath, "assignment", sourceFile, node.operand, tracked.name),
             position: node.operand.getStart(sourceFile),
             kind: "read-write",
-            declarationWrite: false,
-            nestedWrite: getFunctionDepth(node) > tracked.declarationDepth,
+            nestedWrite: functionDepth > tracked.declarationDepth,
+            controlFlowDepth: getControlFlowDepth(node),
+            functionDepth,
+            flowSignature,
           });
         }
       }
@@ -814,8 +956,10 @@ function analyzeValueLiveness(
             entity: makeEntity(project.rootPath, "assignment", sourceFile, tracked.declaration, tracked.name),
             position: node.getStart(sourceFile),
             kind: "escape",
-            declarationWrite: false,
             nestedWrite: false,
+            controlFlowDepth: getControlFlowDepth(node),
+            functionDepth: getFunctionDepth(node),
+            flowSignature: getControlFlowSignature(node),
             escapeReason,
           });
           return ts.forEachChild(node, visit);
@@ -826,8 +970,10 @@ function analyzeValueLiveness(
             entity: makeEntity(project.rootPath, "assignment", sourceFile, tracked.declaration, tracked.name),
             position: node.getStart(sourceFile),
             kind: "read",
-            declarationWrite: false,
             nestedWrite: false,
+            controlFlowDepth: getControlFlowDepth(node),
+            functionDepth: getFunctionDepth(node),
+            flowSignature: getControlFlowSignature(node),
           });
         }
       }
@@ -846,14 +992,24 @@ function analyzeValueLiveness(
       const ordered = symbolAccesses.sort((left, right) => left.position - right.position);
       let pendingWrite: ValueAccess | undefined;
       let hasAnyRead = false;
+      const canProveOverwrite = (current: ValueAccess, next: ValueAccess): boolean =>
+        current.functionDepth === next.functionDepth && current.flowSignature === next.flowSignature;
 
       for (const access of ordered) {
-        if (access.kind === "read" || access.kind === "read-write") {
+        if (access.kind === "read") {
           hasAnyRead = true;
+          pendingWrite = undefined;
+          continue;
         }
 
-        if (access.kind === "write" || access.kind === "read-write") {
-          if (pendingWrite) {
+        if (access.kind === "read-write") {
+          hasAnyRead = true;
+          pendingWrite = access;
+          continue;
+        }
+
+        if (access.kind === "write") {
+          if (pendingWrite && canProveOverwrite(pendingWrite, access)) {
             const suppression = getSuppressionAudit(
               project,
               suppressionContext,
@@ -870,16 +1026,8 @@ function analyzeValueLiveness(
               );
             }
           }
-          pendingWrite = access;
-          if (access.kind === "read-write") {
-            hasAnyRead = true;
-            pendingWrite = undefined;
-          }
-          continue;
-        }
 
-        if (access.kind === "read") {
-          pendingWrite = undefined;
+          pendingWrite = access;
           continue;
         }
 
@@ -1048,6 +1196,19 @@ function markRead(trackedObject: TrackedObject, segments: string[]): void {
   }
 }
 
+function markObservedSubtree(trackedObject: TrackedObject, segments: string[]): void {
+  const joinedPrefix = segments.join(".");
+  if (joinedPrefix) {
+    trackedObject.reads.add(joinedPrefix);
+  }
+
+  for (const joinedPath of trackedObject.nodes.keys()) {
+    if (!joinedPrefix || joinedPath === joinedPrefix || joinedPath.startsWith(`${joinedPrefix}.`)) {
+      trackedObject.reads.add(joinedPath);
+    }
+  }
+}
+
 function markWrite(trackedObject: TrackedObject, segments: string[]): void {
   trackedObject.writes.add(segments.join("."));
 }
@@ -1128,6 +1289,43 @@ function isAssignmentLeft(node: ts.Node): boolean {
   return ts.isBinaryExpression(node.parent) && node.parent.left === node && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
 }
 
+function isTrackableObjectValue(node: ts.Expression): boolean {
+  if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
+    return isTrackableObjectStructure(node);
+  }
+
+  return (
+    ts.isIdentifier(node)
+    || ts.isNumericLiteral(node)
+    || ts.isStringLiteral(node)
+    || ts.isNoSubstitutionTemplateLiteral(node)
+    || node.kind === ts.SyntaxKind.TrueKeyword
+    || node.kind === ts.SyntaxKind.FalseKeyword
+    || node.kind === ts.SyntaxKind.NullKeyword
+    || node.kind === ts.SyntaxKind.BigIntLiteral
+  );
+}
+
+function isTrackableObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression): boolean {
+  if (ts.isObjectLiteralExpression(node)) {
+    return node.properties.every((property) => {
+      if (ts.isSpreadAssignment(property)) {
+        return false;
+      }
+
+      if (ts.isShorthandPropertyAssignment(property)) {
+        return true;
+      }
+
+      return ts.isPropertyAssignment(property) && isTrackableObjectValue(property.initializer);
+    });
+  }
+
+  return node.elements.every(
+    (element) => !ts.isSpreadElement(element) && isTrackableObjectValue(element as ts.Expression),
+  );
+}
+
 function buildTrackedObjects(
   project: ProjectContext,
   reachableFiles: Set<string>,
@@ -1146,7 +1344,10 @@ function buildTrackedObjects(
           return;
         }
 
-        if (ts.isObjectLiteralExpression(node.initializer) || ts.isArrayLiteralExpression(node.initializer)) {
+        if (
+          (ts.isObjectLiteralExpression(node.initializer) || ts.isArrayLiteralExpression(node.initializer))
+          && isTrackableObjectStructure(node.initializer)
+        ) {
           const rootEntity = makeEntity(project.rootPath, "local", sourceFile, node.name, node.name.text);
           const trackedObject: TrackedObject = {
             id: rootEntity.id,
@@ -1264,6 +1465,19 @@ function analyzeObjectPaths(
       }
 
       if (ts.isCallExpression(node)) {
+        const calleeAccessPath = getAccessPath(node.expression);
+        if (calleeAccessPath && !calleeAccessPath.dynamic && calleeAccessPath.segments.length > 0) {
+          const methodName = calleeAccessPath.segments.at(-1);
+          const symbol = project.checker.getSymbolAtLocation(calleeAccessPath.root);
+          const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
+          if (tracked && methodName && WHOLE_ARRAY_CONSUMPTION_METHODS.has(methodName)) {
+            markObservedSubtree(
+              tracked.trackedObject,
+              [...tracked.prefix, ...calleeAccessPath.segments.slice(0, -1)],
+            );
+          }
+        }
+
         const calleeText = node.expression.getText(sourceFile);
         const forwardedIndices = new Set(
           getForwardedParameterBindings(project, node, trackedBySymbolId).map((forwarded) => forwarded.index),
@@ -1311,12 +1525,41 @@ function analyzeObjectPaths(
         }
       }
 
+      if (ts.isForOfStatement(node)) {
+        const accessPath = getAccessPath(node.expression);
+        if (accessPath && !accessPath.dynamic) {
+          const symbol = project.checker.getSymbolAtLocation(accessPath.root);
+          const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
+          if (tracked) {
+            markObservedSubtree(tracked.trackedObject, [...tracked.prefix, ...accessPath.segments]);
+          }
+        }
+      }
+
+      if (ts.isSpreadAssignment(node)) {
+        const accessPath = getAccessPath(node.expression);
+        if (accessPath && !accessPath.dynamic) {
+          const symbol = project.checker.getSymbolAtLocation(accessPath.root);
+          const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
+          if (tracked) {
+            markObservedSubtree(tracked.trackedObject, [...tracked.prefix, ...accessPath.segments]);
+          }
+        }
+      }
+
       if (ts.isSpreadElement(node)) {
         const root = getRootIdentifier(node.expression);
         const symbol = root ? project.checker.getSymbolAtLocation(root) : undefined;
         const tracked = symbol ? trackedBySymbolId.get(getSymbolKey(symbol)) : undefined;
         if (tracked) {
-          markEscaped(tracked.trackedObject, tracked.prefix, "spread element escapes exact local analysis");
+          if (ts.isArrayLiteralExpression(node.parent)) {
+            const accessPath = getAccessPath(node.expression);
+            if (accessPath && !accessPath.dynamic) {
+              markObservedSubtree(tracked.trackedObject, [...tracked.prefix, ...accessPath.segments]);
+            }
+          } else {
+            markEscaped(tracked.trackedObject, tracked.prefix, "spread element escapes exact local analysis");
+          }
         }
       }
 

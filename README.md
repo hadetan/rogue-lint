@@ -186,8 +186,24 @@ An agent can then:
 npm run lint
 npm run build
 npm test
+npm run self:validate
 npm run check
 ```
+
+### Self-validation
+
+Run the package against its own repository:
+
+```bash
+npm run self:validate
+npm run self:validate:json
+npm run self:validate:deep
+npm run self:validate:deep:json
+```
+
+The default self-validation commands run in `library` mode with `--depth surface`, which is the most practical package-level validation for this repository.
+
+Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository with conservative skips but without the earlier builtin-resolution noise and broad false-positive finding sets.
 
 ## Release checks
 
@@ -201,4 +217,5 @@ That sequence verifies:
 
 1. TypeScript build succeeds
 2. tests pass
-3. `npm pack --dry-run` succeeds and the package contents are publishable
+3. deep self-validation succeeds on the package's own source
+4. `npm pack --dry-run` succeeds and the package contents are publishable

@@ -30,7 +30,7 @@ export type EntityKind =
 
 export type ReportFormat = "json" | "text";
 
-export interface KeepRules {
+interface KeepRules {
   files?: string[];
   symbols?: string[];
   members?: string[];
@@ -102,7 +102,7 @@ export interface DiagnosticRecord {
   file?: string;
 }
 
-export interface SummaryRecord {
+interface SummaryRecord {
   filesAnalyzed: number;
   reachableFiles: number;
   findings: number;
@@ -173,7 +173,7 @@ export interface ProjectContext {
   fileNames: string[];
 }
 
-export interface ObjectNode {
+interface ObjectNode {
   entity: EntityRecord;
   fullPath: string[];
 }
