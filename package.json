@@ -1,11 +1,38 @@
 {
   "name": "dead-lint",
   "version": "0.0.1",
-  "description": "A package to find out which file, value, nested value, types are sitting dead on the code.",
-  "main": "index.js",
+  "description": "Whole-project dead code analysis for JavaScript and TypeScript with agent-friendly output.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "dead-lint": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run build && npm test",
+    "pack:check": "npm pack --dry-run",
+    "release:check": "npm run build && npm test && npm run pack:check"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "author": "hadetan",
-  "license": "ISC"
+  "license": "ISC",
+  "dependencies": {
+    "minimatch": "^10.0.1",
+    "typescript": "^5.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "vitest": "^3.1.3"
+  }
 }
