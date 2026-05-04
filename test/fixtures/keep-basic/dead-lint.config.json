@@ -1,0 +1,9 @@
+{
+  "mode": "application",
+  "entrypoints": ["src/index.ts"],
+  "keep": {
+    "files": ["src/ignored.ts"],
+    "symbols": ["keptExport"],
+    "members": ["Example.preservedMethod"]
+  }
+}
