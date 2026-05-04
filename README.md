@@ -9,13 +9,15 @@ Whole-project dead code analysis for JavaScript and TypeScript with agent-friend
 The current implementation covers:
 
 - unreachable files
-- unused exports
-- unused exported types
+- unused exports, including exports whose only references stay inside their declaring file
+- unused exported types, including exported types whose only references stay inside their declaring file
 - unused enum members
 - unused locals reported by TypeScript semantic analysis
 - dead stores for overwritten local assignments in the supported value-flow subset
 - unused side-effect-neutral expression results
 - write-only outer-scope writes in the supported closure subset
+- meaningful call-boundary reads for ordinary external calls and supported local helper usage
+- analyzable returned-object propagation across supported same-project helper boundaries
 - unused class members with exact declaration/reference tracking
 - unused internal interface members when references remain unambiguous
 - unused object keys and nested object paths inside analyzable local object graphs
@@ -91,7 +93,9 @@ Create `dead-lint.config.json` in the target project:
 ### Modes
 
 - `application`: use configured entrypoints as roots and treat the project as a closed world unless code escapes explicitly
-- `library`: preserve configured public entrypoints and externally visible declarations as live surface
+- `library`: preserve otherwise-unused declarations that belong to the public package surface or are explicitly marked externally visible
+
+In `library` mode, configured `entrypoints` define the public surface directly. When entrypoints are inferred from `package.json`, importable package roots such as `exports` and `main` define the public surface, while `bin` entrypoints are still treated as reachable roots without making their named exports part of the library API.
 
 ### Analysis depth
 
@@ -108,6 +112,11 @@ const ignoredLocal = 1;
 
 // dead-lint-externally-visible
 export const publicFutureApi = 1;
+
+// dead-lint-ignore-next
+export function localHelperExposedForNow() {
+  return 1;
+}
 
 /* dead-lint-ignore-start */
 const ignoredA = 1;
@@ -138,7 +147,13 @@ The JSON report includes:
 - skipped entities
 - diagnostics
 
-This lets an agent distinguish removable code from code that was suppressed or skipped because it escaped exact analysis.
+`kept` contains entities that would otherwise be reported, but were preserved by public-surface rules, ignore comments, or explicit keep/external-visibility directives. Already-used code is omitted from `kept`.
+
+For exports and exported types, only references from other files count as real export usage. If an exported declaration is used only inside its own file, `dead-lint` reports it as unused export surface unless a keep, ignore, or external-visibility rule applies.
+
+This lets an agent distinguish removable code from code that was intentionally preserved or skipped because it escaped exact analysis.
+
+The human-readable report also separates `findings`, `kept`, and `skipped`, and prints the keep/skip reasons inline so the withheld boundaries stay visible outside JSON mode.
 
 ## Safe subset and dynamic boundaries
 
@@ -150,7 +165,10 @@ This lets an agent distinguish removable code from code that was suppressed or s
 - direct property access
 - local object literals
 - bounded local helper forwarding of tracked object paths
+- supported same-project helper returns that resolve back to tracked local object bindings
 - simple overwritten local assignments and discarded pure expressions
+- ordinary call-argument consumption at external or built-in call boundaries
+- supported same-project helper calls whose parameter usage remains analyzable
 - no reflective enumeration on analyzed objects
 
 The analyzer intentionally skips or downgrades exact analysis when code crosses dynamic boundaries such as:
@@ -159,10 +177,10 @@ The analyzer intentionally skips or downgrades exact analysis when code crosses 
 - `Object.keys`, `Object.values`, `Object.entries`, `Reflect.ownKeys`
 - `JSON.stringify`
 - opaque external calls that receive a tracked object
-- unsupported value escapes through opaque call boundaries
+- object/path escapes through opaque call boundaries
 - decorators that can expose class members indirectly
 
-Skipped entities are reported so the gaps remain visible.
+Skipped entities are reported with boundary-specific reasons so the gaps remain visible.
 
 ## End-to-end workflow for agents
 
@@ -176,7 +194,7 @@ dead-lint . --json > dead-lint-report.json
 An agent can then:
 
 1. inspect `findings`
-2. ignore `kept`
+2. ignore `kept`, which represents intentionally preserved otherwise-unused entities
 3. avoid auto-removing `skipped`
 4. fail or continue based on the CLI exit code
 
@@ -203,7 +221,7 @@ npm run self:validate:deep:json
 
 The default self-validation commands run in `library` mode with `--depth surface`, which is the most practical package-level validation for this repository.
 
-Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository with conservative skips but without the earlier builtin-resolution noise and broad false-positive finding sets.
+Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository without the earlier builtin-resolution noise, broad false-positive finding sets, or helper-boundary skip noise.
 
 ## Release checks
 
