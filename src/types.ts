@@ -8,6 +8,7 @@ export type FindingKind =
   | "unused-type"
   | "unused-enum-member"
   | "unused-class-member"
+  | "unused-array-element"
   | "unused-object-key"
   | "unused-nested-path"
   | "unused-interface-member"
@@ -22,6 +23,7 @@ export type EntityKind =
   | "type"
   | "enum-member"
   | "class-member"
+  | "array-element"
   | "interface-member"
   | "object-key"
   | "nested-path"
@@ -35,6 +37,10 @@ export type SkipCategory =
   | "computed-member-name"
   | "computed-property-name"
   | "computed-property-access"
+  | "dynamic-array-index"
+  | "array-at-call"
+  | "array-mutation"
+  | "array-callback-escape"
   | "object-spread"
   | "array-spread"
   | "returned-object"
@@ -42,7 +48,8 @@ export type SkipCategory =
   | "serialization"
   | "opaque-object-call"
   | "spread-escape"
-  | "object-rest";
+  | "object-rest"
+  | "array-rest";
 
 interface KeepRules {
   files?: string[];
@@ -190,12 +197,23 @@ export interface ProjectContext {
 
 interface ObjectNode {
   entity: EntityRecord;
-  fullPath: string[];
+  fullPath: PathSegment[];
 }
 
 export interface EscapedPathRecord {
   category: SkipCategory;
   reason: string;
+}
+
+export type PathSegment =
+  | { kind: "property"; value: string }
+  | { kind: "index"; value: number };
+
+export interface TrackedCollectionInfo {
+  kind: "object" | "array";
+  path: PathSegment[];
+  childPaths: PathSegment[][];
+  arrayLength?: number;
 }
 
 export interface TrackedObject {
@@ -204,6 +222,8 @@ export interface TrackedObject {
   sourceFile: string;
   rootEntity: EntityRecord;
   nodes: Map<string, ObjectNode>;
+  descendantNodeKeys: Map<string, string[]>;
+  collections: Map<string, TrackedCollectionInfo>;
   escapedPaths: Map<string, EscapedPathRecord>;
   reads: Set<string>;
   writes: Set<string>;

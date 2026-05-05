@@ -84,6 +84,33 @@ describe("dead-lint analyzer", () => {
     expect(result.kept.some((entry) => entry.name === "IgnoredLocalShape" && entry.reason === "suppressed by dead-lint-ignore-next")).toBe(true);
   });
 
+  it("supports exact and conservative array analysis", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("array-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(result.findings.filter((finding) => finding.kind === "unused-array-element")).toHaveLength(3);
+    expect(kindsAndNames).toContain("unused-array-element:[1]");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].stale");
+    expect(kindsAndNames).toContain("unused-nested-path:[1].stale");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].nested.dead");
+    expect(kindsAndNames).toContain("unused-nested-path:[1].nested.dead");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].items[0].dead");
+    expect(kindsAndNames).toContain("unused-nested-path:[1].items[0].dead");
+    expect(kindsAndNames).not.toContain("unused-nested-path:[0].nested.keep");
+    expect(kindsAndNames).not.toContain("unused-nested-path:[1].items[0].live");
+
+    expect(result.skipped.some((entry) => entry.category === "dynamic-array-index")).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "array-at-call")).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "array-spread")).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "array-mutation")).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "array-rest")).toBe(true);
+  });
+
   it("renders stable summary metadata", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
