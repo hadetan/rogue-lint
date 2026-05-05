@@ -18,9 +18,10 @@ The current implementation covers:
 - write-only outer-scope writes in the supported closure subset
 - meaningful call-boundary reads for ordinary external calls and supported local helper usage
 - analyzable returned-object propagation across supported same-project helper boundaries
+- unused array elements for exact local literal array slots
 - unused class members with exact declaration/reference tracking
 - unused internal interface members when references remain unambiguous
-- unused object keys and nested object paths inside analyzable local object graphs
+- unused object keys and nested object paths inside analyzable local object/array graphs
 - alias-aware nested path tracking with bounded local helper forwarding
 - source/build entrypoint reconciliation for package self-analysis
 - hidden roots, include/exclude file filters, grouped text output, and configurable exit codes
@@ -163,9 +164,12 @@ The human-readable report also separates `findings`, `kept`, and `skipped`, and 
 - explicit hidden roots for convention-driven files
 - static imports/exports
 - direct property access
-- local object literals
+- local object and array literals
+- literal array indices and literal `.at(...)` access
+- positional array destructuring without opaque rest reconstruction
 - bounded local helper forwarding of tracked object paths
 - supported same-project helper returns that resolve back to tracked local object bindings
+- supported `for...of` and supported inline array callback consumers over local analyzable arrays
 - simple overwritten local assignments and discarded pure expressions
 - ordinary call-argument consumption at external or built-in call boundaries
 - supported same-project helper calls whose parameter usage remains analyzable
@@ -174,9 +178,11 @@ The human-readable report also separates `findings`, `kept`, and `skipped`, and 
 The analyzer intentionally skips or downgrades exact analysis when code crosses dynamic boundaries such as:
 
 - unknown computed property access
+- dynamic array indices and non-literal `.at(...)` access
 - `Object.keys`, `Object.values`, `Object.entries`, `Reflect.ownKeys`
 - `JSON.stringify`
 - opaque external calls that receive a tracked object
+- array spreads, unsupported array rest reconstruction, and unsupported mutation-heavy array transforms
 - object/path escapes through opaque call boundaries
 - decorators that can expose class members indirectly
 
@@ -221,7 +227,7 @@ npm run self:validate:deep:json
 
 The default self-validation commands run in `library` mode with `--depth surface`, which is the most practical package-level validation for this repository.
 
-Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository without the earlier builtin-resolution noise, broad false-positive finding sets, or helper-boundary skip noise.
+Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository without the earlier builtin-resolution noise, broad false-positive finding sets, or helper-boundary skip noise. Deep mode also includes the supported exact array analysis paths described above, while still reporting skips when array usage becomes dynamic or mutation-heavy.
 
 ## Release checks
 
