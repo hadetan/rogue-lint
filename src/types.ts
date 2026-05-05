@@ -24,6 +24,7 @@ export type EntityKind =
   | "enum-member"
   | "class-member"
   | "array-element"
+  | "collection-boundary"
   | "interface-member"
   | "object-key"
   | "nested-path"
@@ -39,7 +40,13 @@ export type SkipCategory =
   | "computed-property-access"
   | "dynamic-array-index"
   | "array-at-call"
+  | "array-append-mutation"
   | "array-mutation"
+  | "array-truncate-mutation"
+  | "array-replacement-mutation"
+  | "array-reorder-mutation"
+  | "array-rebuild-mutation"
+  | "array-opaque-mutation"
   | "array-callback-escape"
   | "object-spread"
   | "array-spread"
@@ -205,6 +212,13 @@ export interface EscapedPathRecord {
   reason: string;
 }
 
+export interface CollectionBoundaryRecord {
+  entity: EntityRecord;
+  path: PathSegment[];
+  category: SkipCategory;
+  reason: string;
+}
+
 export type PathSegment =
   | { kind: "property"; value: string }
   | { kind: "index"; value: number };
@@ -216,6 +230,12 @@ export interface TrackedCollectionInfo {
   arrayLength?: number;
 }
 
+export interface TrackedCollectionState {
+  path: PathSegment[];
+  epoch: number;
+  arrayLength?: number;
+}
+
 export interface TrackedObject {
   id: string;
   rootName: string;
@@ -224,6 +244,10 @@ export interface TrackedObject {
   nodes: Map<string, ObjectNode>;
   descendantNodeKeys: Map<string, string[]>;
   collections: Map<string, TrackedCollectionInfo>;
+  collectionStates: Map<string, TrackedCollectionState>;
+  collectionBoundaries: Map<string, CollectionBoundaryRecord>;
+  invalidatedCollectionPaths: Set<string>;
+  observedSubtrees: Set<string>;
   escapedPaths: Map<string, EscapedPathRecord>;
   reads: Set<string>;
   writes: Set<string>;

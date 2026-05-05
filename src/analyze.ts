@@ -14,6 +14,7 @@ import type {
   AnalysisResult,
   AuditRecord,
   CliOptions,
+  CollectionBoundaryRecord,
   DiagnosticRecord,
   EscapedPathRecord,
   EntityKind,
@@ -24,6 +25,7 @@ import type {
   ProjectContext,
   SkipCategory,
   TrackedCollectionInfo,
+  TrackedCollectionState,
   TrackedObject,
 } from "./types.js";
 import {
@@ -113,6 +115,7 @@ interface ResolvedTrackedObjectAccess {
 
 interface ArrayProjectionBinding {
   trackedObject: TrackedObject;
+  sourcePath: PathSegment[];
   elementPaths: PathSegment[][];
 }
 
@@ -122,6 +125,14 @@ interface ResolvedProjectionAccess {
   dynamic: boolean;
   boundaryCategory?: SkipCategory;
   boundaryReason?: string;
+}
+
+class CollectionState implements TrackedCollectionState {
+  constructor(
+    public path: PathSegment[],
+    public epoch = 0,
+    public arrayLength?: number,
+  ) {}
 }
 
 function createState(): AnalysisState {
@@ -265,6 +276,7 @@ const WHOLE_ARRAY_CONSUMPTION_METHODS = new Set([
   "keys",
   "lastIndexOf",
   "slice",
+  "with",
   "values",
 ]);
 
@@ -283,18 +295,10 @@ const EXACT_ARRAY_CALLBACK_METHODS = new Set([
   "some",
 ]);
 
-const ARRAY_MUTATION_BOUNDARY_METHODS = new Set([
-  "copyWithin",
-  "fill",
-  "pop",
-  "push",
-  "reverse",
-  "shift",
-  "sort",
-  "splice",
-  "unshift",
-  "with",
-]);
+const ARRAY_APPEND_METHODS = new Set(["push"]);
+const ARRAY_TRUNCATE_METHODS = new Set(["pop"]);
+const ARRAY_REPLACEMENT_METHODS = new Set(["fill"]);
+const ARRAY_REORDER_METHODS = new Set(["copyWithin", "reverse", "shift", "sort", "splice", "unshift"]);
 
 function addFinding(
   state: AnalysisState,
@@ -437,11 +441,54 @@ function buildFileEntity(project: ProjectContext, sourceFile: ts.SourceFile): En
   };
 }
 
+function buildCollectionBoundaryEntity(
+  project: ProjectContext,
+  trackedObject: TrackedObject,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  segments: PathSegment[],
+): EntityRecord {
+  return makeEntity(
+    project.rootPath,
+    "collection-boundary",
+    sourceFile,
+    node,
+    renderPathWithRoot(trackedObject.rootName, segments),
+    trackedObject.rootName,
+  );
+}
+
 function getCollectionInfo(
   trackedObject: TrackedObject,
   segments: PathSegment[],
 ): TrackedCollectionInfo | undefined {
   return trackedObject.collections.get(serializePath(segments));
+}
+
+function getCollectionState(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+): TrackedCollectionState | undefined {
+  return trackedObject.collectionStates.get(serializePath(segments));
+}
+
+function ensureCollectionState(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+  arrayLength?: number,
+): TrackedCollectionState {
+  const joinedPath = serializePath(segments);
+  const existing = trackedObject.collectionStates.get(joinedPath);
+  if (existing) {
+    if (arrayLength !== undefined) {
+      existing.arrayLength = arrayLength;
+    }
+    return existing;
+  }
+
+  const created = new CollectionState(segments, 0, arrayLength);
+  trackedObject.collectionStates.set(joinedPath, created);
+  return created;
 }
 
 function setCollectionInfo(
@@ -457,6 +504,95 @@ function setCollectionInfo(
     childPaths,
     arrayLength,
   });
+  ensureCollectionState(trackedObject, segments, arrayLength);
+}
+
+function getTrackedArrayLength(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+): number | undefined {
+  const state = getCollectionState(trackedObject, segments);
+  if (state?.arrayLength !== undefined) {
+    return state.arrayLength;
+  }
+
+  return getCollectionInfo(trackedObject, segments)?.arrayLength;
+}
+
+function setTrackedArrayLength(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+  arrayLength: number,
+): void {
+  const state = ensureCollectionState(trackedObject, segments, Math.max(arrayLength, 0));
+  state.arrayLength = Math.max(arrayLength, 0);
+  const collection = getCollectionInfo(trackedObject, segments);
+  if (collection) {
+    collection.arrayLength = state.arrayLength;
+  }
+}
+
+function bumpCollectionEpoch(trackedObject: TrackedObject, segments: PathSegment[]): void {
+  ensureCollectionState(trackedObject, segments).epoch += 1;
+}
+
+function recordCollectionBoundary(
+  trackedObject: TrackedObject,
+  collectionPath: PathSegment[],
+  record: CollectionBoundaryRecord,
+  invalidatePath?: PathSegment[],
+): void {
+  bumpCollectionEpoch(trackedObject, collectionPath);
+  trackedObject.collectionBoundaries.set(record.entity.id, record);
+  if (invalidatePath) {
+    trackedObject.invalidatedCollectionPaths.add(serializePath(invalidatePath));
+  }
+}
+
+function invalidateCollectionPath(
+  trackedObject: TrackedObject,
+  collectionPath: PathSegment[],
+  affectedPath: PathSegment[],
+): void {
+  bumpCollectionEpoch(trackedObject, collectionPath);
+  trackedObject.invalidatedCollectionPaths.add(serializePath(affectedPath));
+}
+
+function isCollectionPathInvalidated(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
+  for (let index = segments.length; index >= 0; index -= 1) {
+    if (trackedObject.invalidatedCollectionPaths.has(serializePath(segments.slice(0, index)))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function shouldReportCollectionBoundary(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
+  const joinedPath = serializePath(segments);
+  const collection = getCollectionInfo(trackedObject, segments);
+  const hasExactCoverage = trackedObject.nodes.has(joinedPath)
+    || hasTrackedChildren(trackedObject, segments)
+    || (collection?.childPaths.length ?? 0) > 0;
+
+  if (!hasExactCoverage) {
+    return false;
+  }
+
+  return !trackedObject.observedSubtrees.has(joinedPath) || isCollectionPathInvalidated(trackedObject, segments);
+}
+
+function getNearestArrayCollectionPath(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+): PathSegment[] | undefined {
+  for (let index = segments.length; index >= 0; index -= 1) {
+    const candidate = segments.slice(0, index);
+    if (getCollectionInfo(trackedObject, candidate)?.kind === "array") {
+      return candidate;
+    }
+  }
+
+  return undefined;
 }
 
 function hasTrackedChildren(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
@@ -486,6 +622,7 @@ function getProjectionBinding(
 
   return {
     trackedObject,
+    sourcePath: segments,
     elementPaths: collection.childPaths,
   };
 }
@@ -529,19 +666,6 @@ function markProjectionWrites(
   }
 }
 
-function markProjectionEscape(
-  projection: ArrayProjectionBinding,
-  suffix: PathSegment[],
-  category: SkipCategory,
-  reason: string,
-): void {
-  const concretePaths = getConcreteProjectionPaths(projection, suffix);
-  const paths = concretePaths.length > 0 ? concretePaths : projection.elementPaths;
-  for (const fullPath of paths) {
-    markEscaped(projection.trackedObject, fullPath, category, reason);
-  }
-}
-
 function resolveLiteralArrayIndex(argument: ts.Expression): number | undefined {
   if (ts.isNumericLiteral(argument)) {
     return Number(argument.text);
@@ -573,11 +697,13 @@ function resolveArrayAtIndex(
     return undefined;
   }
 
+  const arrayLength = getTrackedArrayLength(trackedObject, segments) ?? 0;
+
   if (literalIndex >= 0) {
-    return literalIndex < (collection.arrayLength ?? 0) ? literalIndex : undefined;
+    return literalIndex < arrayLength ? literalIndex : undefined;
   }
 
-  const normalized = (collection.arrayLength ?? 0) + literalIndex;
+  const normalized = arrayLength + literalIndex;
   return normalized >= 0 ? normalized : undefined;
 }
 
@@ -1830,9 +1956,8 @@ function markRead(trackedObject: TrackedObject, segments: PathSegment[]): void {
 
 function markObservedSubtree(trackedObject: TrackedObject, segments: PathSegment[]): void {
   const joinedPrefix = serializePath(segments);
-  if (joinedPrefix) {
-    trackedObject.reads.add(joinedPrefix);
-  }
+  trackedObject.observedSubtrees.add(joinedPrefix);
+  trackedObject.reads.add(joinedPrefix);
 
   const descendantKeys = trackedObject.descendantNodeKeys.get(joinedPrefix);
   if (!descendantKeys) {
@@ -1868,6 +1993,139 @@ function getEscapedReason(trackedObject: TrackedObject, segments: PathSegment[])
     }
   }
   return undefined;
+}
+
+function recordArrayBoundary(
+  project: ProjectContext,
+  trackedObject: TrackedObject,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  collectionPath: PathSegment[],
+  affectedPath: PathSegment[],
+  category: SkipCategory,
+  reason: string,
+  invalidate = false,
+): void {
+  recordCollectionBoundary(
+    trackedObject,
+    collectionPath,
+    {
+      entity: buildCollectionBoundaryEntity(project, trackedObject, sourceFile, node, affectedPath),
+      path: affectedPath,
+      category,
+      reason,
+    },
+    invalidate ? affectedPath : undefined,
+  );
+}
+
+function handleTrackedArrayMutation(
+  project: ProjectContext,
+  trackedObject: TrackedObject,
+  sourceFile: ts.SourceFile,
+  node: ts.CallExpression,
+  collectionPath: PathSegment[],
+  methodName: string,
+): void {
+  const arrayLength = getTrackedArrayLength(trackedObject, collectionPath);
+
+  if (ARRAY_APPEND_METHODS.has(methodName)) {
+    if (arrayLength !== undefined) {
+      setTrackedArrayLength(trackedObject, collectionPath, arrayLength + node.arguments.length);
+    }
+    recordArrayBoundary(
+      project,
+      trackedObject,
+      sourceFile,
+      node.expression,
+      collectionPath,
+      collectionPath,
+      "array-append-mutation",
+      `${methodName} appends new elements beyond exact local analysis`,
+    );
+    return;
+  }
+
+  if (ARRAY_TRUNCATE_METHODS.has(methodName)) {
+    if (arrayLength !== undefined && arrayLength > 0) {
+      const removedPath = [...collectionPath, indexSegment(arrayLength - 1)];
+      markRead(trackedObject, removedPath);
+      invalidateCollectionPath(trackedObject, collectionPath, removedPath);
+      setTrackedArrayLength(trackedObject, collectionPath, arrayLength - 1);
+      return;
+    }
+
+    recordArrayBoundary(
+      project,
+      trackedObject,
+      sourceFile,
+      node.expression,
+      collectionPath,
+      collectionPath,
+      "array-truncate-mutation",
+      `${methodName} removes elements beyond exact local analysis`,
+      true,
+    );
+    return;
+  }
+
+  if (ARRAY_REPLACEMENT_METHODS.has(methodName)) {
+    recordArrayBoundary(
+      project,
+      trackedObject,
+      sourceFile,
+      node.expression,
+      collectionPath,
+      collectionPath,
+      "array-replacement-mutation",
+      `${methodName} overwrites tracked array regions beyond exact local analysis`,
+      true,
+    );
+    return;
+  }
+
+  if (ARRAY_REORDER_METHODS.has(methodName)) {
+    recordArrayBoundary(
+      project,
+      trackedObject,
+      sourceFile,
+      node.expression,
+      collectionPath,
+      collectionPath,
+      "array-reorder-mutation",
+      `${methodName} changes stable array element ordering`,
+      true,
+    );
+  }
+}
+
+function maybeInvalidateReplacedTrackedPath(
+  project: ProjectContext,
+  trackedObject: TrackedObject,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  fullPath: PathSegment[],
+): void {
+  if (!hasTrackedChildren(trackedObject, fullPath) && !getCollectionInfo(trackedObject, fullPath)) {
+    return;
+  }
+
+  const arrayPath = getNearestArrayCollectionPath(trackedObject, fullPath);
+  if (!arrayPath) {
+    return;
+  }
+
+  recordArrayBoundary(
+    project,
+    trackedObject,
+    sourceFile,
+    node,
+    arrayPath,
+    fullPath,
+    "array-replacement-mutation",
+    `assignment replaces ${renderPathWithRoot(trackedObject.rootName, fullPath)} beyond exact local analysis`,
+    true,
+  );
 }
 
 function getForwardedParameterBindings(
@@ -2038,6 +2296,7 @@ function resolveProjectionAccess(
     return {
       projection: {
         trackedObject: receiver.projection.trackedObject,
+        sourcePath: receiver.projection.sourcePath,
         elementPaths,
       },
       suffix: [],
@@ -2066,11 +2325,16 @@ function visitProjectedArrayUsage(
         }
 
         if (projected.dynamic) {
-          markProjectionEscape(
-            projected.projection,
-            projected.suffix,
+          recordArrayBoundary(
+            project,
+            projected.projection.trackedObject,
+            current.getSourceFile(),
+            argument,
+            projected.projection.sourcePath,
+            projected.projection.sourcePath,
             projected.boundaryCategory ?? "array-callback-escape",
             projected.boundaryReason ?? "array callback escapes exact local analysis",
+            true,
           );
           continue;
         }
@@ -2079,11 +2343,16 @@ function visitProjectedArrayUsage(
         const paths = concretePaths.length > 0 ? concretePaths : projected.projection.elementPaths;
         const shouldEscape = paths.some((path) => getCollectionInfo(projected.projection.trackedObject, path) || hasTrackedChildren(projected.projection.trackedObject, path));
         if (shouldEscape) {
-          markProjectionEscape(
-            projected.projection,
-            projected.suffix,
+          recordArrayBoundary(
+            project,
+            projected.projection.trackedObject,
+            current.getSourceFile(),
+            argument,
+            projected.projection.sourcePath,
+            projected.projection.sourcePath,
             "array-callback-escape",
             "array callback escapes exact local analysis",
+            true,
           );
         } else {
           markProjectionReads(projected.projection, projected.suffix);
@@ -2108,15 +2377,23 @@ function visitProjectedArrayUsage(
       const projected = resolveProjectionAccess(project, current, projectionBindings);
       if (projected) {
         if (projected.dynamic) {
-          markProjectionEscape(
-            projected.projection,
-            projected.suffix,
+          recordArrayBoundary(
+            project,
+            projected.projection.trackedObject,
+            current.getSourceFile(),
+            current,
+            projected.projection.sourcePath,
+            projected.projection.sourcePath,
             projected.boundaryCategory ?? "array-callback-escape",
             projected.boundaryReason ?? "array callback escapes exact local analysis",
+            true,
           );
         } else if (isAssignmentLeft(current)) {
           if (projected.suffix.length > 1) {
             markProjectionReads(projected.projection, projected.suffix.slice(0, -1));
+          }
+          for (const fullPath of getConcreteProjectionPaths(projected.projection, projected.suffix)) {
+            maybeInvalidateReplacedTrackedPath(project, projected.projection.trackedObject, current.getSourceFile(), current, fullPath);
           }
           markProjectionWrites(projected.projection, projected.suffix);
         } else {
@@ -2266,6 +2543,10 @@ function buildTrackedObjects(
                 nodes: new Map(),
                 descendantNodeKeys: new Map(),
                 collections: new Map(),
+                collectionStates: new Map(),
+                collectionBoundaries: new Map(),
+                invalidatedCollectionPaths: new Set(),
+                observedSubtrees: new Set(),
                 escapedPaths: new Map(),
                 reads: new Set(),
                 writes: new Set(),
@@ -2437,13 +2718,16 @@ function analyzeObjectPaths(
             if (WHOLE_ARRAY_CONSUMPTION_METHODS.has(methodName)) {
               markObservedSubtree(tracked.trackedObject, targetPath);
             }
-            if (targetCollection?.kind === "array" && ARRAY_MUTATION_BOUNDARY_METHODS.has(methodName)) {
-              markEscaped(
-                tracked.trackedObject,
-                targetPath,
-                "array-mutation",
-                `${methodName} prevents exact array element mapping`,
-              );
+            if (
+              targetCollection?.kind === "array"
+              && (
+                ARRAY_APPEND_METHODS.has(methodName)
+                || ARRAY_TRUNCATE_METHODS.has(methodName)
+                || ARRAY_REPLACEMENT_METHODS.has(methodName)
+                || ARRAY_REORDER_METHODS.has(methodName)
+              )
+            ) {
+              handleTrackedArrayMutation(project, tracked.trackedObject, sourceFile, node, targetPath, methodName);
             }
             if (
               targetCollection?.kind === "array"
@@ -2475,12 +2759,27 @@ function analyzeObjectPaths(
 
           const fullPath = [...resolved.binding.prefix, ...resolved.segments];
           if (resolved.dynamic) {
-            markEscaped(
-              resolved.binding.trackedObject,
-              fullPath,
-              resolved.boundaryCategory ?? "computed-property-access",
-              resolved.boundaryReason ?? "computed property access prevents exact path analysis",
-            );
+            const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
+            if (collectionInfo?.kind === "array" && resolved.boundaryCategory) {
+              recordArrayBoundary(
+                project,
+                resolved.binding.trackedObject,
+                sourceFile,
+                argument,
+                fullPath,
+                fullPath,
+                resolved.boundaryCategory,
+                resolved.boundaryReason ?? "computed property access prevents exact path analysis",
+                true,
+              );
+            } else {
+              markEscaped(
+                resolved.binding.trackedObject,
+                fullPath,
+                resolved.boundaryCategory ?? "computed-property-access",
+                resolved.boundaryReason ?? "computed property access prevents exact path analysis",
+              );
+            }
             continue;
           }
 
@@ -2513,10 +2812,28 @@ function analyzeObjectPaths(
             continue;
           }
 
+          const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
+          if (collectionInfo?.kind === "array") {
+            recordArrayBoundary(
+              project,
+              resolved.binding.trackedObject,
+              sourceFile,
+              argument,
+              fullPath,
+              fullPath,
+              "array-opaque-mutation",
+              resolved.segments.length === 0
+                ? "collection passed to call expression escapes exact local analysis"
+                : "collection path passed to call expression escapes exact local analysis",
+              true,
+            );
+            continue;
+          }
+
           if (
             resolved.segments.length > 0
             && !hasTrackedChildren(resolved.binding.trackedObject, fullPath)
-            && !getCollectionInfo(resolved.binding.trackedObject, fullPath)
+            && !collectionInfo
           ) {
             markRead(resolved.binding.trackedObject, fullPath);
             continue;
@@ -2560,12 +2877,28 @@ function analyzeObjectPaths(
         const resolved = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnBindings);
         if (resolved) {
           if (ts.isArrayLiteralExpression(node.parent) && !resolved.dynamic) {
-            markEscaped(
-              resolved.binding.trackedObject,
-              [...resolved.binding.prefix, ...resolved.segments],
-              "array-spread",
-              "array spread escapes exact suffix contents",
-            );
+            const fullPath = [...resolved.binding.prefix, ...resolved.segments];
+            const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
+            if (collectionInfo?.kind === "array") {
+              recordArrayBoundary(
+                project,
+                resolved.binding.trackedObject,
+                sourceFile,
+                node,
+                fullPath,
+                fullPath,
+                "array-spread",
+                "array spread rebuilds collection contents beyond exact local analysis",
+                true,
+              );
+            } else {
+              markEscaped(
+                resolved.binding.trackedObject,
+                fullPath,
+                "array-spread",
+                "array spread escapes exact suffix contents",
+              );
+            }
           } else {
             markEscaped(
               resolved.binding.trackedObject,
@@ -2585,12 +2918,27 @@ function analyzeObjectPaths(
 
         const fullPath = [...resolved.binding.prefix, ...resolved.segments];
         if (resolved.dynamic) {
-          markEscaped(
-            resolved.binding.trackedObject,
-            fullPath,
-            resolved.boundaryCategory ?? "computed-property-access",
-            resolved.boundaryReason ?? "computed property access prevents exact path analysis",
-          );
+          const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
+          if (collectionInfo?.kind === "array" && resolved.boundaryCategory) {
+            recordArrayBoundary(
+              project,
+              resolved.binding.trackedObject,
+              sourceFile,
+              node,
+              fullPath,
+              fullPath,
+              resolved.boundaryCategory,
+              resolved.boundaryReason ?? "computed property access prevents exact path analysis",
+              true,
+            );
+          } else {
+            markEscaped(
+              resolved.binding.trackedObject,
+              fullPath,
+              resolved.boundaryCategory ?? "computed-property-access",
+              resolved.boundaryReason ?? "computed property access prevents exact path analysis",
+            );
+          }
           return ts.forEachChild(node, visit);
         }
 
@@ -2602,6 +2950,7 @@ function analyzeObjectPaths(
           if (fullPath.length > 1) {
             markRead(resolved.binding.trackedObject, fullPath.slice(0, -1));
           }
+          maybeInvalidateReplacedTrackedPath(project, resolved.binding.trackedObject, sourceFile, node, fullPath);
           markWrite(resolved.binding.trackedObject, fullPath);
         } else {
           markRead(resolved.binding.trackedObject, fullPath);
@@ -2632,11 +2981,16 @@ function analyzeObjectPaths(
           }
 
           if (element.dotDotDotToken) {
-            markProjectionEscape(
-              projection,
-              [indexSegment(index)],
+            recordArrayBoundary(
+              project,
+              projection.trackedObject,
+              sourceFile,
+              element,
+              projection.sourcePath,
+              projection.sourcePath,
               "array-rest",
               "array rest pattern escapes remaining elements",
+              true,
             );
             return;
           }
@@ -2688,7 +3042,22 @@ function analyzeObjectPaths(
   }
 
   for (const tracked of trackedObjects) {
+    for (const boundary of tracked.collectionBoundaries.values()) {
+      if (!shouldReportCollectionBoundary(tracked, boundary.path)) {
+        continue;
+      }
+      const suppression = getSuppressionAudit(project, suppressionContext, boundary.entity);
+      if (addAudit(state.kept, suppression)) {
+        continue;
+      }
+      addSkipped(state, boundary.entity, boundary.category, boundary.reason);
+    }
+
     for (const [joinedPath, objectNode] of tracked.nodes) {
+      if (isCollectionPathInvalidated(tracked, objectNode.fullPath)) {
+        continue;
+      }
+
       const escapedReason = getEscapedReason(tracked, objectNode.fullPath);
       if (escapedReason) {
         addSkipped(state, objectNode.entity, escapedReason.category, escapedReason.reason);

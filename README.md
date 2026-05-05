@@ -19,6 +19,7 @@ The current implementation covers:
 - meaningful call-boundary reads for ordinary external calls and supported local helper usage
 - analyzable returned-object propagation across supported same-project helper boundaries
 - unused array elements for exact local literal array slots
+- root-owned collection boundary reporting when tracked arrays leave the exact subset
 - unused class members with exact declaration/reference tracking
 - unused internal interface members when references remain unambiguous
 - unused object keys and nested object paths inside analyzable local object/array graphs
@@ -182,11 +183,11 @@ The analyzer intentionally skips or downgrades exact analysis when code crosses 
 - `Object.keys`, `Object.values`, `Object.entries`, `Reflect.ownKeys`
 - `JSON.stringify`
 - opaque external calls that receive a tracked object
-- array spreads, unsupported array rest reconstruction, and unsupported mutation-heavy array transforms
+- array spreads, unsupported array rest reconstruction, and collection mutations that append, replace, reorder, rebuild, or otherwise escape exact reasoning
 - object/path escapes through opaque call boundaries
 - decorators that can expose class members indirectly
 
-Skipped entities are reported with boundary-specific reasons so the gaps remain visible.
+Skipped entities are reported with boundary-specific reasons so the gaps remain visible. When a tracked array becomes non-exact, `dead-lint` now reports that boundary on the owning collection path instead of on a stale child slot.
 
 ## End-to-end workflow for agents
 
@@ -227,7 +228,7 @@ npm run self:validate:deep:json
 
 The default self-validation commands run in `library` mode with `--depth surface`, which is the most practical package-level validation for this repository.
 
-Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository without the earlier builtin-resolution noise, broad false-positive finding sets, or helper-boundary skip noise. Deep mode also includes the supported exact array analysis paths described above, while still reporting skips when array usage becomes dynamic or mutation-heavy.
+Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository without the earlier builtin-resolution noise, broad false-positive finding sets, or helper-boundary skip noise. Deep mode also includes the supported exact array analysis paths described above, and collection boundaries now surface as root-owned skips such as the queue worklist in `src/project.ts` instead of as misleading child-element skips.
 
 ## Release checks
 

@@ -107,8 +107,44 @@ describe("dead-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "dynamic-array-index")).toBe(true);
     expect(result.skipped.some((entry) => entry.category === "array-at-call")).toBe(true);
     expect(result.skipped.some((entry) => entry.category === "array-spread")).toBe(true);
-    expect(result.skipped.some((entry) => entry.category === "array-mutation")).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "array-reorder-mutation")).toBe(true);
     expect(result.skipped.some((entry) => entry.category === "array-rest")).toBe(true);
+    expect(result.skipped.some((entry) => entry.kind === "collection-boundary" && entry.name === "mutatedRows")).toBe(true);
+  });
+
+  it("preserves exact collection siblings while reporting root-owned collection boundaries", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("collection-state-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-nested-path:[0].stale");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].dead");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].items[0].dead");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].safe.stale");
+    expect(kindsAndNames).toContain("unused-nested-path:[1].safe.stale");
+    expect(kindsAndNames).not.toContain("unused-nested-path:[1].stale");
+    expect(kindsAndNames).not.toContain("unused-nested-path:[1].nested.dead");
+
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary" && entry.name === "stack" && entry.category === "array-append-mutation"
+    )).toBe(true);
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary" && entry.name === "replaced[1]" && entry.category === "array-replacement-mutation"
+    )).toBe(true);
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary" && entry.name === "reordered" && entry.category === "array-reorder-mutation"
+    )).toBe(true);
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary" && entry.name === "nested[0].items" && entry.category === "array-append-mutation"
+    )).toBe(true);
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary" && entry.name === "opaque" && entry.category === "array-opaque-mutation"
+    )).toBe(true);
+    expect(result.skipped.some((entry) => entry.name === "[0]")).toBe(false);
   });
 
   it("renders stable summary metadata", async () => {
