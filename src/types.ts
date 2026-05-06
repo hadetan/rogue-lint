@@ -12,6 +12,9 @@ export type FindingKind =
   | "unused-object-key"
   | "unused-nested-path"
   | "unused-interface-member"
+  | "use-before-init"
+  | "invalidated-read"
+  | "stale-read-after-mutation"
   | "dead-store"
   | "unused-value"
   | "write-only-state";
@@ -236,6 +239,14 @@ export interface TrackedCollectionState {
   arrayLength?: number;
 }
 
+export type TrackedPlaceState = "uninitialized" | "initialized" | "invalidated" | "escaped" | "unknown";
+
+export interface InvalidatedPathRecord {
+  state: Extract<TrackedPlaceState, "invalidated">;
+  reason: string;
+  findingKind?: Extract<FindingKind, "invalidated-read" | "stale-read-after-mutation">;
+}
+
 export interface TrackedObject {
   id: string;
   rootName: string;
@@ -247,6 +258,8 @@ export interface TrackedObject {
   collectionStates: Map<string, TrackedCollectionState>;
   collectionBoundaries: Map<string, CollectionBoundaryRecord>;
   invalidatedCollectionPaths: Set<string>;
+  invalidatedPaths: Map<string, InvalidatedPathRecord>;
+  placeStates: Map<string, TrackedPlaceState>;
   observedSubtrees: Set<string>;
   escapedPaths: Map<string, EscapedPathRecord>;
   reads: Set<string>;

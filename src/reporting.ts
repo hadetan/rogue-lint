@@ -1,15 +1,17 @@
 import type { AnalysisResult, AuditRecord, FindingRecord, ReportFormat } from "./types.js";
 
+const REPORT_KIND_WIDTH = 28;
+
 function formatFinding(finding: FindingRecord): string {
-  return `${finding.kind.padEnd(20)} ${finding.entity.location.file}:${finding.entity.location.line}:${finding.entity.location.column} ${finding.entity.name}`;
+  return `${finding.kind.padEnd(REPORT_KIND_WIDTH)} ${finding.entity.location.file}:${finding.entity.location.line}:${finding.entity.location.column} ${finding.entity.name}`;
 }
 
 function formatAudit(record: AuditRecord): string {
   if (!record.location) {
-    return `${record.kind.padEnd(20)} ${record.name} - ${record.reason}`;
+    return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.name} - ${record.reason}`;
   }
 
-  return `${record.kind.padEnd(20)} ${record.location.file}:${record.location.line}:${record.location.column} ${record.name} - ${record.reason}`;
+  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.location.file}:${record.location.line}:${record.location.column} ${record.name} - ${record.reason}`;
 }
 
 function getRecordFile(record: { location?: { file: string }; entity?: { location: { file: string } } }): string {

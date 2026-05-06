@@ -147,6 +147,39 @@ describe("dead-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.name === "[0]")).toBe(false);
   });
 
+  it("promotes compiler safety diagnostics and reports invalidated reads conservatively", async () => {
+    const fixture = fixturePath("safety-basic");
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixture,
+      format: "json",
+    });
+    const filtered = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixture,
+      format: "json",
+      includeKinds: ["use-before-init"],
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("use-before-init:maybeInit");
+    expect(kindsAndNames).toContain("stale-read-after-mutation:reordered[1].stale");
+    expect(kindsAndNames).toContain("invalidated-read:replaced[1].dead");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].safe.stale");
+    expect(kindsAndNames).toContain("unused-nested-path:[1].safe.stale");
+    expect(kindsAndNames).not.toContain("stale-read-after-mutation:appended[0].safe.keep");
+    expect(kindsAndNames).not.toContain("invalidated-read:escaped[0].dead");
+
+    expect(result.kept.some((entry) => entry.name === "ignored" && entry.reason === "suppressed by dead-lint-ignore-next")).toBe(true);
+    expect(result.skipped.some((entry) => entry.reason.includes("JSON.stringify"))).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "serialization")).toBe(true);
+
+    expect(filtered.findings).toHaveLength(1);
+    expect(filtered.findings[0]?.kind).toBe("use-before-init");
+    expect(filtered.findings[0]?.entity.name).toBe("maybeInit");
+  });
+
   it("renders stable summary metadata", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),

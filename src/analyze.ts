@@ -21,11 +21,13 @@ import type {
   EntityRecord,
   FindingKind,
   FindingRecord,
+  InvalidatedPathRecord,
   PathSegment,
   ProjectContext,
   SkipCategory,
   TrackedCollectionInfo,
   TrackedCollectionState,
+  TrackedPlaceState,
   TrackedObject,
 } from "./types.js";
 import {
@@ -64,6 +66,11 @@ interface ReferenceCaches {
 interface AnalysisStage {
   enabled: boolean;
   run: () => void;
+}
+
+interface CompilerSafetyDiagnosticSpec {
+  findingKind: Extract<FindingKind, "use-before-init">;
+  reason: string;
 }
 
 type ValueAccessKind = "write" | "read" | "read-write" | "escape";
@@ -299,6 +306,16 @@ const ARRAY_APPEND_METHODS = new Set(["push"]);
 const ARRAY_TRUNCATE_METHODS = new Set(["pop"]);
 const ARRAY_REPLACEMENT_METHODS = new Set(["fill"]);
 const ARRAY_REORDER_METHODS = new Set(["copyWithin", "reverse", "shift", "sort", "splice", "unshift"]);
+// Initial allow-list of compiler-backed safety diagnostics promoted into dead-lint findings.
+const COMPILER_SAFETY_DIAGNOSTICS = new Map<number, CompilerSafetyDiagnosticSpec>([
+  [
+    2454,
+    {
+      findingKind: "use-before-init",
+      reason: "TypeScript semantic diagnostics reported this value is used before being assigned",
+    },
+  ],
+]);
 
 function addFinding(
   state: AnalysisState,
@@ -306,6 +323,7 @@ function addFinding(
   kind: FindingKind,
   reason: string,
   message: string,
+  suggestion: FindingRecord["suggestion"] = "remove",
 ): void {
   state.findings.push({
     id: entity.id,
@@ -313,7 +331,7 @@ function addFinding(
     entity,
     reason,
     message,
-    suggestion: "remove",
+    suggestion,
   });
 }
 
@@ -532,6 +550,54 @@ function setTrackedArrayLength(
   }
 }
 
+function setPlaceState(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+  placeState: TrackedPlaceState,
+): void {
+  trackedObject.placeStates.set(serializePath(segments), placeState);
+}
+
+function getInvalidatedPathRecord(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+): InvalidatedPathRecord | undefined {
+  for (let index = segments.length; index >= 0; index -= 1) {
+    const invalidated = trackedObject.invalidatedPaths.get(serializePath(segments.slice(0, index)));
+    if (invalidated) {
+      return invalidated;
+    }
+  }
+
+  return undefined;
+}
+
+function createInvalidatedPathRecord(
+  category: SkipCategory,
+  reason: string,
+): InvalidatedPathRecord {
+  switch (category) {
+    case "array-replacement-mutation":
+      return {
+        state: "invalidated",
+        findingKind: "invalidated-read",
+        reason,
+      };
+    case "array-truncate-mutation":
+    case "array-reorder-mutation":
+      return {
+        state: "invalidated",
+        findingKind: "stale-read-after-mutation",
+        reason,
+      };
+    default:
+      return {
+        state: "invalidated",
+        reason,
+      };
+  }
+}
+
 function bumpCollectionEpoch(trackedObject: TrackedObject, segments: PathSegment[]): void {
   ensureCollectionState(trackedObject, segments).epoch += 1;
 }
@@ -541,11 +607,17 @@ function recordCollectionBoundary(
   collectionPath: PathSegment[],
   record: CollectionBoundaryRecord,
   invalidatePath?: PathSegment[],
+  invalidatedRecord?: InvalidatedPathRecord,
 ): void {
   bumpCollectionEpoch(trackedObject, collectionPath);
   trackedObject.collectionBoundaries.set(record.entity.id, record);
   if (invalidatePath) {
-    trackedObject.invalidatedCollectionPaths.add(serializePath(invalidatePath));
+    const joinedPath = serializePath(invalidatePath);
+    trackedObject.invalidatedCollectionPaths.add(joinedPath);
+    setPlaceState(trackedObject, invalidatePath, "invalidated");
+    if (invalidatedRecord) {
+      trackedObject.invalidatedPaths.set(joinedPath, invalidatedRecord);
+    }
   }
 }
 
@@ -553,9 +625,15 @@ function invalidateCollectionPath(
   trackedObject: TrackedObject,
   collectionPath: PathSegment[],
   affectedPath: PathSegment[],
+  invalidatedRecord?: InvalidatedPathRecord,
 ): void {
   bumpCollectionEpoch(trackedObject, collectionPath);
-  trackedObject.invalidatedCollectionPaths.add(serializePath(affectedPath));
+  const joinedPath = serializePath(affectedPath);
+  trackedObject.invalidatedCollectionPaths.add(joinedPath);
+  setPlaceState(trackedObject, affectedPath, "invalidated");
+  if (invalidatedRecord) {
+    trackedObject.invalidatedPaths.set(joinedPath, invalidatedRecord);
+  }
 }
 
 function isCollectionPathInvalidated(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
@@ -774,6 +852,104 @@ function findNodeAtPosition(sourceFile: ts.SourceFile, position: number): ts.Nod
   };
 
   return visit(sourceFile);
+}
+
+function buildCompilerSafetyEntity(
+  project: ProjectContext,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+): { entity: EntityRecord; targetNode: ts.Node } | undefined {
+  const declarationNode = ts.findAncestor(node, (candidate) => Boolean(getDeclarationNameNode(candidate)));
+  const nameNode = declarationNode ? getDeclarationNameNode(declarationNode) : undefined;
+  const name = declarationNode ? getNodeName(declarationNode) : undefined;
+
+  if (declarationNode && nameNode && name) {
+    if (ts.isPropertyDeclaration(declarationNode) || ts.isPropertySignature(declarationNode)) {
+      const classDeclaration = ts.findAncestor(
+        declarationNode,
+        (candidate): candidate is ts.ClassLikeDeclaration => ts.isClassLike(candidate),
+      );
+      return {
+        entity: makeEntity(
+          project.rootPath,
+          "class-member",
+          sourceFile,
+          nameNode,
+          name,
+          classDeclaration?.name?.text,
+        ),
+        targetNode: declarationNode,
+      };
+    }
+
+    if (ts.isVariableDeclaration(declarationNode) && ts.isIdentifier(declarationNode.name)) {
+      return {
+        entity: makeEntity(project.rootPath, "local", sourceFile, node, declarationNode.name.text),
+        targetNode: node,
+      };
+    }
+  }
+
+  if (ts.isIdentifier(node)) {
+    return {
+      entity: makeEntity(project.rootPath, "local", sourceFile, node, node.text),
+      targetNode: node,
+    };
+  }
+
+  const text = node.getText(sourceFile).trim();
+  if (!text) {
+    return undefined;
+  }
+
+  return {
+    entity: makeEntity(project.rootPath, "expression", sourceFile, node, text),
+    targetNode: node,
+  };
+}
+
+function analyzeCompilerSafetyDiagnostics(
+  project: ProjectContext,
+  reachableFiles: Set<string>,
+  state: AnalysisState,
+  suppressionContext: ReturnType<typeof buildSuppressionContext>,
+): void {
+  for (const sourceFile of project.sourceFiles) {
+    if (!reachableFiles.has(sourceFile.fileName)) {
+      continue;
+    }
+
+    for (const diagnostic of project.program.getSemanticDiagnostics(sourceFile)) {
+      const spec = COMPILER_SAFETY_DIAGNOSTICS.get(diagnostic.code);
+      if (!spec || !diagnostic.file || diagnostic.start === undefined) {
+        continue;
+      }
+
+      const node = findNodeAtPosition(diagnostic.file, diagnostic.start);
+      if (!node) {
+        continue;
+      }
+
+      const target = buildCompilerSafetyEntity(project, sourceFile, node);
+      if (!target) {
+        continue;
+      }
+
+      const suppression = getSuppressionAudit(project, suppressionContext, target.entity, target.targetNode);
+      if (addAudit(state.kept, suppression)) {
+        continue;
+      }
+
+      addFinding(
+        state,
+        target.entity,
+        spec.findingKind,
+        spec.reason,
+        diagnostic.messageText.toString(),
+        "review",
+      );
+    }
+  }
 }
 
 function analyzeUnusedFiles(
@@ -1697,6 +1873,7 @@ function addTrackedObjectNode(
         owner,
       );
       trackedObject.nodes.set(joinedPath, { entity, fullPath });
+      trackedObject.placeStates.set(joinedPath, "initialized");
       indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
 
       const initializer = ts.isShorthandPropertyAssignment(property) ? undefined : property.initializer;
@@ -1729,6 +1906,7 @@ function addTrackedObjectNode(
         owner,
       );
       trackedObject.nodes.set(joinedPath, { entity, fullPath });
+      trackedObject.placeStates.set(joinedPath, "initialized");
       indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
 
       if (ts.isObjectLiteralExpression(element)) {
@@ -1973,6 +2151,7 @@ function markObservedSubtree(trackedObject: TrackedObject, segments: PathSegment
 
 function markWrite(trackedObject: TrackedObject, segments: PathSegment[]): void {
   trackedObject.writes.add(serializePath(segments));
+  setPlaceState(trackedObject, segments, "initialized");
 }
 
 function markEscaped(
@@ -1982,6 +2161,7 @@ function markEscaped(
   reason: string,
 ): void {
   trackedObject.escapedPaths.set(serializePath(segments), { category, reason });
+  setPlaceState(trackedObject, segments, "escaped");
 }
 
 function getEscapedReason(trackedObject: TrackedObject, segments: PathSegment[]): EscapedPathRecord | undefined {
@@ -2016,6 +2196,73 @@ function recordArrayBoundary(
       reason,
     },
     invalidate ? affectedPath : undefined,
+    invalidate ? createInvalidatedPathRecord(category, reason) : undefined,
+  );
+}
+
+function isNestedTrackedAccess(node: ts.Node): boolean {
+  return (
+    (ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node)
+    || (ts.isElementAccessExpression(node.parent) && node.parent.expression === node)
+    || (ts.isCallExpression(node.parent) && node.parent.expression === node)
+  );
+}
+
+function buildReadExpressionEntity(
+  project: ProjectContext,
+  trackedObject: TrackedObject,
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  fullPath: PathSegment[],
+): EntityRecord {
+  return makeEntity(
+    project.rootPath,
+    "expression",
+    sourceFile,
+    node,
+    renderPathWithRoot(trackedObject.rootName, fullPath),
+    trackedObject.rootName,
+  );
+}
+
+function maybeReportInvalidatedRead(
+  project: ProjectContext,
+  sourceFile: ts.SourceFile,
+  state: AnalysisState,
+  suppressionContext: ReturnType<typeof buildSuppressionContext>,
+  trackedObject: TrackedObject,
+  node: ts.Node,
+  fullPath: PathSegment[],
+): void {
+  if (isNestedTrackedAccess(node)) {
+    return;
+  }
+
+  const invalidated = getInvalidatedPathRecord(trackedObject, fullPath);
+  if (!invalidated?.findingKind) {
+    return;
+  }
+
+  if (getEscapedReason(trackedObject, fullPath)) {
+    return;
+  }
+
+  const entity = buildReadExpressionEntity(project, trackedObject, sourceFile, node, fullPath);
+  const suppression = getSuppressionAudit(project, suppressionContext, entity, node);
+  if (addAudit(state.kept, suppression)) {
+    return;
+  }
+
+  const renderedPath = renderPathWithRoot(trackedObject.rootName, fullPath);
+  addFinding(
+    state,
+    entity,
+    invalidated.findingKind,
+    invalidated.reason,
+    invalidated.findingKind === "invalidated-read"
+      ? `Invalidated read of ${renderedPath}`
+      : `Stale read after mutation of ${renderedPath}`,
+    "review",
   );
 }
 
@@ -2050,7 +2297,12 @@ function handleTrackedArrayMutation(
     if (arrayLength !== undefined && arrayLength > 0) {
       const removedPath = [...collectionPath, indexSegment(arrayLength - 1)];
       markRead(trackedObject, removedPath);
-      invalidateCollectionPath(trackedObject, collectionPath, removedPath);
+      invalidateCollectionPath(
+        trackedObject,
+        collectionPath,
+        removedPath,
+        createInvalidatedPathRecord("array-truncate-mutation", `${methodName} removes previously tracked elements`),
+      );
       setTrackedArrayLength(trackedObject, collectionPath, arrayLength - 1);
       return;
     }
@@ -2546,6 +2798,8 @@ function buildTrackedObjects(
                 collectionStates: new Map(),
                 collectionBoundaries: new Map(),
                 invalidatedCollectionPaths: new Set(),
+                invalidatedPaths: new Map(),
+                placeStates: new Map(),
                 observedSubtrees: new Set(),
                 escapedPaths: new Map(),
                 reads: new Set(),
@@ -2953,6 +3207,15 @@ function analyzeObjectPaths(
           maybeInvalidateReplacedTrackedPath(project, resolved.binding.trackedObject, sourceFile, node, fullPath);
           markWrite(resolved.binding.trackedObject, fullPath);
         } else {
+          maybeReportInvalidatedRead(
+            project,
+            sourceFile,
+            state,
+            suppressionContext,
+            resolved.binding.trackedObject,
+            node,
+            fullPath,
+          );
           markRead(resolved.binding.trackedObject, fullPath);
         }
       }
@@ -3112,6 +3375,10 @@ export async function analyzeProject(cliOptions: CliOptions): Promise<AnalysisRe
     {
       enabled: true,
       run: () => analyzeUnusedFiles(project, reachableFiles, state, suppressionContext),
+    },
+    {
+      enabled: true,
+      run: () => analyzeCompilerSafetyDiagnostics(project, reachableFiles, state, suppressionContext),
     },
     {
       enabled: true,

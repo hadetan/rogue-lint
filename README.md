@@ -1,6 +1,8 @@
 # dead-lint
 
-Whole-project dead code analysis for JavaScript and TypeScript with agent-friendly output.
+<!--__Rust-inspired safety analysis for JS/TS__-->
+
+Whole-project dead code and Rust-inspired static safety analysis for JavaScript and TypeScript with agent-friendly output.
 
 `dead-lint` scans an entire project, not just one file, and reports stale code in a compact format that agents can use as a validation step after implementation work.
 
@@ -13,9 +15,11 @@ The current implementation covers:
 - unused exported types, including exported types whose only references stay inside their declaring file
 - unused enum members
 - unused locals reported by TypeScript semantic analysis
+- compiler-backed `use-before-init` findings for allow-listed TypeScript safety diagnostics
 - dead stores for overwritten local assignments in the supported value-flow subset
 - unused side-effect-neutral expression results
 - write-only outer-scope writes in the supported closure subset
+- `invalidated-read` and `stale-read-after-mutation` findings for supported exact tracked-path mutations
 - meaningful call-boundary reads for ordinary external calls and supported local helper usage
 - analyzable returned-object propagation across supported same-project helper boundaries
 - unused array elements for exact local literal array slots
@@ -51,7 +55,7 @@ dead-lint
 dead-lint path/to/project
 dead-lint path/to/project --json
 dead-lint path/to/project --mode library
-dead-lint path/to/project --kinds unused-export,unused-file
+dead-lint path/to/project --kinds unused-export,unused-file,use-before-init
 dead-lint path/to/project --depth surface
 dead-lint path/to/project --config dead-lint.config.json
 ```
@@ -157,6 +161,16 @@ This lets an agent distinguish removable code from code that was intentionally p
 
 The human-readable report also separates `findings`, `kept`, and `skipped`, and prints the keep/skip reasons inline so the withheld boundaries stay visible outside JSON mode.
 
+## Rust-inspired safety contract
+
+`dead-lint` brings a conservative subset of Rust-like compile-time assistance to JS/TS projects. It can now promote selected compiler-backed safety diagnostics and report exact invalidated reads in supported local object or collection flows.
+
+That contract is intentionally narrow:
+
+- supported exact flows produce first-class safety findings such as `use-before-init`, `invalidated-read`, and `stale-read-after-mutation`
+- unsupported aliasing, reflective access, and opaque escapes remain `skipped`
+- the tool is Rust-inspired, not a replacement for `rustc` ownership, borrow checking, or full memory-safety guarantees
+
 ## Safe subset and dynamic boundaries
 
 `dead-lint` is most exact when code stays inside analyzable patterns such as:
@@ -172,6 +186,7 @@ The human-readable report also separates `findings`, `kept`, and `skipped`, and 
 - supported same-project helper returns that resolve back to tracked local object bindings
 - supported `for...of` and supported inline array callback consumers over local analyzable arrays
 - simple overwritten local assignments and discarded pure expressions
+- allow-listed compiler diagnostics such as TypeScript's "used before being assigned"
 - ordinary call-argument consumption at external or built-in call boundaries
 - supported same-project helper calls whose parameter usage remains analyzable
 - no reflective enumeration on analyzed objects
@@ -228,7 +243,7 @@ npm run self:validate:deep:json
 
 The default self-validation commands run in `library` mode with `--depth surface`, which is the most practical package-level validation for this repository.
 
-Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository without the earlier builtin-resolution noise, broad false-positive finding sets, or helper-boundary skip noise. Deep mode also includes the supported exact array analysis paths described above, and collection boundaries now surface as root-owned skips such as the queue worklist in `src/project.ts` instead of as misleading child-element skips.
+Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository without the earlier builtin-resolution noise, broad false-positive finding sets, or helper-boundary skip noise. Deep mode also includes the supported exact array analysis paths described above, compiler-backed `use-before-init` promotion, exact invalidated-read checks, and root-owned collection boundaries such as the queue worklist in `src/project.ts` instead of misleading child-element skips.
 
 ## Release checks
 
