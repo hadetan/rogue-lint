@@ -57,23 +57,29 @@ Owns stage entrypoints.
 
 - low-coupling stages such as `unused-files`, `unused-exports`, `unused-locals`, `class-members`, and `interface-members` live directly here
 - `support.ts` holds shared export/reference helpers used across those stages
-- `value-liveness.ts` and `object-paths.ts` stay thin and delegate to the shared tracking kernel
+- `value-liveness.ts` and `object-paths.ts` stay thin and delegate to stable tracking stage exports behind `src/engine/tracking/core.ts`
 
 Add a new module here when a concern can be executed as one stage in the orchestration pipeline.
 
 ### `src/engine/tracking/`
 
-Owns the heavy shared tracking kernel used by the exactness-sensitive stages.
+Owns the exactness-sensitive tracking subsystem used by the value-liveness and object-path stages.
 
-- `core.ts`: tracked-object construction, helper-summary propagation, value-fate rules, object-path reasoning, and conservative-boundary handling
+- `core.ts`: stable internal facade that re-exports tracking stage entrypoints for analyzer wrappers
+- `value-liveness.ts`: exactness-gated local value-fate stage implementation
+- `object-paths.ts`: object-path stage orchestrator
+- `object-paths/`: stage-private helpers for object-path effects, projections, traversal, and reporting
+- `model.ts`, `syntax.ts`, `bindings.ts`: shared tracking vocabulary, structural helpers, and binding identity rules
+- `state.ts`, `access.ts`, `callables.ts`, `graph.ts`, `semantics.ts`: shared mutation, resolution, callable, graph, and helper-summary primitives
 
-This is the place to update when a change affects:
+Start in the owning module here when a change affects:
 
 - tracked-object identity or structure
 - helper return or parameter summaries
-- exact path propagation
-- collection boundaries, invalidation, and mutation semantics
+- exact path propagation or projection traversal
+- collection boundaries, invalidation, retained binding, and mutation semantics
 - the line between exact reasoning and conservative skips
+- object-path stage traversal or reporting behavior
 
 If a change widens the supported exact subset, add or update fixture coverage first and document the new boundary.
 
@@ -108,7 +114,7 @@ The intended direction is:
 1. public entrypoints depend on `api` or `cli`
 2. `api` and `cli` depend on `engine`, `config`, and `output`
 3. analyzer stages depend on `compiler`, `shared`, `references`, `suppressions`, and `engine/internal-types`
-4. heavy stages may additionally depend on `engine/tracking/core.ts`
+4. exactness-sensitive analyzer wrappers depend on `engine/tracking/core.ts`, while tracking stage implementations depend on focused helpers under `engine/tracking/`
 5. `output` depends on public result types only
 
 Avoid the reverse direction. In particular:
@@ -121,7 +127,7 @@ Avoid the reverse direction. In particular:
 
 When adding a new analyzer capability:
 
-1. decide whether it is a low-coupling stage or a tracking-kernel change
+1. decide whether it is a low-coupling stage, a shared tracking-helper change, or a stage-private tracking change
 2. add or update focused fixtures and assertions in `test/analyze.test.ts`
 3. implement the owning module change
 4. register the stage in `src/engine/run-analysis.ts` if needed
