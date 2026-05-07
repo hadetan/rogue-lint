@@ -409,10 +409,6 @@ function shouldSuppressStructuralPath(trackedObject: TrackedObject, segments: Pa
   return false;
 }
 
-function isDeepAnalysisEnabled(project: ProjectContext): boolean {
-  return project.config.value.analysisDepth === "deep";
-}
-
 function getFunctionDepth(node: ts.Node): number {
   let depth = 0;
   let current: ts.Node | undefined = node;
@@ -5744,19 +5740,19 @@ export async function analyzeProject(cliOptions: CliOptions): Promise<AnalysisRe
       run: () => analyzeUnusedLocals(project, reachableFiles, state, suppressionContext),
     },
     {
-      enabled: isDeepAnalysisEnabled(project),
+      enabled: true,
       run: () => analyzeValueLiveness(project, reachableFiles, state, suppressionContext),
     },
     {
-      enabled: isDeepAnalysisEnabled(project),
+      enabled: true,
       run: () => analyzeInterfaceMembers(project, reachableFiles, state, suppressionContext, caches),
     },
     {
-      enabled: isDeepAnalysisEnabled(project),
+      enabled: true,
       run: () => analyzeClassMembers(project, reachableFiles, state, suppressionContext, caches),
     },
     {
-      enabled: isDeepAnalysisEnabled(project),
+      enabled: true,
       run: () => analyzeObjectPaths(project, reachableFiles, state, suppressionContext),
     },
   ];

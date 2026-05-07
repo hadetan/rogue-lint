@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import { analyzeProject } from "./analyze.js";
 import { resolveConfig } from "./config.js";
 import { renderResult } from "./reporting.js";
-import type { AnalysisDepth, AnalysisMode, CliOptions, FindingKind, ReportFormat } from "./types.js";
+import type { AnalysisMode, CliOptions, FindingKind, ReportFormat } from "./types.js";
 
 function parseCliOptions(argv: string[]): CliOptions {
   const parsed = parseArgs({
@@ -14,7 +14,6 @@ function parseCliOptions(argv: string[]): CliOptions {
       options: {
         json: { type: "boolean", default: false },
         mode: { type: "string" },
-        depth: { type: "string" },
         config: { type: "string" },
         kinds: { type: "string" },
       },
@@ -27,7 +26,6 @@ function parseCliOptions(argv: string[]): CliOptions {
     targetPath: targetPath ? path.resolve(process.cwd(), targetPath) : undefined,
     format: parsed.values.json ? ("json" satisfies ReportFormat) : ("text" satisfies ReportFormat),
     mode: parsed.values.mode as AnalysisMode | undefined,
-    analysisDepth: parsed.values.depth as AnalysisDepth | undefined,
     configPath: parsed.values.config,
     includeKinds: parsed.values.kinds
       ? (parsed.values.kinds.split(",").map((kind) => kind.trim()) as FindingKind[])

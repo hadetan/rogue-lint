@@ -1,5 +1,4 @@
 export type AnalysisMode = "application" | "library";
-export type AnalysisDepth = "surface" | "deep";
 
 export type FindingKind =
   | "unused-file"
@@ -70,7 +69,6 @@ interface KeepRules {
 
 export interface DeadLintConfig {
   mode?: AnalysisMode;
-  analysisDepth?: AnalysisDepth;
   tsconfig?: string;
   entrypoints?: string[];
   hiddenRoots?: string[];
@@ -90,7 +88,6 @@ export interface CliOptions {
   cwd: string;
   format: ReportFormat;
   mode?: AnalysisMode;
-  analysisDepth?: AnalysisDepth;
   configPath?: string;
   targetPath?: string;
   includeKinds?: FindingKind[];

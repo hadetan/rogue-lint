@@ -1,5 +1,0 @@
-{
-  "mode": "application",
-  "entrypoints": ["src/index.ts"],
-  "analysisDepth": "surface"
-}

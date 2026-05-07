@@ -58,7 +58,7 @@ npm run build
 
 The repository uses ESLint for code-quality checks. Main package source under `src/` is linted with stricter rules, including `no-console`, while CLI, tests, and fixtures are scoped more permissively where console output is intentional.
 
-For repo-local analyzer runs, `npm run self`, `npm run self:json`, `npm run self:deep`, and `npm run self:deep:json` build the package and run the local CLI against this repository.
+For repo-local analyzer runs, `npm run self` and `npm run self:json` build the package and run the local CLI against this repository.
 
 ## CLI usage
 
@@ -68,7 +68,6 @@ dead-lint path/to/project
 dead-lint path/to/project --json
 dead-lint path/to/project --mode library
 dead-lint path/to/project --kinds unused-export,unused-file,use-before-init
-dead-lint path/to/project --depth surface
 dead-lint path/to/project --config dead-lint.config.json
 ```
 
@@ -87,7 +86,6 @@ Create `dead-lint.config.json` in the target project:
 ```json
 {
   "mode": "application",
-  "analysisDepth": "deep",
   "entrypoints": ["src/index.ts"],
   "hiddenRoots": ["src/worker.ts"],
   "include": ["src/**/*.ts"],
@@ -114,11 +112,6 @@ Create `dead-lint.config.json` in the target project:
 - `library`: preserve otherwise-unused declarations that belong to the public package surface or are explicitly marked externally visible
 
 In `library` mode, configured `entrypoints` define the public surface directly. When entrypoints are inferred from `package.json`, importable package roots such as `exports` and `main` define the public surface, while `bin` entrypoints are still treated as reachable roots without making their named exports part of the library API.
-
-### Analysis depth
-
-- `deep`: run declaration analysis plus value-liveness, member, interface-member, and nested-path tiers
-- `surface`: keep the run focused on surface-level entities such as files, exports, types, locals, and enum members
 
 ## Suppressions and external visibility
 
@@ -261,13 +254,9 @@ Run the package against its own repository:
 ```bash
 npm run self
 npm run self:json
-npm run self:deep
-npm run self:deep:json
 ```
 
-The default self-validation commands run in `library` mode with `--depth surface`, which is the most practical package-level validation for this repository.
-
-Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository with zero findings and zero skips while still exercising the same supported helper-lifecycle, retained-binding, return-observability, and invalidated-read paths described above. Remaining intentionally conservative boundary shapes, such as queue/worklist mutations or opaque iterable spread append, are covered by focused regression fixtures rather than by the repository's own source.
+Self-validation runs in `library` mode and always includes the full analysis tiers. Repository self-validation now runs cleanly with zero findings and zero skips while still exercising the same supported helper-lifecycle, retained-binding, return-observability, and invalidated-read paths described above. Remaining intentionally conservative boundary shapes, such as queue/worklist mutations or opaque iterable spread append, are covered by focused regression fixtures rather than by the repository's own source.
 
 ## Release checks
 
@@ -283,5 +272,5 @@ That sequence verifies:
 
 1. TypeScript build succeeds
 2. tests pass
-3. deep self-validation succeeds on the package's own source
+3. self-validation succeeds on the package's own source
 4. `npm pack --dry-run` succeeds and the package contents are publishable

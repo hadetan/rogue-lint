@@ -487,7 +487,7 @@ describe("dead-lint analyzer", () => {
     expect(nestedPath?.entity.owner).toBe("config");
   });
 
-  it("supports analysis controls for file filters, hidden roots, and surface depth", async () => {
+  it("supports analysis controls for file filters and hidden roots", async () => {
     const fixture = fixturePath("controls-basic");
     const excludedResult = await analyzeProject({
       cwd: process.cwd(),
@@ -501,21 +501,11 @@ describe("dead-lint analyzer", () => {
       configPath: "dead-lint.hidden-roots.json",
       format: "json",
     });
-    const surfaceResult = await analyzeProject({
-      cwd: process.cwd(),
-      targetPath: fixture,
-      configPath: "dead-lint.surface.json",
-      format: "json",
-    });
 
     expect(excludedResult.findings.some((finding) => finding.kind === "unused-export" && finding.entity.name === "onlyExcluded")).toBe(true);
     expect(excludedResult.findings.some((finding) => finding.kind === "unused-file" && finding.entity.name === "excluded-consumer.ts")).toBe(false);
 
     expect(hiddenRootResult.findings.some((finding) => finding.kind === "unused-file" && finding.entity.name === "worker.ts")).toBe(false);
-
-    expect(surfaceResult.findings.some((finding) => finding.kind === "unused-class-member")).toBe(false);
-    expect(surfaceResult.findings.some((finding) => finding.kind === "unused-object-key")).toBe(false);
-    expect(surfaceResult.findings.some((finding) => finding.kind === "unused-nested-path")).toBe(false);
   });
 
   it("reconciles built package roots back to source entrypoints without promoting bin exports to library surface", async () => {
@@ -744,7 +734,7 @@ describe("dead-lint analyzer", () => {
     ).toBe(false);
   });
 
-  it("keeps deep self-host analysis free of findings and skips", async () => {
+  it("keeps self-host analysis free of findings and skips", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
       targetPath: process.cwd(),
