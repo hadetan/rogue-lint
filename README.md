@@ -17,17 +17,27 @@ The current implementation covers:
 - unused locals reported by TypeScript semantic analysis
 - compiler-backed `use-before-init` findings for allow-listed TypeScript safety diagnostics
 - dead stores for overwritten local assignments in the supported value-flow subset
-- unused side-effect-neutral expression results
+- unused side-effect-neutral expression results, including purity-gated discarded analyzable same-project function returns
 - write-only outer-scope writes in the supported closure subset
 - `invalidated-read` and `stale-read-after-mutation` findings for supported exact tracked-path mutations
 - meaningful call-boundary reads for ordinary external calls and supported local helper usage
-- analyzable returned-object propagation across supported same-project helper boundaries
+- exact same-project helper lifecycle analysis for supported array reads, append mutations, and returned aliases
+- exact callback index-correlation for supported local array callback patterns such as `items.every((item, index) => items[index]...)`
+- analyzable same-project function return summaries for scalar values, structured literals, and returned aliases
+- analyzable returned object/array propagation across supported same-project helper and import/export boundaries, including direct returned literals
+- exact same-project import/export propagation for imported array/object aliases, property reads, and imported array destructuring
+- retained-binding preservation through supported `Map.set`/`Map.get` container handoffs in the exact local subset
+- allowlisted whole-value observational calls such as `console.log` for exact arrays/objects, including inserted-by-reference alias observation
 - unused array elements for exact local literal array slots
 - root-owned collection boundary reporting when tracked arrays leave the exact subset
+- supported retained-binding propagation through statically analyzable same-project module bindings and static `globalThis` properties
 - unused class members with exact declaration/reference tracking
 - unused internal interface members when references remain unambiguous
 - unused object keys and nested object paths inside analyzable local object/array graphs
+- structural bookkeeping heuristics for discriminated records, helper summaries, path/token-style objects, and state-holder records so trusted findings stay focused on provably unread metadata
 - alias-aware nested path tracking with bounded local helper forwarding
+- JS-truthful value-fate summaries for supported exact `push(...array)`, `push(value)`, guarded `unshift`, `concat`, `slice`, array/object spread, `Object.assign`, and `structuredClone` paths
+- write-only accumulation findings for exact supported receiver paths and allow-listed ignored-result findings for supported clone-style APIs
 - source/build entrypoint reconciliation for package self-analysis
 - hidden roots, include/exclude file filters, grouped text output, and configurable exit codes
 - inline suppressions, keep rules, and external visibility declarations
@@ -47,6 +57,8 @@ npm run build
 ```
 
 The repository uses ESLint for code-quality checks. Main package source under `src/` is linted with stricter rules, including `no-console`, while CLI, tests, and fixtures are scoped more permissively where console output is intentional.
+
+For repo-local analyzer runs, `npm run self`, `npm run self:json`, `npm run self:deep`, and `npm run self:deep:json` build the package and run the local CLI against this repository.
 
 ## CLI usage
 
@@ -159,15 +171,17 @@ For exports and exported types, only references from other files count as real e
 
 This lets an agent distinguish removable code from code that was intentionally preserved or skipped because it escaped exact analysis.
 
-The human-readable report also separates `findings`, `kept`, and `skipped`, and prints the keep/skip reasons inline so the withheld boundaries stay visible outside JSON mode.
+The human-readable report also separates `findings`, `kept`, and `skipped`, and now prints finding reasons inline too, so exact value-fate and abstention decisions stay visible outside JSON mode.
 
 ## Rust-inspired safety contract
 
-`dead-lint` brings a conservative subset of Rust-like compile-time assistance to JS/TS projects. It can now promote selected compiler-backed safety diagnostics and report exact invalidated reads in supported local object or collection flows.
+`dead-lint` brings a conservative subset of Rust-like compile-time assistance to JS/TS projects. It can now promote selected compiler-backed safety diagnostics, report exact invalidated reads in supported local object or collection flows, and describe common JS collection/object operations with JS-truthful semantics instead of fake ownership language.
 
 That contract is intentionally narrow:
 
 - supported exact flows produce first-class safety findings such as `use-before-init`, `invalidated-read`, and `stale-read-after-mutation`
+- supported same-project imports and supported collection/object operations can preserve exact partial usage, reference insertion, shallow clone, deep clone, and write-only accumulation conclusions
+- allowlisted whole-value observation can count inserted-by-reference aliases as meaningful use without pretending JS transferred ownership
 - unsupported aliasing, reflective access, and opaque escapes remain `skipped`
 - the tool is Rust-inspired, not a replacement for `rustc` ownership, borrow checking, or full memory-safety guarantees
 
@@ -178,14 +192,24 @@ That contract is intentionally narrow:
 - explicit entrypoints
 - explicit hidden roots for convention-driven files
 - static imports/exports
+- same-project imported aliases that resolve back to exact tracked object/array literals
 - direct property access
 - local object and array literals
 - literal array indices and literal `.at(...)` access
 - positional array destructuring without opaque rest reconstruction
 - bounded local helper forwarding of tracked object paths
-- supported same-project helper returns that resolve back to tracked local object bindings
+- supported same-project helper reads and exact append-style mutations over tracked local arrays
+- supported callback index correlation when the callback receiver and index stay inside the exact local array subset
+- supported same-project helper or imported function returns that resolve back to analyzable scalar results or tracked local object/array bindings
+- supported `Map.set`/`Map.get` retained-binding handoffs for statically known local container slots
+- supported same-project retained-binding propagation through static local/module bindings and static `globalThis` properties
 - supported `for...of` and supported inline array callback consumers over local analyzable arrays
-- simple overwritten local assignments and discarded pure expressions
+- supported exact receiver observation after `push`/`unshift` reference insertion, exact spread append, and scalar append growth
+- allowlisted whole-value observational calls such as `console.log(receiver)` over exact arrays/objects
+- same-project helper calls over exact local arrays emit one callsite-owned boundary with helper-cause context when the helper stores or forwards the collection beyond exact local analysis
+- supported `concat`, `slice`, array/object spread, `Object.assign`, and `structuredClone` summaries with JS-truthful clone/escape wording
+- simple overwritten local assignments and discarded pure expressions, plus purity-gated discarded analyzable same-project call results
+- allow-listed ignored-result reporting for supported clone-style APIs such as `slice`, `concat`, and `structuredClone`
 - allow-listed compiler diagnostics such as TypeScript's "used before being assigned"
 - ordinary call-argument consumption at external or built-in call boundaries
 - supported same-project helper calls whose parameter usage remains analyzable
@@ -198,11 +222,11 @@ The analyzer intentionally skips or downgrades exact analysis when code crosses 
 - `Object.keys`, `Object.values`, `Object.entries`, `Reflect.ownKeys`
 - `JSON.stringify`
 - opaque external calls that receive a tracked object
-- array spreads, unsupported array rest reconstruction, and collection mutations that append, replace, reorder, rebuild, or otherwise escape exact reasoning
+- unsupported nested aliasing after collection/object transforms, unsupported array rest reconstruction, and collection mutations that replace, reorder, rebuild, or otherwise escape exact reasoning
 - object/path escapes through opaque call boundaries
 - decorators that can expose class members indirectly
 
-Skipped entities are reported with boundary-specific reasons so the gaps remain visible. When a tracked array becomes non-exact, `dead-lint` now reports that boundary on the owning collection path instead of on a stale child slot.
+Skipped entities are reported with boundary-specific reasons so the gaps remain visible. When a tracked array becomes non-exact, `dead-lint` reports that boundary on the owning collection path instead of on a stale child slot. Structural/internal record shapes also bias toward conservative abstention instead of speculative dead-path findings, while still leaving provably unread metadata fields reportable. Recent boundary messaging also distinguishes ordinary analyzer frontier limits, such as unsupported callback/container correlation, from inherently dynamic code.
 
 ## End-to-end workflow for agents
 
@@ -226,7 +250,7 @@ An agent can then:
 npm run lint
 npm run build
 npm test
-npm run self:validate
+npm run self
 npm run check
 ```
 
@@ -235,23 +259,25 @@ npm run check
 Run the package against its own repository:
 
 ```bash
-npm run self:validate
-npm run self:validate:json
-npm run self:validate:deep
-npm run self:validate:deep:json
+npm run self
+npm run self:json
+npm run self:deep
+npm run self:deep:json
 ```
 
 The default self-validation commands run in `library` mode with `--depth surface`, which is the most practical package-level validation for this repository.
 
-Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository without the earlier builtin-resolution noise, broad false-positive finding sets, or helper-boundary skip noise. Deep mode also includes the supported exact array analysis paths described above, compiler-backed `use-before-init` promotion, exact invalidated-read checks, and root-owned collection boundaries such as the queue worklist in `src/project.ts` instead of misleading child-element skips.
+Use the `:deep` variants when you want the full deeper analysis tiers as well. Deep self-validation now runs cleanly on this repository with zero findings and zero skips while still exercising the same supported helper-lifecycle, retained-binding, return-observability, and invalidated-read paths described above. Remaining intentionally conservative boundary shapes, such as queue/worklist mutations or opaque iterable spread append, are covered by focused regression fixtures rather than by the repository's own source.
 
 ## Release checks
 
 Run these before publishing:
 
 ```bash
-npm run release:check
+npm run prep
 ```
+
+The full lint, test, self-validation, and packability gate runs through `prep`.
 
 That sequence verifies:
 
