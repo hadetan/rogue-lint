@@ -3,7 +3,7 @@ import type { AnalysisResult, AuditRecord, FindingRecord, ReportFormat } from ".
 const REPORT_KIND_WIDTH = 28;
 
 function formatFinding(finding: FindingRecord): string {
-  return `${finding.kind.padEnd(REPORT_KIND_WIDTH)} ${finding.entity.location.file}:${finding.entity.location.line}:${finding.entity.location.column} ${finding.entity.name}`;
+  return `${finding.kind.padEnd(REPORT_KIND_WIDTH)} ${finding.entity.location.file}:${finding.entity.location.line}:${finding.entity.location.column} ${finding.entity.name} - ${finding.reason}`;
 }
 
 function formatAudit(record: AuditRecord): string {

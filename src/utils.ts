@@ -61,8 +61,7 @@ export function indexSegment(value: number): PathSegment {
 }
 
 export function samePath(left: PathSegment[], right: PathSegment[]): boolean {
-  return left.length === right.length
-    && left.every((segment, index) => segment.kind === right[index]?.kind && segment.value === right[index]?.value);
+  return serializePath(left) === serializePath(right);
 }
 
 export function serializePath(segments: PathSegment[]): string {

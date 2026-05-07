@@ -1,0 +1,4 @@
+{
+  "mode": "library",
+  "entrypoints": ["src/index.ts"]
+}

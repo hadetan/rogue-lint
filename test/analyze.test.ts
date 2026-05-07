@@ -93,7 +93,7 @@ describe("dead-lint analyzer", () => {
 
     const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
 
-    expect(result.findings.filter((finding) => finding.kind === "unused-array-element")).toHaveLength(3);
+    expect(result.findings.filter((finding) => finding.kind === "unused-array-element")).toHaveLength(2);
     expect(kindsAndNames).toContain("unused-array-element:[1]");
     expect(kindsAndNames).toContain("unused-nested-path:[0].stale");
     expect(kindsAndNames).toContain("unused-nested-path:[1].stale");
@@ -106,7 +106,7 @@ describe("dead-lint analyzer", () => {
 
     expect(result.skipped.some((entry) => entry.category === "dynamic-array-index")).toBe(true);
     expect(result.skipped.some((entry) => entry.category === "array-at-call")).toBe(true);
-    expect(result.skipped.some((entry) => entry.category === "array-spread")).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "array-spread")).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "array-reorder-mutation")).toBe(true);
     expect(result.skipped.some((entry) => entry.category === "array-rest")).toBe(true);
     expect(result.skipped.some((entry) => entry.kind === "collection-boundary" && entry.name === "mutatedRows")).toBe(true);
@@ -178,6 +178,241 @@ describe("dead-lint analyzer", () => {
     expect(filtered.findings).toHaveLength(1);
     expect(filtered.findings[0]?.kind).toBe("use-before-init");
     expect(filtered.findings[0]?.entity.name).toBe("maybeInit");
+  });
+
+  it("preserves exact imported object and array usage across files", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("cross-file-exact-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-array-element:[1]");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].dead");
+    expect(kindsAndNames).toContain("unused-object-key:dead");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(kindsAndNames).not.toContain("unused-nested-path:[0].live");
+    expect(kindsAndNames).not.toContain("unused-object-key:live");
+    expect(kindsAndNames).not.toContain("unused-export:arr");
+    expect(kindsAndNames).not.toContain("unused-export:obj");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("keeps public exports live without hiding unused remaining imported paths", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("cross-file-public-surface-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-array-element:[6]");
+    expect(kindsAndNames).toContain("unused-array-element:[7]");
+    expect(kindsAndNames).toContain("unused-array-element:[8]");
+    expect(kindsAndNames).toContain("unused-array-element:[9]");
+    expect(kindsAndNames).toContain("unused-object-key:age");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(kindsAndNames).not.toContain("unused-array-element:[5]");
+    expect(kindsAndNames).not.toContain("unused-object-key:name");
+    expect(kindsAndNames).not.toContain("unused-export:arr");
+    expect(kindsAndNames).not.toContain("unused-export:obj");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("classifies JS value fate conservatively and reports write-only accumulation", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("value-fate-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-object-key:dead");
+    expect(kindsAndNames).toContain("unused-object-key:stale");
+    expect(kindsAndNames).toContain("write-only-state:unread");
+    expect(kindsAndNames).toContain("unused-value:numbers.slice(1)");
+    expect(kindsAndNames).toContain("unused-value:structuredClone(numbers)");
+    expect(kindsAndNames).not.toContain("unused-object-key:live");
+    expect(kindsAndNames).not.toContain("unused-object-key:keep");
+    expect(result.skipped.some((entry) => entry.category === "array-spread")).toBe(false);
+    expect(result.skipped.some((entry) => entry.reason.includes("structuredClone"))).toBe(false);
+  });
+
+  it("tracks exact spread append slots without falling back to append boundaries", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("spread-append-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-array-element:[1]");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(kindsAndNames).not.toContain("unused-export:numbers");
+    expect(result.skipped.some((entry) => entry.category === "array-append-mutation")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "spread-escape")).toBe(false);
+  });
+
+  it("materializes exact append growth for scalar values and direct alias insertion", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("append-growth-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-array-element:[1]");
+    expect(kindsAndNames).toContain("unused-object-key:dead");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(kindsAndNames).not.toContain("unused-object-key:live");
+    expect(result.skipped.some((entry) => entry.category === "array-append-mutation")).toBe(false);
+  });
+
+  it("treats allowlisted whole-receiver observation as meaningful use of inserted aliases", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("append-alias-observation-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(kindsAndNames).not.toContain("unused-array-element:[1]");
+    expect(kindsAndNames).not.toContain("write-only-state:abc");
+    expect(kindsAndNames).not.toContain("write-only-state:def");
+    expect(result.findings).toHaveLength(0);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("keeps opaque iterable spread append conservative", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("append-boundary-basic"),
+      format: "json",
+    });
+
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary" && entry.category === "array-append-mutation" && entry.name === "sink"
+    )).toBe(true);
+  });
+
+  it("keeps helper storage by reference honest with a boundary instead of a false unused slot", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-storage-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "childPaths"
+    )).toBe(false);
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary"
+      && entry.name === "childPaths"
+      && entry.category === "array-opaque-mutation"
+      && entry.reason.includes("helper stores this value by reference")
+      && entry.reason.includes("helper cause at")
+    )).toBe(true);
+  });
+
+  it("preserves exact reads through same-project helper observers", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-readonly-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "items" && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "items" && finding.entity.name === "[1]"
+    )).toBe(true);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("preserves exact helper-local append mutations when later reads stay supported", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-mutation-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "items"
+    )).toBe(false);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("tracks supported retained module bindings across same-project helpers", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-retained-binding-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "items" && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "items" && finding.entity.name === "[1]"
+    )).toBe(true);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("tracks supported static globalThis retention across same-project helpers", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-global-this-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "items" && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "items" && finding.entity.name === "[1]"
+    )).toBe(true);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("keeps helper queue/worklist mutations conservative until they are modeled exactly", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-queue-basic"),
+      format: "json",
+    });
+
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary"
+      && entry.name === "queue"
+      && entry.category === "array-reorder-mutation"
+    )).toBe(true);
+  });
+
+  it("treats nested helper closure capture as a conservative boundary", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-closure-capture-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element" && finding.entity.owner === "items"
+    )).toBe(false);
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary"
+      && entry.name === "items"
+      && entry.reason.includes("nested function")
+    )).toBe(true);
   });
 
   it("renders stable summary metadata", async () => {
@@ -354,6 +589,71 @@ describe("dead-lint analyzer", () => {
     expect(result.skipped).toHaveLength(0);
   });
 
+  it("reports analyzable discarded call results without duplicating unread saved returns", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("call-return-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-value:echo(\"unused\")");
+    expect(kindsAndNames).toContain("unused-value:importedText()");
+    expect(kindsAndNames).toContain("unused-local:saved");
+    expect(kindsAndNames).not.toContain("unused-value:echo(\"observed\")");
+    expect(kindsAndNames).not.toContain("unused-value:echo(\"saved\")");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("purity-gates ignored returns while keeping structural dead metadata reportable", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("self-host-trust-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-value:rows.slice()");
+    expect(kindsAndNames).toContain("unused-object-key:label");
+    expect(kindsAndNames).toContain("unused-object-key:path");
+    expect(kindsAndNames).not.toContain("unused-value:touchState(state)");
+    expect(kindsAndNames).not.toContain("unused-object-key:kind");
+    expect(kindsAndNames).not.toContain("unused-object-key:value");
+    expect(result.skipped.some((entry) => entry.kind === "collection-boundary" && entry.name === "findings")).toBe(false);
+    expect(result.skipped.some((entry) => entry.kind === "collection-boundary" && entry.name === "diagnostics")).toBe(false);
+  });
+
+  it("preserves exact callback index correlation for supported local array callbacks", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("callback-correlation-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-nested-path:[0].dead");
+    expect(kindsAndNames).toContain("unused-nested-path:[1].dead");
+    expect(result.skipped.some((entry) => entry.category === "dynamic-array-index")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "array-callback-escape")).toBe(false);
+  });
+
+  it("preserves retained bindings through supported local Map set/get flows", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("container-retention-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-object-key:dead");
+    expect(kindsAndNames).not.toContain("unused-object-key:live");
+    expect(result.skipped.some((entry) => entry.category === "opaque-object-call")).toBe(false);
+  });
+
   it("reports internal interface members and preserves safe object siblings when another branch escapes", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -388,6 +688,45 @@ describe("dead-lint analyzer", () => {
     expect(result.skipped).toHaveLength(0);
   });
 
+  it("tracks direct returned literals for whole-result and nested structured usage", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-literal-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-value:buildSummary()");
+    expect(kindsAndNames).toContain("unused-object-key:dead");
+    expect(kindsAndNames).toContain("unused-nested-path:nested.stale");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].stale");
+    expect(kindsAndNames).toContain("unused-array-element:[1]");
+    expect(kindsAndNames).not.toContain("unused-object-key:live");
+    expect(kindsAndNames).not.toContain("unused-nested-path:nested.read");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("preserves exact structured return usage across same-project imports", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("cross-file-return-structure-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-object-key:dead");
+    expect(kindsAndNames).toContain("unused-nested-path:nested.stale");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].stale");
+    expect(kindsAndNames).toContain("unused-array-element:[1]");
+    expect(kindsAndNames).not.toContain("unused-object-key:live");
+    expect(kindsAndNames).not.toContain("unused-nested-path:nested.read");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(result.skipped).toHaveLength(0);
+  });
+
   it("treats external imports as boundaries and preserves structural whole-object usage", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -403,5 +742,18 @@ describe("dead-lint analyzer", () => {
         ["dead-store", "unused-value", "unused-object-key", "unused-nested-path"].includes(finding.kind),
       ),
     ).toBe(false);
+  });
+
+  it("keeps deep self-host analysis free of findings and skips", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: process.cwd(),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings).toHaveLength(0);
+    expect(result.skipped).toHaveLength(0);
+    expect(result.kept.some((entry) => entry.name === "runCli")).toBe(true);
   });
 });

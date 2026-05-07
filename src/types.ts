@@ -161,7 +161,6 @@ export interface AnalysisResult {
 }
 
 export interface ResolvedConfig {
-  path?: string;
   value: Required<Omit<DeadLintConfig, "keep" | "objectAnalysis">> & {
     keep: Required<KeepRules>;
     objectAnalysis: Required<NonNullable<DeadLintConfig["objectAnalysis"]>>;
@@ -176,7 +175,6 @@ export interface ModuleEdge {
 }
 
 export interface ModuleGraph {
-  edges: ModuleEdge[];
   outgoing: Map<string, ModuleEdge[]>;
   unresolved: DiagnosticRecord[];
 }
@@ -242,16 +240,19 @@ export interface TrackedCollectionState {
 export type TrackedPlaceState = "uninitialized" | "initialized" | "invalidated" | "escaped" | "unknown";
 
 export interface InvalidatedPathRecord {
-  state: Extract<TrackedPlaceState, "invalidated">;
   reason: string;
   findingKind?: Extract<FindingKind, "invalidated-read" | "stale-read-after-mutation">;
 }
 
+export type TrackedObjectStructuralRole = "record" | "state-holder";
+
 export interface TrackedObject {
   id: string;
+  canonicalSymbolKey: string;
   rootName: string;
   sourceFile: string;
   rootEntity: EntityRecord;
+   structuralRole?: TrackedObjectStructuralRole;
   nodes: Map<string, ObjectNode>;
   descendantNodeKeys: Map<string, string[]>;
   collections: Map<string, TrackedCollectionInfo>;
@@ -262,6 +263,27 @@ export interface TrackedObject {
   placeStates: Map<string, TrackedPlaceState>;
   observedSubtrees: Set<string>;
   escapedPaths: Map<string, EscapedPathRecord>;
+  exactPathAliases: Map<string, {
+    fate: "inserted-by-reference";
+    sourceObjectId: string;
+    sourcePath: PathSegment[];
+    observed: boolean;
+  }>;
+  valueFates: Array<{
+    fate:
+      | "observed"
+      | "inserted-by-reference"
+      | "shallow-cloned"
+      | "deep-cloned"
+      | "resource-transferred"
+      | "escaped-opaquely"
+      | "overwritten"
+      | "invalidated";
+    path: PathSegment[];
+    reason: string;
+    relatedObjectId?: string;
+    relatedPath?: PathSegment[];
+  }>;
   reads: Set<string>;
   writes: Set<string>;
 }

@@ -116,7 +116,7 @@ export function buildModuleGraph(project: ProjectContext): ModuleGraph {
     outgoing.set(edge.from, existing);
   }
 
-  return { edges, outgoing, unresolved };
+  return { outgoing, unresolved };
 }
 
 function resolveProjectSourceFile(project: ProjectContext, candidate: string): string | undefined {

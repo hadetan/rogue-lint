@@ -90,7 +90,6 @@ export function resolveConfig(rootPath: string, cliOptions: CliOptions): Resolve
   };
 
   return {
-    path: sourcePath,
     value: merged,
   };
 }
