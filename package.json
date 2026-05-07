@@ -1,6 +1,6 @@
 {
   "name": "dead-lint",
-  "version": "0.0.1",
+  "version": "0.6.4",
   "description": "Whole-project dead code analysis for JavaScript and TypeScript with agent-friendly output.",
   "type": "module",
   "main": "./dist/index.js",
@@ -20,13 +20,13 @@
     "lint:fix": "npm run lint -- --fix",
     "test": "vitest run",
     "test:watch": "vitest",
-    "self:validate": "npm run build && node dist/cli.js . --mode library --depth surface",
-    "self:validate:json": "npm run build && node dist/cli.js . --mode library --depth surface --json",
-    "self:validate:deep": "npm run build && node dist/cli.js . --mode library",
-    "self:validate:deep:json": "npm run build && node dist/cli.js . --mode library --json",
+    "self": "npm run build && node dist/cli.js . --mode library --depth surface",
+    "self:json": "npm run build && node dist/cli.js . --mode library --depth surface --json",
+    "self:deep": "npm run build && node dist/cli.js . --mode library",
+    "self:deep:json": "npm run build && node dist/cli.js . --mode library --json",
     "check": "npm run lint && npm run build && npm test",
-    "pack:check": "npm pack --dry-run",
-    "release:check": "npm run check && npm run self:validate:deep && npm run pack:check"
+    "pack:check": "npm pack --dry-run --ignore-scripts",
+    "prep": "npm run check && node dist/cli.js . --mode library && npm run pack:check"
   },
   "engines": {
     "node": ">=20.0.0"
