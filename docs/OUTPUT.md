@@ -1,6 +1,6 @@
 # rogue-lint output reference
 
-This guide explains how to read the text and JSON output `rogue-lint` emits today, based on `src/reporting.ts`, `src/types.ts`, and the regression suite.
+This guide explains how to read the text and JSON output `rogue-lint` emits today, based on `src/output/render-result.ts`, `src/api/public-types.ts`, and the regression suite.
 
 ## The Four Top-Level Output Buckets
 

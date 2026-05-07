@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.js";
 import { analyzeProject } from "../src/index.js";
-import { renderResult } from "../src/reporting.js";
+import { renderResult } from "../src/output/render-result.js";
 
 function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
@@ -744,6 +744,6 @@ describe("rogue-lint analyzer", () => {
 
     expect(result.findings).toHaveLength(0);
     expect(result.skipped).toHaveLength(0);
-    expect(result.kept.some((entry) => entry.name === "runCli")).toBe(true);
+    expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);
   });
 });

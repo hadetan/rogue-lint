@@ -1,7 +1,7 @@
-export { analyzeProject } from "./analyze.js";
+export { analyzeProject } from "./api/analyze-project.js";
 export type {
   AnalysisResult,
   RogueLintConfig,
   FindingKind,
   ReportFormat,
-} from "./types.js";
+} from "./api/public-types.js";

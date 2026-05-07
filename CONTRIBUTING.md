@@ -42,12 +42,19 @@ npx vitest run -t "supports exact and conservative array analysis"
 
 Important files and directories:
 
-- `src/analyze.ts`: core analysis engine and exactness logic
+- `src/index.ts`: thin package root that re-exports the documented public API surface
+- `src/cli.ts`: executable entrypoint that hands off to the internal CLI runner
+- `src/api/`: package-facing analysis wrapper and public types
+- `src/cli/`: CLI option parsing and shell-oriented execution flow
+- `src/engine/run-analysis.ts`: orchestration for project loading, reachability, stage execution, and result assembly
+- `src/engine/analyzers/`: stage entrypoints and shared low-coupling analyzer helpers
+- `src/engine/tracking/core.ts`: shared tracked-object kernel for value-liveness and object-path analysis
+- `src/engine/internal-types.ts`: engine-only shared types
 - `src/module-graph.ts`: import and export graph construction and entrypoint discovery helpers
 - `src/project.ts`: project loading, tsconfig resolution, and source selection
 - `src/config.ts`: config resolution from `rogue-lint.config.json` or the `rogueLint` field in `package.json`
-- `src/reporting.ts`: text and JSON report rendering
-- `src/cli.ts`: CLI argument parsing and exit-code behavior
+- `src/output/render-result.ts`: text and JSON report rendering
+- `docs/ARCHITECTURE.md`: module ownership map and maintenance rules for the refactored engine
 - `docs/CONFIGURATION.md`: config precedence, modes, entrypoint discovery, and suppressions
 - `docs/OUTPUT.md`: report buckets, JSON shape, and skip-category reference
 - `test/analyze.test.ts`: behavior-level regression tests
@@ -94,7 +101,7 @@ Recommended workflow for a new analysis rule or boundary refinement:
 1. Identify the smallest fixture that demonstrates the behavior.
 2. Add or update a focused case in `test/analyze.test.ts`.
 3. Add or update the fixture under `test/fixtures/`.
-4. Implement the smallest change needed in `src/`.
+4. Implement the smallest change needed in the owning module under `src/`.
 5. Run a narrow Vitest check first.
 6. Run broader validation before finishing.
 

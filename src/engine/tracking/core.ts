@@ -1,21 +1,9 @@
-import path from "node:path";
-
 import ts from "typescript";
 
-import { buildModuleGraph, computeReachableFiles, discoverEntrypoints } from "./module-graph.js";
-import { loadProject } from "./project.js";
-import {
-  hasNonDeclarationReferences,
-  summarizeNonDeclarationReferences,
-  summarizeReferenceUsage,
-} from "./references.js";
-import { buildSuppressionContext, getSuppressionAudit } from "./suppressions.js";
+import { buildSuppressionContext, getSuppressionAudit } from "../../suppressions.js";
 import type {
-  AnalysisResult,
   AuditRecord,
-  CliOptions,
   CollectionBoundaryRecord,
-  DiagnosticRecord,
   EscapedPathRecord,
   EntityKind,
   EntityRecord,
@@ -30,48 +18,39 @@ import type {
   TrackedPlaceState,
   TrackedObject,
   TrackedObjectStructuralRole,
-} from "./types.js";
+} from "../../types.js";
 import {
-  getDeclarationNameNode,
-  getNodeName,
+  getSymbolKey,
+  hasModifier,
+  isReadLikeUse,
+} from "../../compiler/ast-utils.js";
+import {
+  makeEntity,
+  kindToFinding,
+} from "../../shared/entity-utils.js";
+import {
   indexSegment,
   isSerializedPathWithin,
-  isReadLikeUse,
-  getSymbolKey,
-  getVersion,
-  hasModifier,
-  kindToFinding,
-  makeEntity,
   propertySegment,
   renderPath,
   renderPathWithRoot,
   samePath,
   serializePath,
   toRelative,
-  uniqueById,
-} from "./utils.js";
+} from "../../shared/path-utils.js";
+
+/**
+ * Shared tracking kernel for the heavy analyzer stages.
+ *
+ * This module owns the tracked-object graph, helper-summary propagation, and the exactness gates used by
+ * value-liveness and object-path analysis. When an access path, helper boundary, or mutation stops being
+ * provably exact, callers must record a conservative skip or audit instead of continuing to infer structure.
+ */
 
 interface AnalysisState {
   findings: FindingRecord[];
   kept: AuditRecord[];
   skipped: AuditRecord[];
-  diagnostics: DiagnosticRecord[];
-}
-
-interface ReferenceCaches {
-  hasReference: Map<string, boolean>;
-  exportReferences: Map<string, ReturnType<typeof summarizeNonDeclarationReferences>>;
-  usage: Map<string, ReturnType<typeof summarizeReferenceUsage>>;
-}
-
-interface AnalysisStage {
-  enabled: boolean;
-  run: () => void;
-}
-
-interface CompilerSafetyDiagnosticSpec {
-  findingKind: Extract<FindingKind, "use-before-init">;
-  reason: string;
 }
 
 type TrackedValueFate =
@@ -240,15 +219,6 @@ class CollectionState implements TrackedCollectionState {
     public epoch = 0,
     public arrayLength?: number,
   ) {}
-}
-
-function createState(): AnalysisState {
-  return {
-    findings: [],
-    kept: [],
-    skipped: [],
-    diagnostics: [],
-  };
 }
 
 function unwrapExpression(expression: ts.Expression): ts.Expression {
@@ -569,17 +539,6 @@ const ARRAY_APPEND_METHODS = new Set(["push"]);
 const ARRAY_TRUNCATE_METHODS = new Set(["pop"]);
 const ARRAY_REPLACEMENT_METHODS = new Set(["fill"]);
 const ARRAY_REORDER_METHODS = new Set(["copyWithin", "reverse", "shift", "sort", "splice", "unshift"]);
-// Initial allow-list of compiler-backed safety diagnostics promoted into rogue-lint findings.
-const COMPILER_SAFETY_DIAGNOSTICS = new Map<number, CompilerSafetyDiagnosticSpec>([
-  [
-    2454,
-    {
-      findingKind: "use-before-init",
-      reason: "TypeScript semantic diagnostics reported this value is used before being assigned",
-    },
-  ],
-]);
-
 function addFinding(
   state: AnalysisState,
   entity: EntityRecord,
@@ -997,23 +956,6 @@ function markAliasObserved(
   if (receiver) {
     markRead(receiver, resolved.viaAliasPath);
   }
-}
-
-function createReferenceKey(sourceFile: ts.SourceFile, node: ts.Node): string {
-  return `${sourceFile.fileName}:${node.getStart(sourceFile)}`;
-}
-
-function buildFileEntity(project: ProjectContext, sourceFile: ts.SourceFile): EntityRecord {
-  return {
-    id: `file:${toRelative(project.rootPath, sourceFile.fileName)}`,
-    kind: "file",
-    name: path.basename(sourceFile.fileName),
-    location: {
-      file: toRelative(project.rootPath, sourceFile.fileName),
-      line: 1,
-      column: 1,
-    },
-  };
 }
 
 function buildCollectionBoundaryEntity(
@@ -1520,551 +1462,6 @@ function getRetainedBindingContainerSlotKey(
   }
 
   return `container:${getCanonicalSymbolKey(project, symbol)}:${slotToken}`;
-}
-
-function buildPublicSurfaceAudit(entity: EntityRecord): AuditRecord {
-  return {
-    id: entity.id,
-    kind: entity.kind,
-    name: entity.name,
-    reason: "kept as public package surface",
-    location: entity.location,
-  };
-}
-
-function collectPublicSurfaceIds(project: ProjectContext, entrypoints: string[]): Set<string> {
-  if (project.config.value.mode !== "library") {
-    return new Set<string>();
-  }
-
-  const ids = new Set<string>();
-
-  for (const entrypoint of entrypoints) {
-    const sourceFile = project.sourceFiles.find((candidate) => candidate.fileName === entrypoint);
-    if (!sourceFile) {
-      continue;
-    }
-
-    const moduleSymbol = project.checker.getSymbolAtLocation(sourceFile);
-    if (!moduleSymbol) {
-      continue;
-    }
-
-    for (const exportedSymbol of project.checker.getExportsOfModule(moduleSymbol)) {
-      const underlying = exportedSymbol.flags & ts.SymbolFlags.Alias
-        ? project.checker.getAliasedSymbol(exportedSymbol)
-        : exportedSymbol;
-
-      for (const declaration of underlying.declarations ?? []) {
-        const nameNode = getDeclarationNameNode(declaration);
-        const name = getNodeName(declaration);
-        if (!nameNode || !name) {
-          continue;
-        }
-
-        ids.add(makeEntity(project.rootPath, "export", declaration.getSourceFile(), nameNode, name).id);
-        ids.add(makeEntity(project.rootPath, "type", declaration.getSourceFile(), nameNode, name).id);
-      }
-    }
-  }
-
-  return ids;
-}
-
-function findNodeAtPosition(sourceFile: ts.SourceFile, position: number): ts.Node | undefined {
-  const visit = (node: ts.Node): ts.Node | undefined => {
-    if (position < node.getFullStart() || position > node.getEnd()) {
-      return undefined;
-    }
-
-    return ts.forEachChild(node, visit) ?? node;
-  };
-
-  return visit(sourceFile);
-}
-
-function buildCompilerSafetyEntity(
-  project: ProjectContext,
-  sourceFile: ts.SourceFile,
-  node: ts.Node,
-): { entity: EntityRecord; targetNode: ts.Node } | undefined {
-  const declarationNode = ts.findAncestor(node, (candidate) => Boolean(getDeclarationNameNode(candidate)));
-  const nameNode = declarationNode ? getDeclarationNameNode(declarationNode) : undefined;
-  const name = declarationNode ? getNodeName(declarationNode) : undefined;
-
-  if (declarationNode && nameNode && name) {
-    if (ts.isPropertyDeclaration(declarationNode) || ts.isPropertySignature(declarationNode)) {
-      const classDeclaration = ts.findAncestor(
-        declarationNode,
-        (candidate): candidate is ts.ClassLikeDeclaration => ts.isClassLike(candidate),
-      );
-      return {
-        entity: makeEntity(
-          project.rootPath,
-          "class-member",
-          sourceFile,
-          nameNode,
-          name,
-          classDeclaration?.name?.text,
-        ),
-        targetNode: declarationNode,
-      };
-    }
-
-    if (ts.isVariableDeclaration(declarationNode) && ts.isIdentifier(declarationNode.name)) {
-      return {
-        entity: makeEntity(project.rootPath, "local", sourceFile, node, declarationNode.name.text),
-        targetNode: node,
-      };
-    }
-  }
-
-  if (ts.isIdentifier(node)) {
-    return {
-      entity: makeEntity(project.rootPath, "local", sourceFile, node, node.text),
-      targetNode: node,
-    };
-  }
-
-  const text = node.getText(sourceFile).trim();
-  if (!text) {
-    return undefined;
-  }
-
-  return {
-    entity: makeEntity(project.rootPath, "expression", sourceFile, node, text),
-    targetNode: node,
-  };
-}
-
-function analyzeCompilerSafetyDiagnostics(
-  project: ProjectContext,
-  reachableFiles: Set<string>,
-  state: AnalysisState,
-  suppressionContext: ReturnType<typeof buildSuppressionContext>,
-): void {
-  for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
-      continue;
-    }
-
-    for (const diagnostic of project.program.getSemanticDiagnostics(sourceFile)) {
-      const spec = COMPILER_SAFETY_DIAGNOSTICS.get(diagnostic.code);
-      if (!spec || !diagnostic.file || diagnostic.start === undefined) {
-        continue;
-      }
-
-      const node = findNodeAtPosition(diagnostic.file, diagnostic.start);
-      if (!node) {
-        continue;
-      }
-
-      const target = buildCompilerSafetyEntity(project, sourceFile, node);
-      if (!target) {
-        continue;
-      }
-
-      const suppression = getSuppressionAudit(project, suppressionContext, target.entity, target.targetNode);
-      if (addAudit(state.kept, suppression)) {
-        continue;
-      }
-
-      addFinding(
-        state,
-        target.entity,
-        spec.findingKind,
-        spec.reason,
-        diagnostic.messageText.toString(),
-        "review",
-      );
-    }
-  }
-}
-
-function analyzeUnusedFiles(
-  project: ProjectContext,
-  reachableFiles: Set<string>,
-  state: AnalysisState,
-  suppressionContext: ReturnType<typeof buildSuppressionContext>,
-): void {
-  for (const sourceFile of project.sourceFiles) {
-    if (reachableFiles.has(sourceFile.fileName)) {
-      continue;
-    }
-
-    const entity = buildFileEntity(project, sourceFile);
-    const suppression = getSuppressionAudit(project, suppressionContext, entity);
-    if (addAudit(state.kept, suppression)) {
-      continue;
-    }
-
-    addFinding(
-      state,
-      entity,
-      "unused-file",
-      "file is unreachable from configured entrypoints",
-      `Unused file ${entity.location.file}`,
-    );
-  }
-}
-
-function collectExportCandidates(project: ProjectContext, sourceFile: ts.SourceFile): Array<{
-  entity: EntityRecord;
-  node: ts.Node;
-  exportedKind: EntityKind;
-}> {
-  const candidates = new Map<string, { entity: EntityRecord; node: ts.Node; exportedKind: EntityKind }>();
-
-  for (const statement of sourceFile.statements) {
-    if (
-      (ts.isFunctionDeclaration(statement) ||
-        ts.isClassDeclaration(statement) ||
-        ts.isInterfaceDeclaration(statement) ||
-        ts.isTypeAliasDeclaration(statement) ||
-        ts.isEnumDeclaration(statement)) &&
-      hasModifier(statement, ts.SyntaxKind.ExportKeyword)
-    ) {
-      const nameNode = getDeclarationNameNode(statement);
-      const name = getNodeName(statement);
-      if (!nameNode || !name) {
-        continue;
-      }
-      const exportedKind: EntityKind =
-        ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)
-          ? "type"
-          : "export";
-
-      const entity = makeEntity(project.rootPath, exportedKind, sourceFile, nameNode, name);
-      candidates.set(entity.id, { entity, node: nameNode, exportedKind });
-
-      if (ts.isEnumDeclaration(statement)) {
-        for (const member of statement.members) {
-          const memberName = getNodeName(member);
-          const memberNameNode = getDeclarationNameNode(member);
-          if (!memberName || !memberNameNode) {
-            continue;
-          }
-          const memberEntity = makeEntity(
-            project.rootPath,
-            "enum-member",
-            sourceFile,
-            memberNameNode,
-            memberName,
-            name,
-          );
-          candidates.set(memberEntity.id, {
-            entity: memberEntity,
-            node: memberNameNode,
-            exportedKind: "enum-member",
-          });
-        }
-      }
-    }
-
-    if (ts.isVariableStatement(statement) && hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
-      for (const declaration of statement.declarationList.declarations) {
-        const nameNode = getDeclarationNameNode(declaration);
-        const name = getNodeName(declaration);
-        if (!nameNode || !name) {
-          continue;
-        }
-        const entity = makeEntity(project.rootPath, "export", sourceFile, nameNode, name);
-        candidates.set(entity.id, { entity, node: nameNode, exportedKind: "export" });
-      }
-    }
-
-    if (
-      ts.isExportDeclaration(statement) &&
-      !statement.moduleSpecifier &&
-      statement.exportClause &&
-      ts.isNamedExports(statement.exportClause)
-    ) {
-      for (const element of statement.exportClause.elements) {
-        const localName = element.propertyName ?? element.name;
-        const symbol = project.checker.getSymbolAtLocation(localName);
-        const declaration = symbol?.declarations?.[0];
-        const nameNode = declaration ? getDeclarationNameNode(declaration) : undefined;
-        const name = declaration ? getNodeName(declaration) : undefined;
-        if (!declaration || !nameNode || !name) {
-          continue;
-        }
-
-        const exportedKind: EntityKind =
-          ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration)
-            ? "type"
-            : "export";
-        const entity = makeEntity(project.rootPath, exportedKind, sourceFile, nameNode, name);
-        candidates.set(entity.id, { entity, node: nameNode, exportedKind });
-      }
-    }
-  }
-
-  return [...candidates.values()];
-}
-
-function analyzeUnusedExports(
-  project: ProjectContext,
-  reachableFiles: Set<string>,
-  publicSurfaceIds: Set<string>,
-  state: AnalysisState,
-  suppressionContext: ReturnType<typeof buildSuppressionContext>,
-  caches: ReferenceCaches,
-): void {
-  for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
-      continue;
-    }
-
-    for (const candidate of collectExportCandidates(project, sourceFile)) {
-      const cacheKey = createReferenceKey(sourceFile, candidate.node);
-      let referenceSummary = caches.exportReferences.get(cacheKey);
-      if (!referenceSummary) {
-        referenceSummary = summarizeNonDeclarationReferences(
-          project.languageService,
-          sourceFile,
-          candidate.node,
-          project.analyzableFiles,
-        );
-        caches.exportReferences.set(cacheKey, referenceSummary);
-      }
-
-      if (referenceSummary.crossFileReferences > 0) {
-        continue;
-      }
-
-      const keepReason = publicSurfaceIds.has(candidate.entity.id)
-        ? buildPublicSurfaceAudit(candidate.entity)
-        : getSuppressionAudit(project, suppressionContext, candidate.entity, candidate.node);
-
-      if (addAudit(state.kept, keepReason)) {
-        continue;
-      }
-
-      const findingKind = kindToFinding(candidate.exportedKind);
-      if (!findingKind) {
-        continue;
-      }
-
-      addFinding(
-        state,
-        candidate.entity,
-        findingKind,
-        referenceSummary.sameFileReferences > 0
-          ? "exported declaration is only referenced within its declaring file"
-          : "exported declaration has no non-declaration references outside its declaring file",
-        referenceSummary.sameFileReferences > 0
-          ? `Exported ${candidate.entity.name} is only used within ${candidate.entity.location.file}`
-          : `Unused exported ${candidate.entity.name}`,
-      );
-    }
-  }
-}
-
-function analyzeUnusedLocals(
-  project: ProjectContext,
-  reachableFiles: Set<string>,
-  state: AnalysisState,
-  suppressionContext: ReturnType<typeof buildSuppressionContext>,
-): void {
-  for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
-      continue;
-    }
-
-    for (const diagnostic of project.program.getSemanticDiagnostics(sourceFile)) {
-      if (diagnostic.code !== 6133 || !diagnostic.file || diagnostic.start === undefined) {
-        continue;
-      }
-
-      const node = findNodeAtPosition(diagnostic.file, diagnostic.start);
-      const declarationNode = node ? ts.findAncestor(node, (candidate) => Boolean(getDeclarationNameNode(candidate))) : undefined;
-      const nameNode = declarationNode ? getDeclarationNameNode(declarationNode) : node;
-      const name = declarationNode ? getNodeName(declarationNode) : node?.getText(sourceFile);
-
-      if (!nameNode || !name) {
-        continue;
-      }
-
-      const entity = makeEntity(project.rootPath, "local", sourceFile, nameNode, name);
-      const suppression = getSuppressionAudit(project, suppressionContext, entity, declarationNode ?? nameNode);
-      if (addAudit(state.kept, suppression)) {
-        continue;
-      }
-
-      addFinding(
-        state,
-        entity,
-        "unused-local",
-        "TypeScript semantic diagnostics reported this declaration as unused",
-        diagnostic.messageText.toString(),
-      );
-    }
-  }
-}
-
-function analyzeClassMembers(
-  project: ProjectContext,
-  reachableFiles: Set<string>,
-  state: AnalysisState,
-  suppressionContext: ReturnType<typeof buildSuppressionContext>,
-  caches: ReferenceCaches,
-): void {
-  for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
-      continue;
-    }
-
-    const visit = (node: ts.Node): void => {
-      if (ts.isClassDeclaration(node) && node.name) {
-        const className = node.name.text;
-        const classHasDecorators = ts.canHaveDecorators(node)
-          ? Boolean(ts.getDecorators(node)?.length)
-          : false;
-
-        for (const member of node.members) {
-          const memberName = getNodeName(member);
-          const memberNameNode = getDeclarationNameNode(member);
-          if (!memberName || !memberNameNode) {
-            continue;
-          }
-
-          const entity = makeEntity(
-            project.rootPath,
-            "class-member",
-            sourceFile,
-            memberNameNode,
-            memberName,
-            className,
-          );
-
-          const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
-          if (addAudit(state.kept, suppression)) {
-            continue;
-          }
-
-          const memberHasDecorators = ts.canHaveDecorators(member)
-            ? Boolean(ts.getDecorators(member)?.length)
-            : false;
-
-          if (classHasDecorators || memberHasDecorators) {
-            addSkipped(state, entity, "decorator-visibility", "member skipped because decorators can make it externally visible");
-            continue;
-          }
-
-          if (ts.isPropertyDeclaration(member) && member.name && ts.isComputedPropertyName(member.name)) {
-            addSkipped(state, entity, "computed-member-name", "member skipped because computed property names are dynamic");
-            continue;
-          }
-
-          const cacheKey = createReferenceKey(sourceFile, memberNameNode);
-          const usage =
-            caches.usage.get(cacheKey) ??
-            summarizeReferenceUsage(
-              project.languageService,
-              project.program,
-              sourceFile,
-              memberNameNode,
-              project.analyzableFiles,
-            );
-          caches.usage.set(cacheKey, usage);
-
-          if (usage.reads > 0) {
-            continue;
-          }
-
-          addFinding(
-            state,
-            entity,
-            "unused-class-member",
-            usage.writes > 0
-              ? "eligible class member is written but never read"
-              : "eligible class member has no non-declaration references",
-            `Unused class member ${className}.${memberName}`,
-          );
-        }
-      }
-
-      ts.forEachChild(node, visit);
-    };
-
-    ts.forEachChild(sourceFile, visit);
-  }
-}
-
-function analyzeInterfaceMembers(
-  project: ProjectContext,
-  reachableFiles: Set<string>,
-  state: AnalysisState,
-  suppressionContext: ReturnType<typeof buildSuppressionContext>,
-  caches: ReferenceCaches,
-): void {
-  for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
-      continue;
-    }
-
-    const visit = (node: ts.Node): void => {
-      if (ts.isInterfaceDeclaration(node) && node.name) {
-        const isExported = hasModifier(node, ts.SyntaxKind.ExportKeyword);
-        if (project.config.value.mode === "library" && isExported) {
-          return ts.forEachChild(node, visit);
-        }
-
-        for (const member of node.members) {
-          if (!ts.isPropertySignature(member) && !ts.isMethodSignature(member)) {
-            continue;
-          }
-
-          const memberName = getNodeName(member);
-          const memberNameNode = getDeclarationNameNode(member);
-          if (!memberName || !memberNameNode) {
-            continue;
-          }
-
-          const entity = makeEntity(
-            project.rootPath,
-            "interface-member",
-            sourceFile,
-            memberNameNode,
-            memberName,
-            node.name.text,
-          );
-          const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
-          if (addAudit(state.kept, suppression)) {
-            continue;
-          }
-
-          const cacheKey = createReferenceKey(sourceFile, memberNameNode);
-          let hasReferences = caches.hasReference.get(cacheKey);
-          if (hasReferences === undefined) {
-            hasReferences = hasNonDeclarationReferences(
-              project.languageService,
-              sourceFile,
-              memberNameNode,
-              project.analyzableFiles,
-            );
-            caches.hasReference.set(cacheKey, hasReferences);
-          }
-
-          if (hasReferences) {
-            continue;
-          }
-
-          addFinding(
-            state,
-            entity,
-            "unused-interface-member",
-            "eligible interface member has no non-declaration references",
-            `Unused interface member ${node.name.text}.${memberName}`,
-          );
-        }
-      }
-
-      ts.forEachChild(node, visit);
-    };
-
-    ts.forEachChild(sourceFile, visit);
-  }
 }
 
 function isExportedVariableDeclaration(node: ts.VariableDeclaration): boolean {
@@ -2887,7 +2284,13 @@ function buildHelperBoundaryReason(
   return `${summary.boundaryReason} (helper cause at ${getHelperLocationText(project, causeSourceFile, summary.boundaryNode)})`;
 }
 
-function analyzeValueLiveness(
+/**
+ * Evaluates local value fates after the shared tracked-object graph has summarized helper and return behavior.
+ *
+ * Exact results only survive while bindings, helper summaries, and access paths stay analyzable. When the
+ * kernel encounters dynamic or opaque behavior, it records conservative boundaries instead of guessing.
+ */
+export function analyzeValueLiveness(
   project: ProjectContext,
   reachableFiles: Set<string>,
   state: AnalysisState,
@@ -4887,7 +4290,14 @@ function buildTrackedObjects(
   };
 }
 
-function analyzeObjectPaths(
+/**
+ * Reports unused object paths, array slots, and collection boundaries from the shared tracked-object graph.
+ *
+ * This stage reuses the same exactness rules as value-liveness. Any dynamic property access, unsupported
+ * mutation, or opaque helper interaction must degrade into a documented skip or boundary instead of an exact
+ * structural claim.
+ */
+export function analyzeObjectPaths(
   project: ProjectContext,
   reachableFiles: Set<string>,
   state: AnalysisState,
@@ -5704,104 +5114,3 @@ function analyzeObjectPaths(
   }
 }
 
-export async function analyzeProject(cliOptions: CliOptions): Promise<AnalysisResult> {
-  const project = loadProject(cliOptions);
-  const state = createState();
-  const suppressionContext = buildSuppressionContext(project);
-  const graph = buildModuleGraph(project);
-  const entrypointDiscovery = discoverEntrypoints(project);
-  const reachableFiles = computeReachableFiles(entrypointDiscovery.entrypoints, graph);
-  const publicSurfaceIds = collectPublicSurfaceIds(project, entrypointDiscovery.publicSurfaceEntrypoints);
-  const caches: ReferenceCaches = {
-    hasReference: new Map(),
-    exportReferences: new Map(),
-    usage: new Map(),
-  };
-
-  state.diagnostics.push(...entrypointDiscovery.diagnostics);
-  state.diagnostics.push(...graph.unresolved);
-
-  const stages: AnalysisStage[] = [
-    {
-      enabled: true,
-      run: () => analyzeUnusedFiles(project, reachableFiles, state, suppressionContext),
-    },
-    {
-      enabled: true,
-      run: () => analyzeCompilerSafetyDiagnostics(project, reachableFiles, state, suppressionContext),
-    },
-    {
-      enabled: true,
-      run: () =>
-        analyzeUnusedExports(project, reachableFiles, publicSurfaceIds, state, suppressionContext, caches),
-    },
-    {
-      enabled: true,
-      run: () => analyzeUnusedLocals(project, reachableFiles, state, suppressionContext),
-    },
-    {
-      enabled: true,
-      run: () => analyzeValueLiveness(project, reachableFiles, state, suppressionContext),
-    },
-    {
-      enabled: true,
-      run: () => analyzeInterfaceMembers(project, reachableFiles, state, suppressionContext, caches),
-    },
-    {
-      enabled: true,
-      run: () => analyzeClassMembers(project, reachableFiles, state, suppressionContext, caches),
-    },
-    {
-      enabled: true,
-      run: () => analyzeObjectPaths(project, reachableFiles, state, suppressionContext),
-    },
-  ];
-
-  for (const stage of stages) {
-    if (stage.enabled) {
-      stage.run();
-    }
-  }
-
-  const includeKinds = project.config.value.includeKinds;
-  const filteredFindings =
-    includeKinds.length > 0
-      ? state.findings.filter((finding) => includeKinds.includes(finding.kind))
-      : state.findings;
-
-  const findings = uniqueById(filteredFindings);
-  const kept = uniqueById(state.kept);
-  const skipped = uniqueById(state.skipped);
-  const diagnostics = uniqueById(
-    state.diagnostics.map((diagnostic, index) => ({ ...diagnostic, id: `${diagnostic.kind}:${index}` })),
-  ).map(({ id: _id, ...diagnostic }) => diagnostic);
-
-  const byKind: Partial<Record<FindingKind, number>> = {};
-  for (const finding of findings) {
-    byKind[finding.kind] = (byKind[finding.kind] ?? 0) + 1;
-  }
-
-  return {
-    tool: "rogue-lint",
-    version: getVersion(),
-    target: project.rootPath,
-    mode: project.config.value.mode,
-    exitCodes: {
-      findings: project.config.value.findingsExitCode,
-      failure: project.config.value.failureExitCode,
-    },
-    generatedAt: new Date().toISOString(),
-    summary: {
-      filesAnalyzed: project.sourceFiles.length,
-      reachableFiles: reachableFiles.size,
-      findings: findings.length,
-      kept: kept.length,
-      skipped: skipped.length,
-      byKind,
-    },
-    findings,
-    kept,
-    skipped,
-    diagnostics,
-  };
-}

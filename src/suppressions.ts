@@ -7,7 +7,7 @@ import type {
   SourceCommentDirectives,
   SuppressionContext,
 } from "./types.js";
-import { matchesPatterns } from "./utils.js";
+import { matchesPatterns } from "./shared/general-utils.js";
 
 const IGNORE_NEXT = "rogue-lint-ignore-next";
 const IGNORE_START = "rogue-lint-ignore-start";

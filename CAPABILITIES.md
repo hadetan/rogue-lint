@@ -213,7 +213,7 @@ This keeps `items[0]` live and still allows `items[1]` to remain reportable.
 Important nuances:
 
 - internally, returned values are summarized as `value`, `structured`, `returned-alias`, or `opaque`; that summary drives cross-file and helper precision
-- conditional and nullish return expressions stay exact only when both branches collapse to the same tracked binding or to compatible pure-value summaries; that is code-backed in `src/analyze.ts`
+- conditional and nullish return expressions stay exact only when both branches collapse to the same tracked binding or to compatible pure-value summaries; that is code-backed in `src/engine/tracking/core.ts`
 - helper storage by reference and nested helper closure capture remain explicit conservative boundaries rather than speculative exactness
 
 ## 4. Helpers, Callback Correlation, And Retained Bindings

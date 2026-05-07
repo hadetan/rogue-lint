@@ -4,7 +4,8 @@ import path from "node:path";
 import ts from "typescript";
 
 import type { DiagnosticRecord, ModuleEdge, ModuleGraph, ProjectContext } from "./types.js";
-import { matchesPatterns, normalizeSlashes, toRelative } from "./utils.js";
+import { matchesPatterns } from "./shared/general-utils.js";
+import { normalizeSlashes, toRelative } from "./shared/path-utils.js";
 
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 const BUILTIN_MODULES = new Set(

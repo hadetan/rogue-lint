@@ -134,6 +134,7 @@ In `application` mode, entrypoints define runtime roots. In `library` mode, the 
 ## Docs
 
 - [CAPABILITIES.md](CAPABILITIES.md): tested coverage map, examples, and conservative boundaries
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): module ownership map and maintenance rules for the refactored engine
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md): modes, entrypoint discovery, filters, keep rules, suppressions, and config precedence
 - [docs/OUTPUT.md](docs/OUTPUT.md): text and JSON reports, `findings` versus `kept` versus `skipped`, `collection-boundary`, and skip-category reference
 - [CONTRIBUTING.md](CONTRIBUTING.md): repo workflow, fixture-first changes, and validation expectations

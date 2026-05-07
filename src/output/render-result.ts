@@ -1,4 +1,4 @@
-import type { AnalysisResult, AuditRecord, FindingRecord, ReportFormat } from "./types.js";
+import type { AnalysisResult, AuditRecord, FindingRecord, ReportFormat } from "../types.js";
 
 const REPORT_KIND_WIDTH = 28;
 
@@ -59,6 +59,9 @@ function renderGroupedSection<T extends { kind: string; location?: { file: strin
   return lines;
 }
 
+/**
+ * Renders an analysis result as either stable JSON or grouped human-readable text output.
+ */
 export function renderResult(result: AnalysisResult, format: ReportFormat): string {
   if (format === "json") {
     return JSON.stringify(result, null, 2);

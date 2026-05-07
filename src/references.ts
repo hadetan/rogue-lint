@@ -1,6 +1,6 @@
 import ts from "typescript";
 
-function findNodeAtPosition(sourceFile: ts.SourceFile, position: number): ts.Node | undefined {
+export function findNodeAtPosition(sourceFile: ts.SourceFile, position: number): ts.Node | undefined {
   const visit = (node: ts.Node): ts.Node | undefined => {
     if (position < node.getFullStart() || position > node.getEnd()) {
       return undefined;

@@ -5,7 +5,8 @@ import ts from "typescript";
 
 import type { CliOptions, ProjectContext } from "./types.js";
 import { loadPackageJson, resolveConfig } from "./config.js";
-import { matchesPatterns, toRelative } from "./utils.js";
+import { matchesPatterns } from "./shared/general-utils.js";
+import { toRelative } from "./shared/path-utils.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 
