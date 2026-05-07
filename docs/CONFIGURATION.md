@@ -1,14 +1,14 @@
-# dead-lint configuration
+# rogue-lint configuration
 
-This guide documents how `dead-lint` loads configuration today, based on `src/config.ts`, `src/project.ts`, and `src/module-graph.ts`.
+This guide explains how `rogue-lint` resolves roots, applies filters, and honors preservation rules, based on `src/config.ts`, `src/project.ts`, and `src/module-graph.ts`.
 
 ## Quick Reference
 
 Config can come from:
 
 - `--config path/to/file.json`
-- `dead-lint.config.json` at the project root
-- `package.json` under `deadLint`
+- `rogue-lint.config.json` at the project root
+- `package.json` under `rogueLint`
 - built-in defaults
 
 CLI field overrides currently include:
@@ -18,15 +18,15 @@ CLI field overrides currently include:
 
 ## Config Source Resolution
 
-`dead-lint` resolves configuration in two stages.
+`rogue-lint` resolves configuration in two stages.
 
 ### 1. Choose the config source
 
 The analyzer looks in this order:
 
 1. the path passed with `--config`
-2. `dead-lint.config.json` in the target root
-3. `package.json` `deadLint`
+2. `rogue-lint.config.json` in the target root
+3. `package.json` `rogueLint`
 4. built-in defaults
 
 Important nuance:
@@ -71,7 +71,7 @@ Current defaults:
 
 ## Example Config File
 
-`dead-lint.config.json`:
+`rogue-lint.config.json`:
 
 ```json
 {
@@ -101,7 +101,7 @@ The same config inside `package.json`:
 
 ```json
 {
-  "deadLint": {
+  "rogueLint": {
     "mode": "library",
     "entrypoints": ["src/index.ts"]
   }
@@ -136,7 +136,7 @@ That last rule matters for CLI packages: a reachable CLI file does not automatic
 
 If `entrypoints` is configured, those roots are used directly.
 
-If `entrypoints` is empty, `dead-lint` tries, in order:
+If `entrypoints` is empty, `rogue-lint` tries, in order:
 
 1. `package.json` `main`
 2. `package.json` `bin`
@@ -160,11 +160,11 @@ Typical use cases:
 - convention-loaded scripts
 - framework entrypoints discovered by filename rather than imports
 
-If a `hiddenRoots` pattern matches nothing, `dead-lint` emits a project warning.
+If a `hiddenRoots` pattern matches nothing, `rogue-lint` emits a project warning.
 
 ## Project Loading And `tsconfig`
 
-`dead-lint` tries to load the project like this:
+`rogue-lint` tries to load the project like this:
 
 1. configured `tsconfig`
 2. root `tsconfig.json`
@@ -201,7 +201,7 @@ Example:
 CLI override:
 
 ```bash
-npx dead-lint . --kinds unused-file,unused-export
+npx rogue-lint . --kinds unused-file,unused-export
 ```
 
 `--kinds` overrides the loaded config value.
@@ -238,15 +238,15 @@ Current precedence in the suppression pipeline:
 Supported directives:
 
 ```ts
-// dead-lint-ignore-next
+// rogue-lint-ignore-next
 const ignoredLocal = 1;
 
-/* dead-lint-ignore-start */
+/* rogue-lint-ignore-start */
 const ignoredA = 1;
 const ignoredB = 2;
-/* dead-lint-ignore-end */
+/* rogue-lint-ignore-end */
 
-// dead-lint-externally-visible
+// rogue-lint-externally-visible
 export const futureApi = 1;
 
 /** @externallyVisible */
@@ -255,9 +255,9 @@ export const futureType = 1;
 
 Current meanings:
 
-- `dead-lint-ignore-next`: suppress the next line
-- `dead-lint-ignore-start` and `dead-lint-ignore-end`: suppress an inclusive line range
-- `dead-lint-externally-visible`: mark the next line as intentionally preserved public surface
+- `rogue-lint-ignore-next`: suppress the next line
+- `rogue-lint-ignore-start` and `rogue-lint-ignore-end`: suppress an inclusive line range
+- `rogue-lint-externally-visible`: mark the next line as intentionally preserved public surface
 - `@externallyVisible`: JSDoc form of intentional external visibility
 
 These entities do not disappear silently. They show up in `kept` with an explicit reason.
@@ -296,11 +296,11 @@ The CLI tests explicitly cover custom findings and failure exit codes.
 Current CLI surface:
 
 ```bash
-dead-lint [targetPath]
-dead-lint [targetPath] --json
-dead-lint [targetPath] --mode application|library
-dead-lint [targetPath] --config path/to/config.json
-dead-lint [targetPath] --kinds unused-file,unused-export
+rogue-lint [targetPath]
+rogue-lint [targetPath] --json
+rogue-lint [targetPath] --mode application|library
+rogue-lint [targetPath] --config path/to/config.json
+rogue-lint [targetPath] --kinds unused-file,unused-export
 ```
 
 For how these settings affect the output buckets and JSON shape, see [docs/OUTPUT.md](OUTPUT.md).

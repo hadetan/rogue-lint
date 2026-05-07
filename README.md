@@ -1,27 +1,28 @@
-# dead-lint
+# rogue-lint
 
-> Whole-project dead code and conservative static safety analysis for JavaScript and TypeScript.
+> The whole-project static analyzer that tracks what is truly live, what has gone rogue, and where JavaScript turns into fog.
 
-`dead-lint` starts from entrypoints, builds the same-project module graph, and reports code it can actually justify removing. It also surfaces a narrow set of compiler-backed and exactness-backed safety issues such as `use-before-init`, `invalidated-read`, and `stale-read-after-mutation`. When the current model stops being exact, it does not guess. It records a boundary.
+`rogue-lint` moves through a codebase like a careful rogue moving through a forest: it starts from entrypoints and public surface, follows only the paths it can actually prove, and keeps track of what is really consumed. It traces same-project reachability, exports, locals, object paths, array slots, returned structures, helper-carried values, callback correlation, retained bindings, discarded results, and selected safety failures. That lets it report the code and values that have gone rogue from real use. When the proof holds, it emits a real finding. When the path disappears into dynamic JavaScript, it emits an explicit conservative boundary instead of pretending it still knows the way.
 
 ```text
-→ whole-project, not file-local
-→ exact when provable
-→ conservative when dynamic code breaks exactness
-→ truthful to JavaScript semantics
-→ useful for engineers and coding agents
+→ starts from entrypoints and public surface
+→ follows proven usage across files, structures, returns, callbacks, and helpers
+→ reports dead code, dead structure, dead values, and selected safety failures
+→ preserves intentional API surface and explicit keep rules
+→ marks dynamic fog with explicit skipped boundaries
+→ stays truthful to JavaScript semantics
 ```
 
 [Quick Start](#quick-start) • [See It In Action](#see-it-in-action) • [Docs](#docs) • [Development](#development)
 
-## Why dead-lint
+## Why rogue-lint
 
-Most dead-code tools fail in one of two ways:
+Most code analysis tools fail in one of two ways:
 
 - they stay shallow and only see file-local syntax
 - they overreach in dynamic JavaScript and turn uncertainty into false positives
 
-`dead-lint` is built to avoid both.
+`rogue-lint` is built to avoid both.
 
 Use it when you want:
 
@@ -38,24 +39,24 @@ Requires Node.js 20 or newer.
 Install in a project:
 
 ```bash
-npm install -D dead-lint
+npm install -D rogue-lint
 ```
 
 Run it:
 
 ```bash
-npx dead-lint .
-npx dead-lint . --json
-npx dead-lint . --mode library
-npx dead-lint . --kinds unused-export,unused-file,use-before-init
-npx dead-lint . --config dead-lint.config.json
+npx rogue-lint .
+npx rogue-lint . --json
+npx rogue-lint . --mode library
+npx rogue-lint . --kinds unused-export,unused-file,use-before-init
+npx rogue-lint . --config rogue-lint.config.json
 ```
 
 If you prefer a global install:
 
 ```bash
-npm install -g dead-lint
-dead-lint .
+npm install -g rogue-lint
+rogue-lint .
 ```
 
 Default exit codes:
@@ -71,7 +72,7 @@ Both non-zero exit codes are configurable.
 A fixture-backed text report looks like this:
 
 ```text
-dead-lint
+rogue-lint
 
 Mode: application
 Files analyzed: 4
@@ -91,7 +92,7 @@ unused-file
 Kept:
 local
   src/index.ts
-    local                        src/index.ts:9:7 ignoredLocal - suppressed by dead-lint-ignore-next
+    local                        src/index.ts:9:7 ignoredLocal - suppressed by rogue-lint-ignore-next
 
 Skipped:
 object-key
@@ -107,7 +108,7 @@ That structure is the trust model in practice:
 
 ## What It Can Catch
 
-`dead-lint` currently covers:
+`rogue-lint` currently covers:
 
 - whole-project reachability and API surface: `unused-file`, `unused-export`, `unused-type`, `unused-enum-member`
 - local declarations and members: `unused-local`, `unused-class-member`, `unused-interface-member`
@@ -158,7 +159,7 @@ npm run pack:check
 npm run prep
 ```
 
-`npm run self` and `npm run self:json` build the package and run `dead-lint` against this repository in `library` mode.
+`npm run self` and `npm run self:json` build the package and run `rogue-lint` against this repository in `library` mode.
 
 ## Release Checks
 

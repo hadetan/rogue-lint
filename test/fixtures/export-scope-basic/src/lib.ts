@@ -11,14 +11,14 @@ export type LocalOnlyShape = {
 const localShape: LocalOnlyShape = { value: 1 };
 void localShape;
 
-// dead-lint-ignore-next
+// rogue-lint-ignore-next
 export function ignoredLocalOnly(): number {
   return 2;
 }
 
 void ignoredLocalOnly();
 
-// dead-lint-ignore-next
+// rogue-lint-ignore-next
 export type IgnoredLocalShape = {
   value: number;
 };

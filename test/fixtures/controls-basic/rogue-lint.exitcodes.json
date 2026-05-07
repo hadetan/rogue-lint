@@ -1,5 +1,6 @@
 {
   "mode": "application",
   "entrypoints": ["src/index.ts"],
-  "hiddenRoots": ["src/worker.ts"]
+  "findingsExitCode": 7,
+  "failureExitCode": 9
 }

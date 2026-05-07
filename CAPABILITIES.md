@@ -1,8 +1,8 @@
-# dead-lint capabilities
+# rogue-lint capabilities
 
 > Grounded coverage map for the current implementation.
 
-This document is about what `dead-lint` can actually handle today. It is intentionally about implemented behavior, not roadmap ideas.
+This document describes what `rogue-lint` can actually map today. It is intentionally about implemented behavior, not roadmap ideas.
 
 ## How To Read This Document
 
@@ -86,7 +86,7 @@ import { usedExport, usedEnum } from "./lib.js";
 console.log(usedExport, usedEnum.Red);
 ```
 
-`dead-lint` can report:
+`rogue-lint` can report:
 
 - `unused-export:unusedExport`
 - `unused-type:UnusedShape`
@@ -423,7 +423,7 @@ These controls are central to trust, but they are documented in detail in:
 
 ## Conservative Boundaries
 
-When `dead-lint` stops being exact, it emits `skipped` records instead of speculative findings.
+When `rogue-lint` stops being exact, it emits `skipped` records instead of speculative findings.
 
 The current codebase explicitly models boundary families such as:
 

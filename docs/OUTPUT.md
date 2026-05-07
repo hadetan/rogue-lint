@@ -1,6 +1,6 @@
-# dead-lint output guide
+# rogue-lint output reference
 
-This guide documents what `dead-lint` emits today in text mode and JSON mode, based on `src/reporting.ts`, `src/types.ts`, and the regression suite.
+This guide explains how to read the text and JSON output `rogue-lint` emits today, based on `src/reporting.ts`, `src/types.ts`, and the regression suite.
 
 ## The Four Top-Level Output Buckets
 
@@ -11,14 +11,14 @@ Every run can produce four kinds of records:
 - `skipped`: explicit conservative boundaries where exact reasoning stopped
 - `diagnostics`: project warnings or errors such as unresolved same-project imports or config issues
 
-These buckets are the trust model. `dead-lint` is not trying to flatten everything into one removal list.
+These buckets are the trust model. `rogue-lint` is not trying to flatten everything into one removal list.
 
 ## Text Output
 
 Example text report:
 
 ```text
-dead-lint
+rogue-lint
 
 Mode: application
 Files analyzed: 4
@@ -38,7 +38,7 @@ unused-file
 Kept:
 local
   src/index.ts
-    local                        src/index.ts:9:7 ignoredLocal - suppressed by dead-lint-ignore-next
+    local                        src/index.ts:9:7 ignoredLocal - suppressed by rogue-lint-ignore-next
 
 Skipped:
 object-key
@@ -58,14 +58,14 @@ Current text rendering behavior:
 Run JSON mode with:
 
 ```bash
-npx dead-lint . --json
+npx rogue-lint . --json
 ```
 
 Example shape:
 
 ```json
 {
-  "tool": "dead-lint",
+  "tool": "rogue-lint",
   "version": "x.y.z",
   "target": "/path/to/project",
   "mode": "application",
@@ -152,7 +152,7 @@ For what each finding kind actually means in supported code patterns, see [CAPAB
   "id": "local:src/index.ts:123:ignoredLocal",
   "kind": "local",
   "name": "ignoredLocal",
-  "reason": "suppressed by dead-lint-ignore-next",
+  "reason": "suppressed by rogue-lint-ignore-next",
   "location": {
     "file": "src/index.ts",
     "line": 9,
@@ -163,8 +163,8 @@ For what each finding kind actually means in supported code patterns, see [CAPAB
 
 Typical `kept` reasons:
 
-- `suppressed by dead-lint-ignore-next`
-- `suppressed by dead-lint-ignore-start/end`
+- `suppressed by rogue-lint-ignore-next`
+- `suppressed by rogue-lint-ignore-start/end`
 - `marked externally visible by inline directive`
 - `marked externally visible by @externallyVisible`
 - `kept by entity id rule`
@@ -201,7 +201,7 @@ Important interpretation rule:
 
 One important skipped entity kind is `collection-boundary`.
 
-This is how `dead-lint` reports that a tracked array or object collection left the exact subset at the collection root rather than on a stale child slot.
+This is how `rogue-lint` reports that a tracked array or object collection left the exact subset at the collection root rather than on a stale child slot.
 
 Typical scenarios:
 

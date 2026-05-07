@@ -10,7 +10,7 @@ function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
 }
 
-describe("dead-lint analyzer", () => {
+describe("rogue-lint analyzer", () => {
   it("finds unused files, exports, locals, class members, and object paths in application mode", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -80,8 +80,8 @@ describe("dead-lint analyzer", () => {
     expect(result.findings.some((finding) => finding.entity.name === "crossFileUsed")).toBe(false);
     expect(result.findings.some((finding) => finding.entity.name === "CrossFileShape")).toBe(false);
 
-    expect(result.kept.some((entry) => entry.name === "ignoredLocalOnly" && entry.reason === "suppressed by dead-lint-ignore-next")).toBe(true);
-    expect(result.kept.some((entry) => entry.name === "IgnoredLocalShape" && entry.reason === "suppressed by dead-lint-ignore-next")).toBe(true);
+    expect(result.kept.some((entry) => entry.name === "ignoredLocalOnly" && entry.reason === "suppressed by rogue-lint-ignore-next")).toBe(true);
+    expect(result.kept.some((entry) => entry.name === "IgnoredLocalShape" && entry.reason === "suppressed by rogue-lint-ignore-next")).toBe(true);
   });
 
   it("supports exact and conservative array analysis", async () => {
@@ -171,7 +171,7 @@ describe("dead-lint analyzer", () => {
     expect(kindsAndNames).not.toContain("stale-read-after-mutation:appended[0].safe.keep");
     expect(kindsAndNames).not.toContain("invalidated-read:escaped[0].dead");
 
-    expect(result.kept.some((entry) => entry.name === "ignored" && entry.reason === "suppressed by dead-lint-ignore-next")).toBe(true);
+    expect(result.kept.some((entry) => entry.name === "ignored" && entry.reason === "suppressed by rogue-lint-ignore-next")).toBe(true);
     expect(result.skipped.some((entry) => entry.reason.includes("JSON.stringify"))).toBe(true);
     expect(result.skipped.some((entry) => entry.category === "serialization")).toBe(true);
 
@@ -423,7 +423,7 @@ describe("dead-lint analyzer", () => {
       includeKinds: ["unused-export", "unused-file"],
     });
 
-    expect(result.tool).toBe("dead-lint");
+    expect(result.tool).toBe("rogue-lint");
     expect(result.summary.findings).toBe(result.findings.length);
     expect(result.findings.every((finding) => ["unused-export", "unused-file"].includes(finding.kind))).toBe(true);
   });
@@ -492,13 +492,13 @@ describe("dead-lint analyzer", () => {
     const excludedResult = await analyzeProject({
       cwd: process.cwd(),
       targetPath: fixture,
-      configPath: "dead-lint.exclude.json",
+      configPath: "rogue-lint.exclude.json",
       format: "json",
     });
     const hiddenRootResult = await analyzeProject({
       cwd: process.cwd(),
       targetPath: fixture,
-      configPath: "dead-lint.hidden-roots.json",
+      configPath: "rogue-lint.hidden-roots.json",
       format: "json",
     });
 
@@ -526,11 +526,11 @@ describe("dead-lint analyzer", () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
 
-    const findingsCode = await runCli([fixture, "--config", "dead-lint.exitcodes.json"], {
+    const findingsCode = await runCli([fixture, "--config", "rogue-lint.exitcodes.json"], {
       writeStdout: (value) => stdout.push(value),
       writeStderr: (value) => stderr.push(value),
     });
-    const failureCode = await runCli([fixture, "--config", "dead-lint.failure.json"], {
+    const failureCode = await runCli([fixture, "--config", "rogue-lint.failure.json"], {
       writeStdout: (value) => stdout.push(value),
       writeStderr: (value) => stderr.push(value),
     });

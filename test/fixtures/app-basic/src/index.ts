@@ -5,7 +5,7 @@ const example = new Example();
 example.usedMethod();
 console.log(usedExport, usedEnum.Red);
 
-// dead-lint-ignore-next
+// rogue-lint-ignore-next
 const ignoredLocal = 1;
 const unusedLocal = 2;
 

@@ -1,6 +1,6 @@
-# Contributing to dead-lint
+# Contributing to rogue-lint
 
-`dead-lint` is a trust-sensitive analyzer. The standard for new work is not just "does it run" but "does it stay conservative enough to deserve its findings."
+`rogue-lint` is a trust-sensitive analyzer. The standard for new work is not just "does it run" but "does it stay conservative enough to deserve its findings."
 
 If you are contributing code or docs, keep one rule in mind:
 
@@ -45,7 +45,7 @@ Important files and directories:
 - `src/analyze.ts`: core analysis engine and exactness logic
 - `src/module-graph.ts`: import and export graph construction and entrypoint discovery helpers
 - `src/project.ts`: project loading, tsconfig resolution, and source selection
-- `src/config.ts`: config resolution from `dead-lint.config.json` or `package.json`
+- `src/config.ts`: config resolution from `rogue-lint.config.json` or the `rogueLint` field in `package.json`
 - `src/reporting.ts`: text and JSON report rendering
 - `src/cli.ts`: CLI argument parsing and exit-code behavior
 - `docs/CONFIGURATION.md`: config precedence, modes, entrypoint discovery, and suppressions
@@ -98,7 +98,7 @@ Recommended workflow for a new analysis rule or boundary refinement:
 5. Run a narrow Vitest check first.
 6. Run broader validation before finishing.
 
-That order matters. `dead-lint` behavior is easiest to reason about when the expected outcome is locked before the implementation expands.
+That order matters. `rogue-lint` behavior is easiest to reason about when the expected outcome is locked before the implementation expands.
 
 ## Adding or changing fixtures
 
@@ -166,8 +166,8 @@ When documenting behavior, prefer statements like:
 
 Avoid statements like:
 
-- "dead-lint fully understands"
-- "dead-lint guarantees"
+- "rogue-lint fully understands"
+- "rogue-lint guarantees"
 - "this always works"
 
 This project benefits from precise language more than promotional language.

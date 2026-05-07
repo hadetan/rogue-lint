@@ -569,7 +569,7 @@ const ARRAY_APPEND_METHODS = new Set(["push"]);
 const ARRAY_TRUNCATE_METHODS = new Set(["pop"]);
 const ARRAY_REPLACEMENT_METHODS = new Set(["fill"]);
 const ARRAY_REORDER_METHODS = new Set(["copyWithin", "reverse", "shift", "sort", "splice", "unshift"]);
-// Initial allow-list of compiler-backed safety diagnostics promoted into dead-lint findings.
+// Initial allow-list of compiler-backed safety diagnostics promoted into rogue-lint findings.
 const COMPILER_SAFETY_DIAGNOSTICS = new Map<number, CompilerSafetyDiagnosticSpec>([
   [
     2454,
@@ -5782,7 +5782,7 @@ export async function analyzeProject(cliOptions: CliOptions): Promise<AnalysisRe
   }
 
   return {
-    tool: "dead-lint",
+    tool: "rogue-lint",
     version: getVersion(),
     target: project.rootPath,
     mode: project.config.value.mode,

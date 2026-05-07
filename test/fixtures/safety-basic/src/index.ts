@@ -13,7 +13,7 @@ console.log(maybeInit);
 maybeInit = 1;
 
 let ignored: number;
-// dead-lint-ignore-next
+// rogue-lint-ignore-next
 console.log(ignored);
 ignored = 1;
 

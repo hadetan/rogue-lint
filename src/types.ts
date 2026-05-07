@@ -67,7 +67,7 @@ interface KeepRules {
   entityIds?: string[];
 }
 
-export interface DeadLintConfig {
+export interface RogueLintConfig {
   mode?: AnalysisMode;
   tsconfig?: string;
   entrypoints?: string[];
@@ -141,7 +141,7 @@ interface SummaryRecord {
 }
 
 export interface AnalysisResult {
-  tool: "dead-lint";
+  tool: "rogue-lint";
   version: string;
   target: string;
   mode: AnalysisMode;
@@ -158,9 +158,9 @@ export interface AnalysisResult {
 }
 
 export interface ResolvedConfig {
-  value: Required<Omit<DeadLintConfig, "keep" | "objectAnalysis">> & {
+  value: Required<Omit<RogueLintConfig, "keep" | "objectAnalysis">> & {
     keep: Required<KeepRules>;
-    objectAnalysis: Required<NonNullable<DeadLintConfig["objectAnalysis"]>>;
+    objectAnalysis: Required<NonNullable<RogueLintConfig["objectAnalysis"]>>;
   };
 }
 

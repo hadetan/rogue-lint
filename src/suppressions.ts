@@ -9,10 +9,10 @@ import type {
 } from "./types.js";
 import { matchesPatterns } from "./utils.js";
 
-const IGNORE_NEXT = "dead-lint-ignore-next";
-const IGNORE_START = "dead-lint-ignore-start";
-const IGNORE_END = "dead-lint-ignore-end";
-const EXTERNAL_NEXT = "dead-lint-externally-visible";
+const IGNORE_NEXT = "rogue-lint-ignore-next";
+const IGNORE_START = "rogue-lint-ignore-start";
+const IGNORE_END = "rogue-lint-ignore-end";
+const EXTERNAL_NEXT = "rogue-lint-externally-visible";
 
 function parseDirectives(sourceFile: ts.SourceFile): SourceCommentDirectives {
   const directives: SourceCommentDirectives = {
@@ -26,7 +26,7 @@ function parseDirectives(sourceFile: ts.SourceFile): SourceCommentDirectives {
   void ranges;
 
   const stack: number[] = [];
-  const regex = /dead-lint-ignore-next|dead-lint-ignore-start|dead-lint-ignore-end|dead-lint-externally-visible/g;
+  const regex = /rogue-lint-ignore-next|rogue-lint-ignore-start|rogue-lint-ignore-end|rogue-lint-externally-visible/g;
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(text))) {
@@ -92,7 +92,7 @@ export function getSuppressionAudit(
         id: entity.id,
         kind: entity.kind,
         name: entity.name,
-        reason: "suppressed by dead-lint-ignore-next",
+        reason: "suppressed by rogue-lint-ignore-next",
         location: entity.location,
       };
     }
@@ -106,7 +106,7 @@ export function getSuppressionAudit(
         id: entity.id,
         kind: entity.kind,
         name: entity.name,
-        reason: "suppressed by dead-lint-ignore-start/end",
+        reason: "suppressed by rogue-lint-ignore-start/end",
         location: entity.location,
       };
     }

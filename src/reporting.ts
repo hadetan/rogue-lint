@@ -65,7 +65,7 @@ export function renderResult(result: AnalysisResult, format: ReportFormat): stri
   }
 
   const lines = [
-    "dead-lint",
+    "rogue-lint",
     "",
     `Mode: ${result.mode}`,
     `Files analyzed: ${result.summary.filesAnalyzed}`,

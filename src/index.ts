@@ -1,7 +1,7 @@
 export { analyzeProject } from "./analyze.js";
 export type {
   AnalysisResult,
-  DeadLintConfig,
+  RogueLintConfig,
   FindingKind,
   ReportFormat,
 } from "./types.js";

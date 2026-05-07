@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { CliOptions, DeadLintConfig, ResolvedConfig } from "./types.js";
+import type { CliOptions, ResolvedConfig, RogueLintConfig } from "./types.js";
 
 const DEFAULT_CONFIG: ResolvedConfig["value"] = {
   mode: "application",
@@ -51,22 +51,23 @@ export function resolveConfig(rootPath: string, cliOptions: CliOptions): Resolve
     : undefined;
   const candidatePaths = [
     explicitPath,
-    path.join(rootPath, "dead-lint.config.json"),
+    path.join(rootPath, "rogue-lint.config.json"),
   ].filter(Boolean) as string[];
 
   let sourcePath: string | undefined;
-  let rawConfig: DeadLintConfig = {};
+  let rawConfig: RogueLintConfig = {};
 
   for (const candidatePath of candidatePaths) {
     if (fs.existsSync(candidatePath)) {
       sourcePath = candidatePath;
-      rawConfig = readJsonFile(candidatePath) as DeadLintConfig;
+      rawConfig = readJsonFile(candidatePath) as RogueLintConfig;
       break;
     }
   }
 
-  if (!sourcePath && packageJson.value && typeof packageJson.value.deadLint === "object") {
-    rawConfig = packageJson.value.deadLint as DeadLintConfig;
+  const packageConfig = packageJson.value?.rogueLint;
+  if (!sourcePath && packageConfig && typeof packageConfig === "object") {
+    rawConfig = packageConfig as RogueLintConfig;
   }
 
   const merged: ResolvedConfig["value"] = {
