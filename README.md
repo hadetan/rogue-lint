@@ -173,4 +173,10 @@ That gate runs the build, lint, tests, self-analysis, and dry-run pack checks th
 
 ## License
 
-ISC
+This project is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+The public license allows noncommercial use, study, modification, and redistribution. Commercial use is not permitted without separate permission from the licensor.
+
+In practical terms, uses that require separate permission include incorporating `rogue-lint` into paid products, internal company tooling, hosted services, or commercial AI and LLM products or capability bundles.
+
+Because the public license restricts commercial use, this project is not open source under the OSI Open Source Definition.
