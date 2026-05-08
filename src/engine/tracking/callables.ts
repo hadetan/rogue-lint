@@ -67,7 +67,12 @@ function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLik
   const declaration = symbol.declarations?.[0];
   if (
     declaration
-    && (ts.isFunctionDeclaration(declaration) || ts.isFunctionExpression(declaration) || ts.isArrowFunction(declaration))
+    && (
+      ts.isFunctionDeclaration(declaration)
+      || ts.isFunctionExpression(declaration)
+      || ts.isArrowFunction(declaration)
+      || ts.isMethodDeclaration(declaration)
+    )
   ) {
     return declaration;
   }
@@ -79,6 +84,38 @@ function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLik
     && (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
   ) {
     return declaration.initializer;
+  }
+
+  if (
+    declaration
+    && ts.isPropertyAssignment(declaration)
+    && (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
+  ) {
+    return declaration.initializer;
+  }
+
+  return undefined;
+}
+
+function getCallableSymbol(project: ProjectContext, expression: ts.LeftHandSideExpression): ts.Symbol | undefined {
+  if (ts.isIdentifier(expression)) {
+    return project.checker.getSymbolAtLocation(expression);
+  }
+
+  if (ts.isPropertyAccessExpression(expression)) {
+    return project.checker.getSymbolAtLocation(expression.name);
+  }
+
+  if (
+    ts.isElementAccessExpression(expression)
+    && expression.argumentExpression
+    && (
+      ts.isStringLiteral(expression.argumentExpression)
+      || ts.isNoSubstitutionTemplateLiteral(expression.argumentExpression)
+      || ts.isNumericLiteral(expression.argumentExpression)
+    )
+  ) {
+    return project.checker.getSymbolAtLocation(expression.argumentExpression);
   }
 
   return undefined;
@@ -97,6 +134,13 @@ export function getAnalyzableCallableName(callable: AnalyzableCallableBinding): 
     }
   }
 
+  if ((ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration)) && ts.isPropertyAssignment(declaration.parent)) {
+    const propertyName = declaration.parent.name;
+    if (ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName) || ts.isNumericLiteral(propertyName)) {
+      return propertyName.text;
+    }
+  }
+
   return "returnedValue";
 }
 
@@ -104,11 +148,7 @@ export function getAnalyzableCallableBinding(
   project: ProjectContext,
   expression: ts.LeftHandSideExpression,
 ): AnalyzableCallableBinding | undefined {
-  if (!ts.isIdentifier(expression)) {
-    return undefined;
-  }
-
-  const calleeSymbol = project.checker.getSymbolAtLocation(expression);
+  const calleeSymbol = getCallableSymbol(project, expression);
   if (!calleeSymbol) {
     return undefined;
   }

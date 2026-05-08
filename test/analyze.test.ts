@@ -172,8 +172,8 @@ describe("rogue-lint analyzer", () => {
     expect(kindsAndNames).not.toContain("invalidated-read:escaped[0].dead");
 
     expect(result.kept.some((entry) => entry.name === "ignored" && entry.reason === "suppressed by rogue-lint-ignore-next")).toBe(true);
-    expect(result.skipped.some((entry) => entry.reason.includes("JSON.stringify"))).toBe(true);
-    expect(result.skipped.some((entry) => entry.category === "serialization")).toBe(true);
+    expect(result.skipped.some((entry) => entry.reason.includes("JSON.stringify"))).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "serialization")).toBe(false);
 
     expect(filtered.findings).toHaveLength(1);
     expect(filtered.findings[0]?.kind).toBe("use-before-init");
@@ -396,6 +396,20 @@ describe("rogue-lint analyzer", () => {
       && entry.name === "queue"
       && entry.category === "array-reorder-mutation"
     )).toBe(true);
+  });
+
+  it("preserves exact single-item worklist consume after exact append", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("queue-lifecycle-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-object-key:dead");
+    expect(kindsAndNames).not.toContain("unused-object-key:live");
+    expect(result.skipped.some((entry) => entry.category === "array-reorder-mutation")).toBe(false);
   });
 
   it("treats nested helper closure capture as a conservative boundary", async () => {
@@ -644,6 +658,21 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "opaque-object-call")).toBe(false);
   });
 
+  it("preserves supported object-backed retained storage and keeps dynamic slots conservative", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("object-retention-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-object-key:dead");
+    expect(kindsAndNames).not.toContain("unused-object-key:live");
+    expect(kindsAndNames).not.toContain("unused-object-key:stale");
+    expect(result.skipped.some((entry) => entry.category === "opaque-object-call")).toBe(true);
+  });
+
   it("reports internal interface members and preserves safe object siblings when another branch escapes", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -658,8 +687,91 @@ describe("rogue-lint analyzer", () => {
     expect(kindsAndNames).toContain("unused-nested-path:forwarded.stale");
     expect(kindsAndNames).not.toContain("unused-nested-path:safe.read");
     expect(kindsAndNames).not.toContain("unused-nested-path:forwarded.keep");
-    expect(result.skipped.some((entry) => entry.name === "escaped" && entry.reason.includes("Object.keys"))).toBe(true);
-    expect(result.skipped.some((entry) => entry.category === "reflective-enumeration")).toBe(true);
+    expect(kindsAndNames).not.toContain("unused-nested-path:escaped.maybe");
+    expect(result.skipped.some((entry) => entry.name === "escaped" && entry.reason.includes("Object.keys"))).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "reflective-enumeration")).toBe(false);
+  });
+
+  it("keeps supported observers and bounded keyed access exact without widening unsupported dynamic access", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("observer-keyed-access-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "keyed"
+      && finding.entity.name === "dead"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-nested-path"
+      && finding.entity.owner === "keyed"
+      && finding.entity.name === "nested.dead"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "untouched"
+      && finding.entity.name === "dead"
+    )).toBe(true);
+
+    expect(result.findings.some((finding) =>
+      finding.entity.owner === "observedEntries"
+      && ["live", "stale"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.entity.owner === "serialized"
+      && ["nested.dead", "nested.keep"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.entity.owner === "keyed"
+      && ["live", "nested.live"].includes(finding.entity.name)
+    )).toBe(false);
+
+    expect(result.skipped.some((entry) => entry.category === "reflective-enumeration")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "serialization")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(true);
+  });
+
+  it("preserves same-project namespace and member helpers plus awaited structured returns", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-async-propagation-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "namespaceObserved"
+      && finding.entity.name === "dead"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "memberObserved"
+      && finding.entity.name === "dead"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "make()"
+      && finding.entity.name === "dead"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "buildAsync()"
+      && finding.entity.name === "dead"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-nested-path"
+      && finding.entity.owner === "buildAsync()"
+      && finding.entity.name === "nested.dead"
+    )).toBe(true);
+
+    expect(result.findings.some((finding) =>
+      ["namespaceObserved", "memberObserved", "make()", "buildAsync()"].includes(finding.entity.owner ?? "")
+      && ["live", "nested.live"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "opaque-object-call")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
   it("preserves returned tracked objects across supported same-project helper boundaries", async () => {

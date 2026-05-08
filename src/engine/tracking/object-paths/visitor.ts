@@ -11,6 +11,7 @@ import type { AnalysisState } from "../../analysis-state.js";
 import {
   getAccessPath,
   getBindingSymbolKey,
+  getObjectBackedRetainedBindingSlotKeyFromAccess,
   getRetainedBindingContainerSlotKey,
   getSupportedArrayCallbackIndexParamIndex,
   getSupportedArrayCallbackParamIndex,
@@ -46,9 +47,9 @@ import {
   ARRAY_REORDER_METHODS,
   ARRAY_REPLACEMENT_METHODS,
   ARRAY_TRUNCATE_METHODS,
-  OBSERVATION_ONLY_CALLS,
   WHOLE_ARRAY_CONSUMPTION_METHODS,
   buildHelperBoundaryReason,
+  classifySupportedCallArgumentUse,
   summarizeHelperParameterUse,
 } from "../semantics.js";
 import {
@@ -58,6 +59,7 @@ import {
   getProjectionBinding,
   hasTrackedChildren,
   markAliasObserved,
+  markObservedChildPaths,
   markEscaped,
   markObservedSubtree,
   markProjectionElementRead,
@@ -134,6 +136,20 @@ export function visitObjectPathSourceFile(
         );
       } else if (globalThisProperty) {
         trackedBySymbolId.delete(getGlobalThisBindingKey(globalThisProperty));
+      } else if (
+        (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
+        && resolved
+        && !resolved.dynamic
+      ) {
+        const slotKey = getObjectBackedRetainedBindingSlotKeyFromAccess(project, node.left);
+        if (slotKey) {
+          mergeTrackedBinding(
+            trackedBySymbolId,
+            retainedContainerConflicts,
+            slotKey,
+            extendTrackedBinding(resolved.binding, resolved.segments),
+          );
+        }
       }
     }
 
@@ -301,28 +317,16 @@ export function visitObjectPathSourceFile(
           continue;
         }
 
-        if (
-          calleeText === "Object.keys"
-          || calleeText === "Object.values"
-          || calleeText === "Object.entries"
-          || calleeText === "Reflect.ownKeys"
-        ) {
-          markEscaped(
-            resolved.binding.trackedObject,
-            fullPath,
-            "reflective-enumeration",
-            `${calleeText} makes object properties externally observable`,
-          );
-          continue;
-        }
-
-        if (calleeText === "JSON.stringify") {
-          markEscaped(
-            resolved.binding.trackedObject,
-            fullPath,
-            "serialization",
-            "JSON.stringify makes object properties externally observable",
-          );
+        const supportedArgumentUse = classifySupportedCallArgumentUse(calleeText, index);
+        if (supportedArgumentUse) {
+          if (supportedArgumentUse.kind === "observe-subtree") {
+            markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
+          } else if (
+            supportedArgumentUse.kind === "observe-keys"
+            || supportedArgumentUse.kind === "observe-values"
+          ) {
+            markObservedChildPaths(resolved.binding.trackedObject, fullPath, trackedObjectsById);
+          }
           continue;
         }
 
@@ -377,11 +381,6 @@ export function visitObjectPathSourceFile(
         }
 
         if (valueFateHandledIndices.has(index)) {
-          continue;
-        }
-
-        if (OBSERVATION_ONLY_CALLS.has(calleeText)) {
-          markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
           continue;
         }
 

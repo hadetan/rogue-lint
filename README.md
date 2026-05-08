@@ -114,9 +114,9 @@ That structure is the trust model in practice:
 - local declarations and members: `unused-local`, `unused-class-member`, `unused-interface-member`
 - exact structural cleanup: `unused-array-element`, `unused-object-key`, `unused-nested-path`
 - value-flow and safety signals: `dead-store`, `unused-value`, `write-only-state`, `use-before-init`, `invalidated-read`, `stale-read-after-mutation`
-- same-project helper, callback, and structured-return propagation in the supported exact subset
-- retained bindings through supported `Map.set` and `Map.get`, module bindings, and static `globalThis` flows
-- JS-truthful value-fate modeling for supported `push`, `unshift`, `slice`, `concat`, and `structuredClone` paths, plus explicit boundaries when those flows stop being exact
+- same-project namespace or member helpers, callback correlation, awaited returns, and structured-return propagation in the supported exact subset
+- retained bindings through supported `Map.set` and `Map.get`, local object-backed static slots, module bindings, and static `globalThis` flows
+- JS-truthful value-fate modeling for supported `push`, `unshift`, `slice`, `concat`, `structuredClone`, and bounded single-item consume paths, plus explicit boundaries when those flows stop being exact
 
 For the detailed coverage map and fixture-backed examples, see [CAPABILITIES.md](CAPABILITIES.md).
 

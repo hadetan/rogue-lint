@@ -211,6 +211,19 @@ export function handleTrackedArrayMutation(
   }
 
   if (ARRAY_REORDER_METHODS.has(methodName)) {
+    if (methodName === "shift" && arrayLength === 1) {
+      const removedPath = [...collectionPath, indexSegment(0)];
+      markRead(trackedObject, removedPath);
+      invalidateCollectionPath(
+        trackedObject,
+        collectionPath,
+        removedPath,
+        createInvalidatedPathRecord("array-truncate-mutation", "shift consumes the only tracked element"),
+      );
+      setTrackedArrayLength(trackedObject, collectionPath, 0);
+      return;
+    }
+
     recordArrayBoundary(
       project,
       trackedObject,

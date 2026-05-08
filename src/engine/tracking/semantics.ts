@@ -22,6 +22,7 @@ import {
   getStaticGlobalThisPropertyName,
 } from "./bindings.js";
 import {
+  getObjectBackedRetainedBindingSlotKeyFromAccess,
   isExactArrayCallbackMethod,
   isSupportedRetainedBindingContainerType,
 } from "./access.js";
@@ -57,7 +58,7 @@ export const WHOLE_ARRAY_CONSUMPTION_METHODS = new Set([
   "values",
 ]);
 
-export const OBSERVATION_ONLY_CALLS = new Set([
+const OBSERVATION_ONLY_CALLS = new Set([
   "console.log",
   "console.info",
   "console.debug",
@@ -66,10 +67,61 @@ export const OBSERVATION_ONLY_CALLS = new Set([
   "console.dir",
 ]);
 
+type SupportedCallArgumentUseKind =
+  | "observe-subtree"
+  | "observe-keys"
+  | "observe-values"
+  | "clone-shallow"
+  | "clone-deep"
+  | "opaque-escape";
+
+interface SupportedCallArgumentUse {
+  kind: SupportedCallArgumentUseKind;
+  reason: string;
+}
+
 export const ARRAY_APPEND_METHODS = new Set(["push"]);
 export const ARRAY_TRUNCATE_METHODS = new Set(["pop"]);
 export const ARRAY_REPLACEMENT_METHODS = new Set(["fill"]);
 export const ARRAY_REORDER_METHODS = new Set(["copyWithin", "reverse", "shift", "sort", "splice", "unshift"]);
+
+export function classifySupportedCallArgumentUse(
+  calleeText: string,
+  argumentIndex: number,
+): SupportedCallArgumentUse | undefined {
+  if (argumentIndex !== 0) {
+    return undefined;
+  }
+
+  if (OBSERVATION_ONLY_CALLS.has(calleeText)) {
+    return {
+      kind: "observe-subtree",
+      reason: `${calleeText} meaningfully observes this value`,
+    };
+  }
+
+  switch (calleeText) {
+    case "Object.keys":
+    case "Reflect.ownKeys":
+      return {
+        kind: "observe-keys",
+        reason: `${calleeText} observes the immediate keys of this value`,
+      };
+    case "Object.values":
+    case "Object.entries":
+      return {
+        kind: "observe-values",
+        reason: `${calleeText} observes the immediate values of this value`,
+      };
+    case "JSON.stringify":
+      return {
+        kind: "observe-subtree",
+        reason: "JSON.stringify serializes this value",
+      };
+    default:
+      return undefined;
+  }
+}
 
 function getHelperLocationText(project: ProjectContext, sourceFile: ts.SourceFile, node: ts.Node): string {
   const { line, character } = ts.getLineAndCharacterOfPosition(sourceFile, node.getStart(sourceFile));
@@ -552,6 +604,14 @@ export function summarizeHelperParameterUse(
 
   const handleTrackedAssignment = (left: ts.Expression): boolean => {
     if (getStaticGlobalThisPropertyName(left)) {
+      addHelperParameterEffect(summary, "retained-binding");
+      return true;
+    }
+
+    if (
+      (ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left))
+      && getObjectBackedRetainedBindingSlotKeyFromAccess(project, left)
+    ) {
       addHelperParameterEffect(summary, "retained-binding");
       return true;
     }

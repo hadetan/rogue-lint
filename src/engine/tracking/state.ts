@@ -593,6 +593,40 @@ export function markProjectionElementRead(
   }
 }
 
+function markObservedPath(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+  trackedObjectsById?: Map<string, TrackedObject>,
+): void {
+  const alias = trackedObject.exactPathAliases.get(serializePath(segments));
+  if (alias) {
+    const sourceTrackedObject = trackedObjectsById?.get(alias.sourceObjectId);
+    if (sourceTrackedObject) {
+      alias.observed = true;
+      markRead(sourceTrackedObject, alias.sourcePath);
+      return;
+    }
+  }
+
+  markRead(trackedObject, segments);
+}
+
+export function markObservedChildPaths(
+  trackedObject: TrackedObject,
+  segments: PathSegment[],
+  trackedObjectsById?: Map<string, TrackedObject>,
+): void {
+  const collection = getCollectionInfo(trackedObject, segments);
+  if (!collection || collection.childPaths.length === 0) {
+    markObservedPath(trackedObject, segments, trackedObjectsById);
+    return;
+  }
+
+  for (const childPath of collection.childPaths) {
+    markObservedPath(trackedObject, childPath, trackedObjectsById);
+  }
+}
+
 export function markRead(trackedObject: TrackedObject, segments: PathSegment[]): void {
   for (let index = 1; index <= segments.length; index += 1) {
     trackedObject.reads.add(serializePath(segments.slice(0, index)));

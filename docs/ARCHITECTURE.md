@@ -75,9 +75,10 @@ Owns the exactness-sensitive tracking subsystem used by the value-liveness and o
 Start in the owning module here when a change affects:
 
 - tracked-object identity or structure
-- helper return or parameter summaries
+- helper return or parameter summaries, including member-style and namespace-style same-project call resolution
 - exact path propagation or projection traversal
-- collection boundaries, invalidation, retained binding, and mutation semantics
+- collection boundaries, invalidation, retained binding, object-backed retained storage, and mutation semantics
+- awaited structured returns or bounded queue and worklist consume rules inside the exact subset
 - the line between exact reasoning and conservative skips
 - object-path stage traversal or reporting behavior
 

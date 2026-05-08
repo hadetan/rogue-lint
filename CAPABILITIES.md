@@ -157,6 +157,7 @@ Test-backed fixtures:
 - `cross-file-return-structure-basic`
 - `helper-readonly-basic`
 - `helper-mutation-basic`
+- `helper-async-propagation-basic`
 - `helper-storage-basic`
 - `helper-closure-capture-basic`
 
@@ -165,8 +166,9 @@ What the current implementation can prove:
 - exact imported object and array usage across same-project files
 - direct returned object and array literals
 - returned aliases when the result can still be tied back to an exact tracked binding
-- same-project helper observers that only read supported paths
-- same-project helper mutations that stay within modeled exact flows
+- same-project namespace-style, member-style, and direct helper observers that only read supported paths
+- same-project namespace-style, member-style, and direct helper mutations that stay within modeled exact flows
+- awaited helper returns and wrapper helpers when the returned binding identity stays exact
 - conservative boundaries when helpers store, forward, or capture values in unsupported ways
 
 Cross-file structured-return example:
@@ -213,7 +215,8 @@ This keeps `items[0]` live and still allows `items[1]` to remain reportable.
 Important nuances:
 
 - internally, returned values are summarized as `value`, `structured`, `returned-alias`, or `opaque`; that summary drives cross-file and helper precision
-- conditional and nullish return expressions stay exact only when both branches collapse to the same tracked binding or to compatible pure-value summaries; that is code-backed in `src/engine/tracking/core.ts`
+- statically resolved property-style callees and namespace-like helper access participate in the same helper-summary and return-summary model; unresolved dispatch still stays conservative
+- conditional and nullish return expressions stay exact only when both branches collapse to the same tracked binding or to compatible pure-value summaries; that is code-backed in `src/engine/tracking/graph.ts`
 - helper storage by reference and nested helper closure capture remain explicit conservative boundaries rather than speculative exactness
 
 ## 4. Helpers, Callback Correlation, And Retained Bindings
@@ -222,16 +225,20 @@ Test-backed fixtures:
 
 - `callback-correlation-basic`
 - `container-retention-basic`
+- `object-retention-basic`
 - `helper-retained-binding-basic`
 - `helper-global-this-basic`
 - `helper-queue-basic`
+- `queue-lifecycle-basic`
 
 What the current implementation can prove:
 
 - exact callback index correlation for supported local array callbacks
 - retained bindings through supported `Map.set` and `Map.get` flows
+- retained bindings through supported local object-backed static slots
 - supported retention through same-project module bindings
 - supported retention through static `globalThis` properties
+- exact single-item queue or worklist consume after a modeled exact append
 - conservative queue and worklist boundaries when mutations reorder or rebuild arrays beyond the exact subset
 
 Callback-correlation example:
@@ -274,7 +281,8 @@ This keeps `live` meaningful while still allowing `dead` to remain reportable.
 Important nuances:
 
 - exact callback support is intentionally allowlisted; the current code models `every`, `filter`, `find`, `findIndex`, `findLast`, `findLastIndex`, `flatMap`, `forEach`, `map`, `reduce`, `reduceRight`, and `some`
-- queue-like mutations such as `shift`, `sort`, `splice`, and `reverse` are deliberately treated as reorder boundaries once exact slot mapping can no longer be preserved
+- object-backed retained storage stays exact only when the container is locally owned and the slot identity is a static property name or literal element access
+- queue-like mutations such as `shift`, `sort`, `splice`, and `reverse` are deliberately treated as reorder boundaries once exact slot mapping can no longer be preserved; a single-item `shift()` consume can stay exact because the removed slot is deterministic
 
 ## 5. Value-Flow, Discarded Results, And Safety Findings
 

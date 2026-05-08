@@ -63,6 +63,58 @@ const EXACT_ARRAY_CALLBACK_METHODS = new Set([
   "some",
 ]);
 
+function extractBoundedElementAccessSegment(
+  project: ProjectContext,
+  argument: ts.Expression,
+): PathSegment | undefined {
+  const node = unwrapExpression(argument);
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return propertySegment(node.text);
+  }
+
+  if (ts.isNumericLiteral(node)) {
+    return indexSegment(Number(node.text));
+  }
+
+  if (
+    ts.isPrefixUnaryExpression(node)
+    && node.operator === ts.SyntaxKind.MinusToken
+    && ts.isNumericLiteral(node.operand)
+  ) {
+    return indexSegment(-Number(node.operand.text));
+  }
+
+  const type = project.checker.getTypeAtLocation(node);
+  const candidateTypes = type.isUnion() ? type.types : [type];
+  const seen = new Set<string>();
+  let segment: PathSegment | undefined;
+
+  for (const candidateType of candidateTypes) {
+    let nextSegment: PathSegment | undefined;
+
+    if (candidateType.flags & ts.TypeFlags.StringLiteral) {
+      nextSegment = propertySegment((candidateType as ts.StringLiteralType).value);
+    } else if (candidateType.flags & ts.TypeFlags.NumberLiteral) {
+      nextSegment = indexSegment((candidateType as ts.NumberLiteralType).value);
+    } else {
+      return undefined;
+    }
+
+    const key = `${nextSegment.kind}:${nextSegment.value}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    if (segment) {
+      return undefined;
+    }
+    segment = nextSegment;
+  }
+
+  return segment;
+}
+
 function resolveLiteralArrayIndex(argument: ts.Expression): number | undefined {
   if (ts.isNumericLiteral(argument)) {
     return Number(argument.text);
@@ -126,35 +178,94 @@ function getContainerTypeName(project: ProjectContext, expression: ts.Expression
   return typeSymbol?.getName();
 }
 
+function isObjectCreateNullExpression(expression: ts.Expression): boolean {
+  const node = unwrapExpression(expression);
+  return ts.isCallExpression(node)
+    && ts.isPropertyAccessExpression(node.expression)
+    && ts.isIdentifier(node.expression.expression)
+    && node.expression.expression.text === "Object"
+    && node.expression.name.text === "create"
+    && node.arguments.length === 1
+    && node.arguments[0]!.kind === ts.SyntaxKind.NullKeyword;
+}
+
+function getLocallyOwnedRetainedBindingContainerKind(
+  project: ProjectContext,
+  expression: ts.Expression,
+): "map-like" | "object-backed" | undefined {
+  const node = unwrapExpression(expression);
+  if (!ts.isIdentifier(node)) {
+    return undefined;
+  }
+
+  const symbol = project.checker.getSymbolAtLocation(node);
+  if (!symbol) {
+    return undefined;
+  }
+
+  for (const declaration of getCanonicalSymbol(project, symbol).declarations ?? []) {
+    if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) {
+      continue;
+    }
+
+    const initializer = unwrapExpression(declaration.initializer);
+    if (
+      ts.isNewExpression(initializer)
+      && ts.isIdentifier(initializer.expression)
+      && ["Map", "WeakMap"].includes(initializer.expression.text)
+    ) {
+      return "map-like";
+    }
+
+    if (isObjectCreateNullExpression(initializer)) {
+      return "object-backed";
+    }
+  }
+
+  return undefined;
+}
+
+function getRetainedBindingContainerReceiverKey(project: ProjectContext, receiver: ts.Expression): string | undefined {
+  const node = unwrapExpression(receiver);
+  if (!ts.isIdentifier(node)) {
+    return undefined;
+  }
+
+  const symbol = project.checker.getSymbolAtLocation(node);
+  return symbol ? `container:${getCanonicalSymbolKey(project, symbol)}` : undefined;
+}
+
+function getRetainedBindingContainerStaticPropertySlotKey(
+  project: ProjectContext,
+  receiver: ts.Expression,
+  propertyName: string,
+): string | undefined {
+  const receiverKey = getRetainedBindingContainerReceiverKey(project, receiver);
+  return receiverKey ? `${receiverKey}:string:${propertyName}` : undefined;
+}
+
 export function isSupportedRetainedBindingContainerType(
   project: ProjectContext,
   expression: ts.Expression,
 ): boolean {
   const typeName = getContainerTypeName(project, expression);
-  return typeName === "Map" || typeName === "WeakMap";
+  return typeName === "Map"
+    || typeName === "WeakMap"
+    || getLocallyOwnedRetainedBindingContainerKind(project, expression) === "object-backed";
 }
 
 export function isLocallyOwnedRetainedBindingContainer(
   project: ProjectContext,
   expression: ts.Expression,
 ): boolean {
-  const node = unwrapExpression(expression);
-  if (!ts.isIdentifier(node)) {
-    return false;
-  }
+  return getLocallyOwnedRetainedBindingContainerKind(project, expression) !== undefined;
+}
 
-  const symbol = project.checker.getSymbolAtLocation(node);
-  if (!symbol) {
-    return false;
-  }
-
-  return getCanonicalSymbol(project, symbol).declarations?.some((declaration) =>
-    ts.isVariableDeclaration(declaration)
-      && declaration.initializer
-      && ts.isNewExpression(declaration.initializer)
-      && ts.isIdentifier(declaration.initializer.expression)
-      && ["Map", "WeakMap"].includes(declaration.initializer.expression.text)
-  ) ?? false;
+function isLocallyOwnedObjectBackedRetainedBindingContainer(
+  project: ProjectContext,
+  expression: ts.Expression,
+): boolean {
+  return getLocallyOwnedRetainedBindingContainerKind(project, expression) === "object-backed";
 }
 
 function getRetainedBindingContainerSlotToken(project: ProjectContext, expression: ts.Expression): string | undefined {
@@ -177,18 +288,45 @@ export function getRetainedBindingContainerSlotKey(
   receiver: ts.Expression,
   slot: ts.Expression,
 ): string | undefined {
-  const node = unwrapExpression(receiver);
-  if (!ts.isIdentifier(node) || !isSupportedRetainedBindingContainerType(project, node)) {
+  const receiverKey = getRetainedBindingContainerReceiverKey(project, receiver);
+  if (!receiverKey || !isSupportedRetainedBindingContainerType(project, receiver)) {
     return undefined;
   }
 
-  const symbol = project.checker.getSymbolAtLocation(node);
   const slotToken = getRetainedBindingContainerSlotToken(project, slot);
-  if (!symbol || !slotToken) {
+  if (!slotToken) {
     return undefined;
   }
 
-  return `container:${getCanonicalSymbolKey(project, symbol)}:${slotToken}`;
+  return `${receiverKey}:${slotToken}`;
+}
+
+export function getObjectBackedRetainedBindingSlotKeyFromAccess(
+  project: ProjectContext,
+  node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | undefined {
+  if (!isLocallyOwnedObjectBackedRetainedBindingContainer(project, node.expression)) {
+    return undefined;
+  }
+
+  if (ts.isPropertyAccessExpression(node)) {
+    return getRetainedBindingContainerStaticPropertySlotKey(project, node.expression, node.name.text);
+  }
+
+  if (!node.argumentExpression) {
+    return undefined;
+  }
+
+  const argument = unwrapExpression(node.argumentExpression);
+  if (
+    !ts.isStringLiteral(argument)
+    && !ts.isNoSubstitutionTemplateLiteral(argument)
+    && !ts.isNumericLiteral(argument)
+  ) {
+    return undefined;
+  }
+
+  return getRetainedBindingContainerSlotKey(project, node.expression, argument);
 }
 
 export function getAccessPath(
@@ -239,6 +377,10 @@ export function resolveTrackedObjectAccess(
   functionReturnSummaries: Map<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): ResolvedTrackedObjectAccess | undefined {
+  if (ts.isAwaitExpression(node)) {
+    return resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
+  }
+
   if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
     return resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
   }
@@ -252,6 +394,17 @@ export function resolveTrackedObjectAccess(
     if (isGlobalThisIdentifier(node.expression)) {
       const binding = trackedBySymbolId.get(getGlobalThisBindingKey(node.name.text));
       return binding ? { binding, segments: [], dynamic: false } : undefined;
+    }
+
+    const retainedBinding = trackedBySymbolId.get(
+      getObjectBackedRetainedBindingSlotKeyFromAccess(project, node) ?? "",
+    );
+    if (retainedBinding) {
+      return {
+        binding: retainedBinding,
+        segments: [],
+        dynamic: false,
+      };
     }
 
     const nested = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
@@ -279,6 +432,17 @@ export function resolveTrackedObjectAccess(
       return binding ? { binding, segments: [], dynamic: false } : undefined;
     }
 
+    const retainedBinding = trackedBySymbolId.get(
+      getObjectBackedRetainedBindingSlotKeyFromAccess(project, node) ?? "",
+    );
+    if (retainedBinding) {
+      return {
+        binding: retainedBinding,
+        segments: [],
+        dynamic: false,
+      };
+    }
+
     const nested = resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
     if (!nested) {
       return undefined;
@@ -288,10 +452,9 @@ export function resolveTrackedObjectAccess(
       return nested;
     }
 
-    if (ts.isStringLiteral(node.argumentExpression) || ts.isNumericLiteral(node.argumentExpression)) {
-      const nextSegment = ts.isNumericLiteral(node.argumentExpression)
-        ? indexSegment(Number(node.argumentExpression.text))
-        : propertySegment(node.argumentExpression.text);
+    const boundedSegment = extractBoundedElementAccessSegment(project, node.argumentExpression);
+    if (boundedSegment) {
+      const nextSegment = boundedSegment;
       const aliased = resolveExactPathAlias(nested.binding, [...nested.segments, nextSegment], trackedObjectsById);
       return {
         binding: aliased.binding,
@@ -318,6 +481,58 @@ export function resolveTrackedObjectAccess(
   }
 
   if (ts.isCallExpression(node)) {
+    if (
+      ts.isPropertyAccessExpression(node.expression)
+      && (node.expression.name.text === "pop" || node.expression.name.text === "shift")
+      && node.arguments.length === 0
+    ) {
+      const receiver = resolveTrackedObjectAccess(
+        project,
+        node.expression.expression,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      if (!receiver) {
+        return undefined;
+      }
+
+      if (receiver.dynamic) {
+        return receiver;
+      }
+
+      const receiverPath = [...receiver.binding.prefix, ...receiver.segments];
+      const collection = getCollectionInfo(receiver.binding.trackedObject, receiverPath);
+      if (collection?.kind !== "array") {
+        return undefined;
+      }
+
+      const arrayLength = getTrackedArrayLength(receiver.binding.trackedObject, receiverPath);
+      const targetIndex = node.expression.name.text === "pop"
+        ? (arrayLength !== undefined && arrayLength > 0 ? arrayLength - 1 : undefined)
+        : arrayLength === 1
+          ? 0
+          : undefined;
+      if (targetIndex === undefined) {
+        return undefined;
+      }
+
+      const aliased = resolveExactPathAlias(
+        receiver.binding,
+        [...receiver.segments, indexSegment(targetIndex)],
+        trackedObjectsById,
+      );
+      return {
+        binding: aliased.binding,
+        segments: sameTrackedBinding(aliased.binding, receiver.binding)
+          ? [...receiver.segments, indexSegment(targetIndex)]
+          : [],
+        dynamic: false,
+        viaAliasObjectId: aliased.viaAliasObjectId ?? receiver.viaAliasObjectId,
+        viaAliasPath: aliased.viaAliasPath ?? receiver.viaAliasPath,
+      };
+    }
+
     if (
       ts.isPropertyAccessExpression(node.expression)
       && node.expression.name.text === "at"
@@ -583,14 +798,13 @@ export function resolveProjectionAccess(
       return nested;
     }
 
-    if (ts.isNumericLiteral(node.argumentExpression) || ts.isStringLiteral(node.argumentExpression)) {
+    const boundedSegment = extractBoundedElementAccessSegment(project, node.argumentExpression);
+    if (boundedSegment) {
       return {
         projection: nested.projection,
         suffix: [
           ...nested.suffix,
-          ts.isNumericLiteral(node.argumentExpression)
-            ? indexSegment(Number(node.argumentExpression.text))
-            : propertySegment(node.argumentExpression.text),
+          boundedSegment,
         ],
         dynamic: nested.dynamic,
         boundaryCategory: nested.boundaryCategory,

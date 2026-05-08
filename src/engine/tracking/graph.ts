@@ -28,6 +28,7 @@ import {
   sameTrackedBindingMap,
 } from "./bindings.js";
 import {
+  getObjectBackedRetainedBindingSlotKeyFromAccess,
   getForwardedParameterBindings,
   getRetainedBindingContainerSlotKey,
   isLocallyOwnedRetainedBindingContainer,
@@ -341,6 +342,12 @@ export function buildTrackedObjects(
     expression: ts.Expression,
   ): CallableReturnSummary | undefined => {
     if (
+      ts.isAwaitExpression(expression)
+    ) {
+      return summarizeReturnExpression(callable, expression.expression);
+    }
+
+    if (
       ts.isParenthesizedExpression(expression)
       || ts.isNonNullExpression(expression)
       || ts.isAsExpression(expression)
@@ -608,6 +615,20 @@ export function buildTrackedObjects(
                 extendTrackedBinding(resolved.binding, resolved.segments),
               );
             }
+          } else if (
+            (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
+            && resolved
+            && !resolved.dynamic
+          ) {
+            const slotKey = getObjectBackedRetainedBindingSlotKeyFromAccess(project, node.left);
+            if (slotKey) {
+              mergeTrackedBinding(
+                nextTrackedBySymbolId,
+                conflictedTrackedSymbolIds,
+                slotKey,
+                extendTrackedBinding(resolved.binding, resolved.segments),
+              );
+            }
           }
         }
 
@@ -665,7 +686,12 @@ export function buildTrackedObjects(
       }
 
       const visit = (node: ts.Node): void => {
-        if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)) {
+        if (
+          ts.isFunctionDeclaration(node)
+          || ts.isFunctionExpression(node)
+          || ts.isArrowFunction(node)
+          || ts.isMethodDeclaration(node)
+        ) {
           const callable = getAnalyzableCallableBindingFromDeclaration(project, node);
           if (callable) {
             const summary = collectFunctionReturnSummary(node);
