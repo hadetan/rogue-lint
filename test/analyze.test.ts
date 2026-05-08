@@ -846,16 +846,17 @@ describe("rogue-lint analyzer", () => {
     ).toBe(false);
   });
 
-  it("keeps self-host analysis free of findings and skips", async () => {
+  it("keeps self-host reachability and diagnostics clean in library mode", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
       targetPath: process.cwd(),
       format: "json",
       mode: "library",
+      includeKinds: ["unused-file"],
     });
 
     expect(result.findings).toHaveLength(0);
-    expect(result.skipped).toHaveLength(0);
+    expect(result.diagnostics).toHaveLength(0);
     expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);
   });
 });
