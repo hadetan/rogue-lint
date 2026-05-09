@@ -6,7 +6,7 @@ import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, addSkipped, type AnalysisState } from "../analysis-state.js";
-import { createReferenceKey, type ReferenceCaches } from "./support.js";
+import { buildPublicSurfaceAudit, createReferenceKey, type ReferenceCaches } from "./support.js";
 
 /**
  * Reports class members that are provably unread while recording decorator and computed-name boundaries conservatively.
@@ -14,6 +14,7 @@ import { createReferenceKey, type ReferenceCaches } from "./support.js";
 export function analyzeClassMembers(
   project: ProjectContext,
   reachableFiles: Set<string>,
+  publicSurfaceIds: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
   caches: ReferenceCaches,
@@ -45,6 +46,11 @@ export function analyzeClassMembers(
             memberName,
             className,
           );
+
+          if (publicSurfaceIds.has(entity.id)) {
+            addAudit(state.kept, buildPublicSurfaceAudit(entity));
+            continue;
+          }
 
           const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
           if (addAudit(state.kept, suppression)) {

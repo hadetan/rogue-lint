@@ -21,6 +21,12 @@ export function analyzeUnusedLocals(
       continue;
     }
 
+    // TypeScript's unused-local semantic diagnostics are trustworthy for TS sources,
+    // but benchmarked JS projects can surface false positives here.
+    if (/\.[cm]?jsx?$/i.test(sourceFile.fileName)) {
+      continue;
+    }
+
     for (const diagnostic of project.program.getSemanticDiagnostics(sourceFile)) {
       if (diagnostic.code !== 6133 || !diagnostic.file || diagnostic.start === undefined) {
         continue;

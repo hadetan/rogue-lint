@@ -356,6 +356,24 @@ export function handleSupportedValueFateCall(
     }
   }
 
+  if (calleeText === "Promise.all" && node.arguments[0]) {
+    const resolved = resolveTrackedObjectAccess(
+      project,
+      node.arguments[0],
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    if (resolved && !resolved.dynamic) {
+      const fullPath = [...resolved.binding.prefix, ...resolved.segments];
+      const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
+      if (collectionInfo?.kind === "array") {
+        markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
+        handledIndices.add(0);
+      }
+    }
+  }
+
   if (
     trackedReceiver
     && receiverPath

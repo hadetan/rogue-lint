@@ -1,0 +1,104 @@
+{
+  "id": "dayjs-core",
+  "description": "Real-project benchmark target for the Day.js core published library surface.",
+  "coverageClass": "library-public-surface",
+  "repository": {
+    "url": "https://github.com/iamkun/dayjs",
+    "ref": "dev"
+  },
+  "localCorpusPath": "benchmark/corpus/dayjs-root",
+  "config": {
+    "mode": "library",
+    "entrypoints": [
+      "src/index.js"
+    ],
+    "include": [
+      "src/index.js",
+      "src/utils.js",
+      "src/constant.js",
+      "src/locale/en.js"
+    ]
+  },
+  "expectations": {
+    "mustFind": [
+      {
+        "label": "unused export SECONDS_A_MINUTE remains detectable",
+        "kind": "unused-export",
+        "file": "src/constant.js",
+        "name": "SECONDS_A_MINUTE",
+        "minCount": 1,
+        "maxCount": 1
+      },
+      {
+        "label": "unused export SECONDS_A_HOUR remains detectable",
+        "kind": "unused-export",
+        "file": "src/constant.js",
+        "name": "SECONDS_A_HOUR",
+        "minCount": 1,
+        "maxCount": 1
+      },
+      {
+        "label": "unused export SECONDS_A_DAY remains detectable",
+        "kind": "unused-export",
+        "file": "src/constant.js",
+        "name": "SECONDS_A_DAY",
+        "minCount": 1,
+        "maxCount": 1
+      },
+      {
+        "label": "unused export SECONDS_A_WEEK remains detectable",
+        "kind": "unused-export",
+        "file": "src/constant.js",
+        "name": "SECONDS_A_WEEK",
+        "minCount": 1,
+        "maxCount": 1
+      }
+    ],
+    "mustNotFind": [
+      {
+        "label": "core entrypoint src/index.js must not be treated as an unused file",
+        "kind": "unused-file",
+        "file": "src/index.js",
+        "maxCount": 0
+      },
+      {
+        "label": "used local meridiemFunc in src/index.js must not be treated as unused",
+        "kind": "unused-local",
+        "file": "src/index.js",
+        "name": "meridiemFunc",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved whole-array receiver elements in src/index.js must not return as unused array elements",
+        "kind": "unused-array-element",
+        "file": "src/index.js",
+        "maxCount": 0
+      }
+    ],
+    "mustSkip": [
+      {
+        "label": "dynamic-array-index collection-boundary src/locale/en.js remains a trusted conservative boundary",
+        "category": "dynamic-array-index",
+        "kind": "collection-boundary",
+        "file": "src/locale/en.js",
+        "minCount": 2,
+        "maxCount": 2
+      }
+    ],
+    "mustDiagnose": [],
+    "mustNotDiagnose": [
+      {
+        "label": "core Day.js target should stay free of project errors",
+        "kind": "project-error",
+        "maxCount": 0
+      },
+      {
+        "label": "core Day.js target should stay free of project warnings",
+        "kind": "project-warning",
+        "maxCount": 0
+      }
+    ],
+    "acceptedFindings": [],
+    "knownSkips": []
+  }
+}

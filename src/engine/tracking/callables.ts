@@ -88,6 +88,16 @@ function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLik
 
   if (
     declaration
+    && ts.isVariableDeclaration(declaration)
+    && declaration.initializer
+    && ts.isConditionalExpression(declaration.initializer)
+    && (ts.isFunctionExpression(declaration.initializer.whenFalse) || ts.isArrowFunction(declaration.initializer.whenFalse))
+  ) {
+    return declaration.initializer.whenFalse;
+  }
+
+  if (
+    declaration
     && ts.isPropertyAssignment(declaration)
     && (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
   ) {
@@ -129,6 +139,17 @@ export function getAnalyzableCallableName(callable: AnalyzableCallableBinding): 
 
   if ((ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration)) && ts.isVariableDeclaration(declaration.parent)) {
     const parentName = declaration.parent.name;
+    if (ts.isIdentifier(parentName)) {
+      return parentName.text;
+    }
+  }
+
+  if (
+    (ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
+    && ts.isConditionalExpression(declaration.parent)
+    && ts.isVariableDeclaration(declaration.parent.parent)
+  ) {
+    const parentName = declaration.parent.parent.name;
     if (ts.isIdentifier(parentName)) {
       return parentName.text;
     }
@@ -189,6 +210,21 @@ export function getAnalyzableCallableBindingFromDeclaration(
     const parent = declaration.parent;
     if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
       const symbol = project.checker.getSymbolAtLocation(parent.name);
+      if (symbol) {
+        return {
+          declaration,
+          symbolKey: getCanonicalSymbolKey(project, symbol),
+        };
+      }
+    }
+
+    if (
+      ts.isConditionalExpression(parent)
+      && parent.whenFalse === declaration
+      && ts.isVariableDeclaration(parent.parent)
+      && ts.isIdentifier(parent.parent.name)
+    ) {
+      const symbol = project.checker.getSymbolAtLocation(parent.parent.name);
       if (symbol) {
         return {
           declaration,

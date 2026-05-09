@@ -32,8 +32,7 @@ describe("rogue-lint analyzer", () => {
     const keptNames = result.kept.map((entry) => entry.name);
     expect(keptNames).toContain("ignoredLocal");
 
-    expect(result.skipped.some((entry) => entry.reason.includes("computed property access"))).toBe(true);
-    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(true);
+    expect(result.skipped).toHaveLength(0);
   });
 
   it("keeps public entrypoint exports live in library mode", async () => {
@@ -53,6 +52,50 @@ describe("rogue-lint analyzer", () => {
     expect(libraryResult.findings.some((finding) => finding.entity.name === "publicApi")).toBe(false);
     expect(libraryResult.kept.some((entry) => entry.name === "publicApi")).toBe(true);
     expect(applicationResult.findings.some((finding) => finding.entity.name === "publicApi")).toBe(true);
+  });
+
+  it("keeps exported fluent class members and enum members live in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-fluent-api-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-class-member" && finding.entity.name === "lower")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-class-member" && finding.entity.name === "upper")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-class-member" && finding.entity.name === "chain")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-enum-member" && finding.entity.name === "Short")).toBe(false);
+
+    expect(result.kept.some((entry) => entry.kind === "class-member" && entry.name === "chain")).toBe(true);
+    expect(result.kept.some((entry) => entry.kind === "enum-member" && entry.name === "Short")).toBe(true);
+  });
+
+  it("keeps exported factory-prototype class members live in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-factory-prototype-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-class-member" && finding.entity.name === "format")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-class-member" && finding.entity.name === "chain")).toBe(false);
+
+    expect(result.kept.some((entry) => entry.kind === "class-member" && entry.name === "format")).toBe(true);
+    expect(result.kept.some((entry) => entry.kind === "class-member" && entry.name === "chain")).toBe(true);
+  });
+
+  it("keeps namespace-exported values and types live in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-namespace-export-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-export" && finding.entity.name === "normalize")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-type" && finding.entity.name === "ToolkitConfig")).toBe(false);
+
+    expect(result.kept.some((entry) => entry.kind === "export" && entry.name === "normalize")).toBe(true);
+    expect(result.kept.some((entry) => entry.kind === "type" && entry.name === "ToolkitConfig")).toBe(true);
   });
 
   it("does not list cross-file referenced public exports as kept", async () => {
@@ -568,11 +611,9 @@ describe("rogue-lint analyzer", () => {
     expect(rendered).toContain("unused-export");
     expect(rendered).toContain("  src/lib.ts");
     expect(rendered).not.toContain("  (unknown)");
-    expect(rendered).toContain("Skipped:");
     expect(result.kept.length).toBeGreaterThan(0);
-    expect(result.skipped.length).toBeGreaterThan(0);
     expect(rendered).toContain(result.kept[0].reason);
-    expect(rendered).toContain(result.skipped[0].reason);
+    expect(rendered).toContain("Skipped: 0");
   });
 
   it("treats supported call boundaries as meaningful value use", async () => {
@@ -608,6 +649,35 @@ describe("rogue-lint analyzer", () => {
     expect(kindsAndNames).not.toContain("unused-value:echo(\"observed\")");
     expect(kindsAndNames).not.toContain("unused-value:echo(\"saved\")");
     expect(result.skipped).toHaveLength(0);
+  });
+
+  it("does not report dead stores for staged self-rewrites or sentinel writes", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("value-flow-staged-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).not.toContain("dead-store:regex");
+    expect(kindsAndNames).not.toContain("dead-store:value");
+    expect(kindsAndNames).not.toContain("write-only-state:value");
+  });
+
+  it("preserves benchmark-like dynamic lookup tables and conditional array receivers conservatively", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("dynamic-benchmark-patterns-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).not.toContain("unused-object-key:string");
+    expect(kindsAndNames).not.toContain("unused-object-key:number");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(kindsAndNames).not.toContain("unused-array-element:[3]");
   });
 
   it("purity-gates ignored returns while keeping structural dead metadata reportable", async () => {
@@ -733,6 +803,35 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(true);
   });
 
+  it("keeps finite union keyed object reads exact without hiding unrelated dead keys", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("finite-union-keyed-access-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "entries"
+      && finding.entity.name === "unused"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-nested-path"
+      && finding.entity.owner === "entries"
+      && ["email.dead", "url.dead", "unused.dead"].includes(finding.entity.name)
+    )).toBe(true);
+
+    expect(result.findings.some((finding) =>
+      finding.entity.owner === "labels"
+      && ["email", "url"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.entity.owner === "entries"
+      && ["email.label", "url.label"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(false);
+  });
+
   it("preserves same-project namespace and member helpers plus awaited structured returns", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -774,6 +873,17 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
+  it("treats Promise.all array aggregation as a supported whole-array observation", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("promise-all-array-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-array-element")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "array-opaque-mutation" && entry.name === "items")).toBe(false);
+  });
+
   it("preserves returned tracked objects across supported same-project helper boundaries", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -788,6 +898,31 @@ describe("rogue-lint analyzer", () => {
     expect(kindsAndNames).not.toContain("unused-object-key:live");
     expect(kindsAndNames).not.toContain("unused-nested-path:nested.read");
     expect(result.skipped).toHaveLength(0);
+  });
+
+  it("preserves conditional helper fallback returns across supported same-project calls", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-object-conditional-helper-basic"),
+      format: "json",
+    });
+
+    expect(result.skipped.some((entry) => entry.category === "returned-object" && entry.name === "[0]")).toBe(false);
+  });
+
+  it("keeps public returned issue objects and collected keys live in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-returned-issues-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "message")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "code")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "input")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "inst")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "keys")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-array-element" && finding.entity.name === "[0]")).toBe(false);
   });
 
   it("tracks direct returned literals for whole-result and nested structured usage", async () => {

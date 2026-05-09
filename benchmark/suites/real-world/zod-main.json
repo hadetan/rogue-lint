@@ -1,0 +1,148 @@
+{
+  "id": "zod-main",
+  "description": "Real-project benchmark target for Zod main production library code.",
+  "coverageClass": "workspace-monorepo-subproject",
+  "repository": {
+    "url": "https://github.com/colinhacks/zod",
+    "ref": "main"
+  },
+  "localCorpusPath": "benchmark/corpus/zod-main",
+  "targetPath": "packages/zod",
+  "config": {
+    "mode": "library",
+    "include": [
+      "src/**/*.ts"
+    ],
+    "exclude": [
+      "src/**/benchmarks/**",
+      "src/**/tests/**",
+      "src/**/*.test.ts",
+      "src/**/*.spec.ts"
+    ]
+  },
+  "expectations": {
+    "mustFind": [
+      {
+        "label": "unused-file src/v4/core/config.ts must remain detectable",
+        "kind": "unused-file",
+        "file": "src/v4/core/config.ts",
+        "minCount": 1,
+        "maxCount": 1
+      }
+    ],
+    "mustNotFind": [
+      {
+        "label": "public entrypoint src/index.ts must not be treated as an unused file",
+        "kind": "unused-file",
+        "file": "src/index.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "staged regex assembly in src/v3/types.ts must not be treated as dead-store",
+        "kind": "dead-store",
+        "file": "src/v3/types.ts",
+        "name": "regex",
+        "maxCount": 0
+      },
+      {
+        "label": "sentinel lazy value in src/v4/core/util.ts must not be treated as dead-store",
+        "kind": "dead-store",
+        "file": "src/v4/core/util.ts",
+        "name": "value",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused class members in src/v3/types.ts must not return",
+        "kind": "unused-class-member",
+        "file": "src/v3/types.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused class members in src/v3/ZodError.ts must not return",
+        "kind": "unused-class-member",
+        "file": "src/v3/ZodError.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused class members in src/v4/core/doc.ts must not return",
+        "kind": "unused-class-member",
+        "file": "src/v4/core/doc.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused class members in src/v4/core/json-schema-generator.ts must not return",
+        "kind": "unused-class-member",
+        "file": "src/v4/core/json-schema-generator.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused class members in src/v4/core/registries.ts must not return",
+        "kind": "unused-class-member",
+        "file": "src/v4/core/registries.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused enum members in src/v3/types.ts must not return",
+        "kind": "unused-enum-member",
+        "file": "src/v3/types.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused exports in src/v4/classic/coerce.ts must not return",
+        "kind": "unused-export",
+        "file": "src/v4/classic/coerce.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused exports in src/v4/core/regexes.ts must not return",
+        "kind": "unused-export",
+        "file": "src/v4/core/regexes.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused exports in src/v4/core/util.ts must not return",
+        "kind": "unused-export",
+        "file": "src/v4/core/util.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused exports in src/v4/mini/coerce.ts must not return",
+        "kind": "unused-export",
+        "file": "src/v4/mini/coerce.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused exports in src/v4/mini/iso.ts must not return",
+        "kind": "unused-export",
+        "file": "src/v4/mini/iso.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused types in src/v4/core/json-schema.ts must not return",
+        "kind": "unused-type",
+        "file": "src/v4/core/json-schema.ts",
+        "maxCount": 0
+      },
+      {
+        "label": "resolved unused types in src/v4/core/util.ts must not return",
+        "kind": "unused-type",
+        "file": "src/v4/core/util.ts",
+        "maxCount": 0
+      }
+    ],
+    "mustSkip": [
+      {
+        "label": "array-append-mutation collection-boundary src/v4/core/json-schema-processors.ts remains a trusted conservative boundary",
+        "category": "array-append-mutation",
+        "kind": "collection-boundary",
+        "file": "src/v4/core/json-schema-processors.ts",
+        "minCount": 1,
+        "maxCount": 1
+      }
+    ],
+    "mustDiagnose": [],
+    "mustNotDiagnose": [],
+    "acceptedFindings": [],
+    "knownSkips": []
+  }
+}

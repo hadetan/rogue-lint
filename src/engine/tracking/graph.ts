@@ -41,6 +41,7 @@ import {
   getCallableReturnBinding,
   sameCallableReturnSummaryMap,
 } from "./callables.js";
+import { isExportedVariableDeclaration } from "./semantics.js";
 import {
   ASSIGNMENT_OPERATORS,
   classifyTrackedObjectStructuralRole,
@@ -559,7 +560,7 @@ export function buildTrackedObjects(
               sourceFile,
               node.initializer,
               node.name.text,
-              "local",
+              isExportedVariableDeclaration(node) ? "export" : "local",
               node.name,
             );
 

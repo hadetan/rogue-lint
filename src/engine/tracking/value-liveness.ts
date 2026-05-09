@@ -42,6 +42,44 @@ function isUpdateRead(node: ts.Identifier): boolean {
     && (node.parent.operator === ts.SyntaxKind.PlusPlusToken || node.parent.operator === ts.SyntaxKind.MinusMinusToken);
 }
 
+function expressionMayObservePreviousValue(
+  project: ProjectContext,
+  expression: ts.Expression,
+  targetSymbolKey: string,
+): boolean {
+  let observed = false;
+
+  const visit = (node: ts.Node): void => {
+    if (observed) {
+      return;
+    }
+
+    if (ts.isIdentifier(node)) {
+      const symbol = project.checker.getSymbolAtLocation(node);
+      if (symbol && getSymbolKey(symbol) === targetSymbolKey && isReadLikeUse(node)) {
+        observed = true;
+        return;
+      }
+    }
+
+    if (
+      ts.isCallExpression(node)
+      || ts.isNewExpression(node)
+      || ts.isTaggedTemplateExpression(node)
+      || ts.isAwaitExpression(node)
+      || ts.isYieldExpression(node)
+    ) {
+      observed = true;
+      return;
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  visit(expression);
+  return observed;
+}
+
 export function analyzeValueLiveness(
   project: ProjectContext,
   reachableFiles: Set<string>,
@@ -93,6 +131,7 @@ export function analyzeValueLiveness(
             entity: makeEntity(project.rootPath, "assignment", sourceFile, node.name, node.name.text),
             position: node.name.getStart(sourceFile),
             kind: "write",
+            mayObservePreviousValue: false,
             nestedWrite: false,
             controlFlowDepth,
             functionDepth,
@@ -107,10 +146,14 @@ export function analyzeValueLiveness(
         if (symbol && tracked) {
           const functionDepth = getFunctionDepth(node);
           const flowSignature = getControlFlowSignature(node);
+          const symbolKey = getSymbolKey(symbol);
           pushAccess(getSymbolKey(symbol), {
             entity: makeEntity(project.rootPath, "assignment", sourceFile, node.left, tracked.name),
             position: node.left.getStart(sourceFile),
             kind: node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? "write" : "read-write",
+            mayObservePreviousValue:
+              node.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+              || expressionMayObservePreviousValue(project, node.right, symbolKey),
             nestedWrite: functionDepth > tracked.declarationDepth,
             controlFlowDepth: getControlFlowDepth(node),
             functionDepth,
@@ -133,6 +176,7 @@ export function analyzeValueLiveness(
             entity: makeEntity(project.rootPath, "assignment", sourceFile, node.operand, tracked.name),
             position: node.operand.getStart(sourceFile),
             kind: "read-write",
+            mayObservePreviousValue: true,
             nestedWrite: functionDepth > tracked.declarationDepth,
             controlFlowDepth: getControlFlowDepth(node),
             functionDepth,
@@ -188,6 +232,7 @@ export function analyzeValueLiveness(
             entity: makeEntity(project.rootPath, "assignment", sourceFile, tracked.declaration, tracked.name),
             position: node.getStart(sourceFile),
             kind: "read",
+            mayObservePreviousValue: false,
             nestedWrite: false,
             controlFlowDepth: getControlFlowDepth(node),
             functionDepth: getFunctionDepth(node),
@@ -204,6 +249,7 @@ export function analyzeValueLiveness(
             entity: makeEntity(project.rootPath, "assignment", sourceFile, tracked.declaration, tracked.name),
             position: node.getStart(sourceFile),
             kind: "read",
+            mayObservePreviousValue: false,
             nestedWrite: false,
             controlFlowDepth: getControlFlowDepth(node),
             functionDepth: getFunctionDepth(node),
@@ -227,7 +273,9 @@ export function analyzeValueLiveness(
       let pendingWrite: ValueAccess | undefined;
       let hasAnyRead = false;
       const canProveOverwrite = (current: ValueAccess, next: ValueAccess): boolean =>
-        current.functionDepth === next.functionDepth && current.flowSignature === next.flowSignature;
+        current.functionDepth === next.functionDepth
+        && current.flowSignature === next.flowSignature
+        && !next.mayObservePreviousValue;
 
       for (const access of ordered) {
         if (access.kind === "read") {

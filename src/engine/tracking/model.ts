@@ -30,6 +30,7 @@ export interface ValueAccess {
   entity: EntityRecord;
   position: number;
   kind: "write" | "read" | "read-write" | "escape";
+  mayObservePreviousValue: boolean;
   nestedWrite: boolean;
   controlFlowDepth: number;
   functionDepth: number;

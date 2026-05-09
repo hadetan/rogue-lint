@@ -1,3 +1,5 @@
 node_modules/
 dist/
 openspec/
+benchmark/corpus/*
+!benchmark/corpus/.gitkeep

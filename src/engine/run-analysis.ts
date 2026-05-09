@@ -70,7 +70,7 @@ export async function analyzeProject(cliOptions: CliOptions): Promise<AnalysisRe
     },
     {
       enabled: true,
-      run: () => analyzeClassMembers(project, reachableFiles, state, suppressionContext, caches),
+      run: () => analyzeClassMembers(project, reachableFiles, publicSurfaceIds, state, suppressionContext, caches),
     },
     {
       enabled: true,
