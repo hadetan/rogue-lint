@@ -11,6 +11,7 @@ export default tseslint.config(
     ignores: [
       "dist/**",
       "node_modules/**",
+      "benchmark/corpus/**",
       "__references/**",
       "OpenSpec/**",
       "openspec/**",
