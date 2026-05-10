@@ -27,6 +27,27 @@ export function visitProjectedArrayUsage(
       return;
     }
 
+    if (ts.isForOfStatement(current)) {
+      const projected = resolveProjectionAccess(project, current.expression, context);
+      if (projected) {
+        if (projected.dynamic) {
+          recordArrayBoundary(
+            project,
+            projected.projection.trackedObject,
+            current.getSourceFile(),
+            current.expression,
+            projected.projection.sourcePath,
+            projected.projection.sourcePath,
+            projected.boundaryCategory ?? "array-callback-escape",
+            projected.boundaryReason ?? "array projection escapes exact local analysis",
+            true,
+          );
+        } else {
+          markProjectionReads(projected.projection, trackedObjectsById, projected.suffix, true);
+        }
+      }
+    }
+
     if (ts.isCallExpression(current)) {
       for (const argument of current.arguments) {
         const projected = resolveProjectionAccess(project, argument, context);

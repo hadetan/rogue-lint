@@ -7,7 +7,7 @@ import type {
   TrackedObject,
 } from "../../../types.js";
 import { hasModifier, isReadLikeUse } from "../../../compiler/ast-utils.js";
-import { propertySegment } from "../../../shared/path-utils.js";
+import { propertySegment, serializePath } from "../../../shared/path-utils.js";
 import type { AnalysisState } from "../../analysis-state.js";
 import {
   getAccessPath,
@@ -18,6 +18,7 @@ import {
   getSupportedArrayCallbackParamIndex,
   isExactArrayCallbackMethod,
   isLocallyOwnedRetainedBindingContainer,
+  resolveAnalyzableCallableBinding,
   isSupportedRetainedBindingContainerType,
   resolveProjectionAccess,
   resolveTrackedObjectAccess,
@@ -34,7 +35,6 @@ import {
 import {
   getAnalyzableCallableBindingFromDeclaration,
   getCallableReturnBinding,
-  resolveAnalyzableFunctionDeclaration,
 } from "../callables.js";
 import type {
   ArrayProjectionBinding,
@@ -107,6 +107,52 @@ export function visitObjectPathSourceFile(
   const parameterMeaningfulUse = new Map<string, boolean | null>();
   const parameterSummaryCache = new Map<string, HelperParameterSummary | null>();
 
+  const getProjectedNestedArrayBinding = (
+    projection: ArrayProjectionBinding,
+    suffix: PathSegment[],
+  ): ArrayProjectionBinding | undefined => {
+    const baseBinding: TrackedObjectBinding = {
+      trackedObject: projection.trackedObject,
+      prefix: [],
+    };
+    let nestedTrackedObject: TrackedObject | undefined;
+    let nestedSourcePath: PathSegment[] | undefined;
+    const nestedElementPaths: PathSegment[][] = [];
+
+    for (const candidatePath of projection.elementPaths) {
+      const fullPath = [...candidatePath, ...suffix];
+      const resolvedAlias = resolveExactPathAlias(baseBinding, fullPath, trackedObjectsById);
+      const targetTrackedObject = resolvedAlias.binding.trackedObject;
+      const targetPath = sameTrackedBinding(resolvedAlias.binding, baseBinding)
+        ? fullPath
+        : resolvedAlias.binding.prefix;
+      const nestedProjection = getProjectionBinding(targetTrackedObject, targetPath);
+      if (!nestedProjection) {
+        continue;
+      }
+
+      if (!nestedTrackedObject) {
+        nestedTrackedObject = nestedProjection.trackedObject;
+        nestedSourcePath = targetPath;
+      } else if (
+        nestedTrackedObject.id !== nestedProjection.trackedObject.id
+        || serializePath(nestedSourcePath ?? []) !== serializePath(targetPath)
+      ) {
+        return undefined;
+      }
+
+      nestedElementPaths.push(...nestedProjection.elementPaths);
+    }
+
+    return nestedTrackedObject && nestedSourcePath && nestedElementPaths.length > 0
+      ? {
+          trackedObject: nestedTrackedObject,
+          sourcePath: nestedSourcePath,
+          elementPaths: nestedElementPaths,
+        }
+      : undefined;
+  };
+
   const isPublicLibraryCallable = (declaration: ts.FunctionLikeDeclaration): boolean => {
     if (project.config.value.mode !== "library") {
       return false;
@@ -114,6 +160,18 @@ export function visitObjectPathSourceFile(
 
     if (ts.isFunctionDeclaration(declaration)) {
       return hasModifier(declaration, ts.SyntaxKind.ExportKeyword);
+    }
+
+    if (
+      ts.isMethodDeclaration(declaration)
+      || ts.isGetAccessorDeclaration(declaration)
+      || ts.isSetAccessorDeclaration(declaration)
+    ) {
+      const parent = declaration.parent;
+      return ts.isClassDeclaration(parent)
+        && hasModifier(parent, ts.SyntaxKind.ExportKeyword)
+        && !hasModifier(declaration, ts.SyntaxKind.PrivateKeyword)
+        && !hasModifier(declaration, ts.SyntaxKind.ProtectedKeyword);
     }
 
     return (ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
@@ -437,13 +495,17 @@ export function visitObjectPathSourceFile(
       const returnBinding = resolved && !resolved.dynamic
         ? extendTrackedBinding(resolved.binding, resolved.segments)
         : undefined;
+      const publicReturnBinding = getPublicReturnBinding(node);
       const returnedExpression = unwrapExpression(node.expression);
       const returnedStructureStaysExact = Boolean(
         (returnBinding && propagated && sameTrackedBinding(propagated, returnBinding))
         || isExactStructuredReturnExpression(callable, returnedExpression),
       );
+      if (publicReturnBinding) {
+        markObservedSubtree(publicReturnBinding.trackedObject, publicReturnBinding.prefix, trackedObjectsById);
+      }
       if (ts.isObjectLiteralExpression(returnedExpression) || ts.isArrayLiteralExpression(returnedExpression)) {
-        if (getPublicReturnBinding(node)) {
+        if (publicReturnBinding) {
           markObservedAggregateLiteralBindings(returnedExpression);
         } else if (!returnedStructureStaysExact) {
           markEscapedAggregateLiteralBindings(
@@ -609,7 +671,13 @@ export function visitObjectPathSourceFile(
       }
 
       const calleeText = node.expression.getText(sourceFile);
-      const analyzableCallable = resolveAnalyzableFunctionDeclaration(project, node.expression);
+      const analyzableCallable = resolveAnalyzableCallableBinding(
+        project,
+        node.expression,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      )?.declaration;
       for (const [index, argument] of node.arguments.entries()) {
         const finiteLookupRead = resolveFiniteLookupRead(argument);
         if (finiteLookupRead) {
@@ -791,6 +859,38 @@ export function visitObjectPathSourceFile(
             trackedObjectsById,
           );
         }
+      } else {
+        const projected = resolveProjectionAccess(project, node.expression, projectionContext);
+        if (projected?.dynamic) {
+          recordArrayBoundary(
+            project,
+            projected.projection.trackedObject,
+            sourceFile,
+            node.expression,
+            projected.projection.sourcePath,
+            projected.projection.sourcePath,
+            projected.boundaryCategory ?? "array-callback-escape",
+            projected.boundaryReason ?? "array projection escapes exact local analysis",
+            true,
+          );
+        } else if (projected) {
+          const symbolKey = getBindingSymbolKey(project, node.initializer);
+          const nestedProjection = getProjectedNestedArrayBinding(projected.projection, projected.suffix);
+          if (nestedProjection && symbolKey) {
+            visitProjectedArrayUsage(
+              project,
+              node.statement,
+              {
+                elementBindings: new Map([[symbolKey, nestedProjection]]),
+                receiverBindings: new Map(),
+                indexBindings: new Map(),
+              },
+              trackedObjectsById,
+            );
+          } else {
+            markProjectionReads(projected.projection, trackedObjectsById, projected.suffix, true);
+          }
+        }
       }
     }
 
@@ -895,7 +995,15 @@ export function visitObjectPathSourceFile(
 
       if (ts.isCallExpression(node.parent)) {
         const argumentIndex = node.parent.arguments.findIndex((argument) => argument === node);
-        const callable = argumentIndex >= 0 ? resolveAnalyzableFunctionDeclaration(project, node.parent.expression) : undefined;
+        const callable = argumentIndex >= 0
+          ? resolveAnalyzableCallableBinding(
+            project,
+            node.parent.expression,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          )?.declaration
+          : undefined;
         const resolved = argumentIndex >= 0
           ? resolveTrackedObjectAccess(project, node, trackedBySymbolId, functionReturnSummaries, trackedObjectsById)
           : undefined;
@@ -1023,6 +1131,21 @@ export function visitObjectPathSourceFile(
       }
 
       if (fullPath.length === 0) {
+        if (!isAssignmentLeft(node)) {
+          markAliasObserved(resolved, trackedObjectsById);
+          if (
+            ts.isSpreadElement(node.parent)
+            || (ts.isBinaryExpression(node.parent)
+              && node.parent.right === node
+              && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+          ) {
+            markObservedSubtree(
+              resolved.binding.trackedObject,
+              [...resolved.binding.prefix, ...resolved.segments],
+              trackedObjectsById,
+            );
+          }
+        }
         return ts.forEachChild(node, visit);
       }
 

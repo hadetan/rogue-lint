@@ -113,7 +113,13 @@ interface ExactAppendValueSlotPlan {
   insertReason: string;
 }
 
-export type ExactAppendSlotPlan = ExactAppendAliasSlotPlan | ExactAppendValueSlotPlan;
+interface ExactAppendStructuredSlotPlan {
+  kind: "structured";
+  literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression;
+  insertReason: string;
+}
+
+export type ExactAppendSlotPlan = ExactAppendAliasSlotPlan | ExactAppendValueSlotPlan | ExactAppendStructuredSlotPlan;
 
 export const STRUCTURAL_RECORD_FIELD_NAMES = new Set([
   "binding",
@@ -131,6 +137,22 @@ export const STRUCTURAL_RECORD_FIELD_NAMES = new Set([
   "viaAliasObjectId",
   "viaAliasPath",
   "writes",
+]);
+
+export const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
+  ...STRUCTURAL_RECORD_FIELD_NAMES,
+  "elementPaths",
+  "file",
+  "from",
+  "insertReason",
+  "literal",
+  "message",
+  "observeSourceAtInsert",
+  "sourceObservationReason",
+  "sourcePath",
+  "specifier",
+  "to",
+  "trackedObject",
 ]);
 
 export const STRUCTURAL_STATE_FIELD_NAMES = new Set([

@@ -5,13 +5,17 @@ This inventory records every finding and skip family surfaced by the real-world 
 Snapshot source:
 - benchmark command: `npm run benchmark`
 - baseline benchmark date: `2026-05-09`
-- post-remediation benchmark date: `2026-05-09`
+- post-remediation benchmark date: `2026-05-10`
 - benchmark targets: `zod-main`, `dayjs-core`
 
+The detailed classifications below reflect the last fully source-verified snapshot from `2026-05-10`. A later rerun on `2026-05-11` after the recursive helper forwarding fix still left `zod-main` failing (`276` unexpected findings, `1010` unexpected skips), but that output has not been fully reclassified yet and should not overwrite the verified snapshot in this document without a follow-up review.
+
 Classification labels used here:
-- `verified gap`: source-backed engine behavior that still needs improvement
+- `confirmed false positive`: engine-reported deadness that source-backed verification shows is actually live
+- `confirmed true detection`: engine-reported deadness that remains correct under the current exported package surface and benchmark contract
+- `open contract-sensitive`: source-backed case whose final classification depends on an explicit package-surface or compatibility decision rather than engine exactness alone
 - `verified boundary`: current conservative skip boundary that remains a real capability gap
-- `mixed`: family includes both source-backed real findings and scope-sensitive or track-splitting cases
+- `mixed`: family includes both confirmed false positives and confirmed true or contract-sensitive entries
 - `benchmark mistake`: incorrect benchmark expectation that must not drive remediation as a true positive
 - `resolved in this change`: family or benchmark anchor that this change removed from the current benchmark gap signal
 
@@ -20,16 +24,19 @@ Classification labels used here:
 - `unused-local` - baseline `1`, current `0`. Resolved benchmark mistake; the Day.js `meridiemFunc` false positive remains guarded by `mustNotFind`.
 - `dead-store` - baseline `2`, current `0`. Resolved and still guarded by `mustNotFind` anchors.
 - `unused-enum-member` - baseline `36`, current `0`. Resolved and still guarded by `mustNotFind` anchors.
-- `unused-class-member` - baseline `154`, current `14`. Reduced to the remaining Day.js public instance-method precision gap; the current benchmark now reports these as unexpected findings.
-- `unused-array-element` - baseline `9`, current `1`. Reduced to the remaining Zod `unrecognized[0]` returned-array case in `src/v4/core/schemas.ts`; it now surfaces as an unexpected finding.
-- `unused-object-key` - baseline `59`, current `263`. Increased by converting `204` previously skipped Zod locale `FormatDictionary` entries into source-backed findings via finite string-literal union keyed-access tracking; the current benchmark now reports the full family as unexpected findings.
-- `unused-nested-path` - current `8`. Exact keyed-access tracking now also exposes nested locale object branches in `src/v4/locales/he.ts` as distinct unexpected findings instead of hiding them inside a broader dynamic lookup bucket.
+- `unused-class-member` - baseline `154`, current `0`. Resolved in this change by following bounded local prototype alias chains from exported factory entrypoints; `dayjs-core` now passes with the required `unused-export` anchors still intact.
+- `unused-array-element` - baseline `9`, current `1`. Reduced to the remaining Zod `unrecognized[0]` case in `src/v4/core/schemas.ts`; current source-backed verification still says this is a false positive caused by bounded issue-array readback loss.
+- `unused-object-key` - baseline `59`, current `245`. The family is still mixed, but the returned-carrier subfamily is now resolved. The remaining confirmed false positives are concentrated in the `allProcessors` dispatch-table flow, while most residual locale entries now verify as true or contract-sensitive compatibility labels rather than keyed-read misses.
+- `unused-nested-path` - current `8`. The current `src/v4/locales/he.ts` `label` and `gender` findings on `regex`, `starts_with`, `ends_with`, and `includes` are now verified true detections: those specific dictionary entries are bypassed by earlier direct returns, so the child paths are genuinely unread under the current source.
+- `write-only-state` - baseline `4`, current `0`. Resolved in this change by preserving returned-carrier readback through same-project wrapper flows.
 - `unused-export` - baseline `64`, current `4`. Reduced to the four required Day.js constants in `src/constant.js`; the prior Zod export-heavy families are no longer present and are now guarded by `mustNotFind` anchors.
-- `unused-type` - baseline `39`, current `3`. Reduced to `EmitParams`, `StandardSchemaWithJSON`, and `StandardTypedV1`.
-- `unused-file` - baseline `2`, current `2`. Unchanged: one required real detection (`src/v4/core/config.ts`) plus one residual scope-sensitive file (`src/v4/core/zsf.ts`) that currently surfaces as an unexpected finding.
+- `unused-type` - baseline `39`, current `3`. Reduced to `EmitParams`, `StandardSchemaWithJSON`, and `StandardTypedV1`; these remain contract-sensitive because they are source-backed but not currently re-exported from the published `./v4/core` barrel.
+- `unused-file` - baseline `2`, current `2`. Unchanged: one required real detection (`src/v4/core/config.ts`) plus one additional internal-only file (`src/v4/core/zsf.ts`) that remains a correct unexpected finding under the current contract.
 - `computed-property-access` - baseline `2444`, current `970`. Reduced by resolving finite string-literal union keyed object reads in Zod locale format tables; the residual signal remains the broader dynamic lookup family and now surfaces as unexpected skips.
+- `object-spread` - current `12`. New unexpected skip family. These are honest conservative boundaries where spread-built wrapper objects still stop exact field propagation.
 - `dynamic-array-index` - baseline `2`, current `2`. Unchanged verified boundary.
-- `returned-object` - baseline `3`, current `2`. Reduced by resolving the conditional helper fallback return in Zod's `objectKeys` polyfill path.
+- `returned-object` - baseline `3`, current `4`. The residual skip family is still concentrated in bounded returned-wrapper and keyed-read flows.
+- `opaque-object-call` - current `2`. New unexpected skip family. These are still honest conservative boundaries around object helper calls that escape the current exact subset.
 - `array-append-mutation` - baseline `1`, current `1`. Unchanged verified boundary.
 - `array-opaque-mutation` - baseline `2`, current `1`. Reduced by treating `Promise.all(results)` as a supported whole-array observation in Zod union parsing; the remaining residual is the `keys` collection escape in `src/v3/types.ts` and now surfaces as an unexpected skip.
 
@@ -44,29 +51,37 @@ Classification labels used here:
 - `returned-object-conditional-helper-basic` reproduces the conditional helper fallback return that now resolves through supported same-project whole-array observation.
 - `promise-all-array-basic` reproduces the benchmarked `Promise.all(results)` array aggregation path that no longer needs an `array-opaque-mutation` boundary.
 - `finite-union-keyed-access-basic` reproduces exact read tracking for finite string-literal union keyed object lookups while keeping unrelated object branches dead.
+- `finite-dispatch-recursive-basic` guards against recursive same-project helper reuse destabilizing the exact tracking fixpoint.
 
-## Remaining Verified Library-Surface Gaps
+## Resolved In This Change
 
-- `unused-class-member` - 14 current unexpected findings, all in `benchmark/corpus/dayjs-root/src/index.js`. Verified library-surface precision gap on public instance methods that still appear unused under current same-project reference analysis.
+- `unused-class-member` - the remaining Day.js instance-method false positives are gone. `dayjs-core` now passes while keeping the required `src/constant.js` `unused-export` anchors visible.
+- `write-only-state` - the returned-carrier false positives in `flattenError`, `flatten`, `mergeValues`, and registry `toJSONSchema` are gone. The paired wrapper-field findings on `{ valid, data }`, `{ formErrors, fieldErrors }`, and `{ schemas }` are no longer in the live benchmark output.
 
-## Remaining Verified Dynamic-Structure Gaps
+## Remaining Confirmed False Positives
 
-- `unused-object-key` - 263 current unexpected findings. The signal now includes `204` source-backed Zod locale `FormatDictionary` keys that sit outside the actual `_issue.format` literal union, plus the existing public-return and helper-threaded object shapes in `benchmark/corpus/zod-main/packages/zod/src/v3/types.ts`, `benchmark/corpus/zod-main/packages/zod/src/v4/core/json-schema-processors.ts`, `benchmark/corpus/zod-main/packages/zod/src/v4/core/schemas.ts`, `benchmark/corpus/zod-main/packages/zod/src/v4/core/util.ts`, and the `flatten` / `flattenError` helpers.
-- `unused-nested-path` - 8 current unexpected findings in `benchmark/corpus/zod-main/packages/zod/src/v4/locales/he.ts` (`regex.label`, `regex.gender`, `ends_with.label`, `ends_with.gender`, `includes.label`, `includes.gender`, `starts_with.label`, `starts_with.gender`). These are the nested counterparts of the remaining locale dictionary object-shape debt.
-- `unused-array-element` - 1 current unexpected finding in `benchmark/corpus/zod-main/packages/zod/src/v4/core/schemas.ts` on `unrecognized[0]`. The Day.js array-receiver portion is resolved; the remaining case belongs entirely to the Zod dynamic-structure track.
+- `unused-array-element` - 1 current unexpected finding in `benchmark/corpus/zod-main/packages/zod/src/v4/core/schemas.ts` on `unrecognized[0]`. This remains the bounded heterogeneous issue-array false positive.
+
+## Remaining Confirmed True Detections
+
+- `unused-file` - `benchmark/corpus/zod-main/packages/zod/src/v4/core/config.ts` remains a required real detection, and `benchmark/corpus/zod-main/packages/zod/src/v4/core/zsf.ts` also remains unreachable and unreferenced under the current package-surface contract.
+- `unused-export` - the four Day.js constants in `benchmark/corpus/dayjs-root/src/constant.js` remain trusted required detections and continue to guard against over-preserving exported-but-internal values.
+- `unused-nested-path` - the 8 current unexpected `label` and `gender` findings in `benchmark/corpus/zod-main/packages/zod/src/v4/locales/he.ts` are now verified true detections because the matching `regex`, `starts_with`, `ends_with`, and `includes` entries are bypassed by earlier direct-format returns.
+
+## Mixed Or Contract-Sensitive Finding Families
+
+- `unused-object-key` - 245 current unexpected findings. This family is mixed. The returned-carrier false positives are gone; the remaining confirmed false positives are concentrated in the `allProcessors` dispatch table flow. Verified true detections include locale entries like `regex`, `starts_with`, `ends_with`, and `includes` in files that return early before the dictionary fallback. Contract-sensitive compatibility entries remain where locale dictionaries carry labels such as `uuidv4`, `uuidv6`, `template_literal`, and `mac` that the current `_issue.format` type surface does not emit.
+- `unused-type` - 3 current unexpected findings remain in `benchmark/corpus/zod-main/packages/zod/src/v4/core/json-schema-generator.ts` and `benchmark/corpus/zod-main/packages/zod/src/v4/core/standard-schema.ts`. These are source-backed but contract-sensitive because they depend on whether the benchmark should treat non-reexported deep types under `./v4/core` as public.
 
 ## Remaining Verified Conservative Boundaries
 
 - `computed-property-access` - 970 current unexpected skips across the remaining Zod locale lookup tables and related dynamic reads. Finite `_issue.format` lookups now resolve exactly; the residual boundary is still verified and concentrated in broader string-key and other non-finite lookup families. Representative examples: `benchmark/corpus/zod-main/packages/zod/src/v4/locales/he.ts`, `benchmark/corpus/zod-main/packages/zod/src/v4/locales/ar.ts`, `benchmark/corpus/zod-main/packages/zod/src/v4/core/schemas.ts`.
+- `object-spread` - 12 current unexpected skips. Verified conservative boundary around spread-built object wrappers whose exact child propagation is still intentionally cut off.
 - `dynamic-array-index` - 2 required skips in `benchmark/corpus/dayjs-root/src/locale/en.js`. Verified conservative boundary around indexed collection access.
-- `returned-object` - 2 current unexpected skips. Verified conservative boundary on values returned before later nested-path or object-key reads. Representative examples: `benchmark/corpus/zod-main/packages/zod/src/v4/locales/he.ts`, `benchmark/corpus/zod-main/packages/zod/src/v4/core/schemas.ts`.
+- `returned-object` - 4 current unexpected skips. These remain the honest conservative boundary for bounded returned values whose later readback is not yet preserved through the exact subset. The current bucket now also includes the spread-built `util.issue(...)` wrapper flow that no longer misreports direct dead fields but still stops at an explicit boundary.
+- `opaque-object-call` - 2 current unexpected skips. Verified conservative boundary around object helper calls that still escape exact local analysis.
 - `array-append-mutation` - 1 required skip in `benchmark/corpus/zod-main/packages/zod/src/v4/core/json-schema-processors.ts`. Verified conservative boundary around append-driven collection growth.
 - `array-opaque-mutation` - 1 residual unexpected skip at `benchmark/corpus/zod-main/packages/zod/src/v3/types.ts` where `createZodEnum()` stores the `keys` array by reference beyond exact local analysis.
-
-## Mixed Or Scope-Sensitive Families
-
-- `unused-type` - 3 current unexpected findings remain in `benchmark/corpus/zod-main/packages/zod/src/v4/core/json-schema-generator.ts` and `benchmark/corpus/zod-main/packages/zod/src/v4/core/standard-schema.ts`. These still need a source-backed call on whether they are true residual library-surface debt or another public-type precision gap.
-- `unused-file` - 2 findings total. `benchmark/corpus/zod-main/packages/zod/src/v4/core/config.ts` remains a source-backed required detection, while `benchmark/corpus/zod-main/packages/zod/src/v4/core/zsf.ts` still depends on target-scope and export-reachability interpretation.
 
 ## Benchmark Mistakes
 
@@ -74,8 +89,9 @@ Classification labels used here:
 
 ## Next Change Sequence
 
-1. Finish the remaining Day.js public instance-method surface so `unused-class-member` falls from `14` to `0` without regressing real dead-member detection elsewhere.
-2. Resolve the remaining Zod object-shape and returned-object flow cases so the current unexpected `unused-object-key` total falls from `263`, `unused-nested-path` falls from `8`, and `unused-array-element` falls from `1`.
-3. Tackle the conservative boundary families in explicit follow-up slices: `computed-property-access` (`970`), `returned-object` (`2`), `dynamic-array-index` (`2`), `array-opaque-mutation` (`1`), and `array-append-mutation` (`1`).
-4. Revisit the mixed library-surface families `unused-type` and `unused-file` after the remaining public-surface and object-shape fixes land, so scope-sensitive cases are not collapsed into one bucket.
+1. Resolve the returned-carrier and bounded issue-array readback false positives so `write-only-state` falls from `4`, the non-locale `unused-object-key` subfamily keeps shrinking, and `unused-array-element` falls from `1`.
+1. Resolve the bounded heterogeneous issue-array readback false positive so the remaining `unused-array-element` anchor at `unrecognized[0]` falls from `1`.
+2. Extend finite keyed-read precision only for the remaining `allProcessors` false-positive subfamily while keeping genuinely dead or compatibility-only locale entries such as `uuidv4`, `uuidv6`, `template_literal`, and `mac` reportable.
+3. Tackle the conservative boundary families in explicit follow-up slices: `computed-property-access` (`970`), `object-spread` (`12`), `returned-object` (`4`), `array-spread` (`2`), `opaque-object-call` (`2`), `dynamic-array-index` (`2`), `array-opaque-mutation` (`1`), and `array-append-mutation` (`1`).
+4. Revisit the contract-sensitive `unused-type` family only after the package-surface decision is explicit, so a later change does not accidentally erase correct internal-only detections.
 5. Keep rerunning `npm run benchmark` after each slice and append the observed family deltas here so no benchmark family drops out of follow-up planning.

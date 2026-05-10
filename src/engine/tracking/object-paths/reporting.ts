@@ -17,7 +17,7 @@ import {
   isCollectionPathInvalidated,
   shouldReportCollectionBoundary,
 } from "../state.js";
-import { shouldSuppressStructuralPath } from "../syntax.js";
+import { shouldSuppressStructuralPath, shouldSuppressStructuralRoot } from "../syntax.js";
 
 export function finalizeObjectPathFindings(
   project: ProjectContext,
@@ -27,6 +27,9 @@ export function finalizeObjectPathFindings(
 ): void {
   for (const tracked of trackedObjects) {
     for (const boundary of tracked.collectionBoundaries.values()) {
+      if (boundary.path.length === 0 && shouldSuppressStructuralRoot(tracked)) {
+        continue;
+      }
       if (shouldSuppressStructuralPath(tracked, boundary.path)) {
         continue;
       }
@@ -42,7 +45,11 @@ export function finalizeObjectPathFindings(
 
     if (tracked.exactPathAliases.size > 0) {
       const aliases = [...tracked.exactPathAliases.values()];
-      if (aliases.every((alias) => !alias.observed) && !tracked.collectionBoundaries.has(serializePath([]))) {
+      if (
+        aliases.every((alias) => !alias.observed)
+        && !tracked.collectionBoundaries.has(serializePath([]))
+        && !shouldSuppressStructuralRoot(tracked)
+      ) {
         const suppression = getSuppressionAudit(project, suppressionContext, tracked.rootEntity);
         if (!addAudit(state.kept, suppression)) {
           addFinding(

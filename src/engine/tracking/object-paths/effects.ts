@@ -48,6 +48,8 @@ import {
   recordCollectionBoundary,
   setTrackedArrayLength,
 } from "../state.js";
+import { materializeTrackedLiteralAtPath } from "../graph.js";
+import { unwrapExpression } from "../syntax.js";
 
 function isNestedTrackedAccess(node: ts.Node): boolean {
   return (
@@ -258,6 +260,9 @@ function tryRegisterExactArrayInsertion(
   collectionPath: PathSegment[],
   methodName: string,
   slotPlans: ExactAppendSlotPlan[],
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
 ): boolean {
   const arrayLength = getTrackedArrayLength(trackedObject, collectionPath);
   if (arrayLength === undefined) {
@@ -280,6 +285,19 @@ function tryRegisterExactArrayInsertion(
       receiverPath,
       slotPlan,
     );
+    if (slotPlan.kind === "structured") {
+      materializeTrackedLiteralAtPath(
+        project,
+        trackedObject,
+        sourceFile,
+        slotPlan.literal,
+        trackedObject.rootName,
+        receiverPath,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+    }
   });
   setTrackedArrayLength(trackedObject, collectionPath, arrayLength + slotPlans.length);
   return true;
@@ -445,6 +463,17 @@ export function handleSupportedValueFateCall(
         continue;
       }
 
+      const structuredLiteral = unwrapExpression(argument);
+      if (ts.isObjectLiteralExpression(structuredLiteral) || ts.isArrayLiteralExpression(structuredLiteral)) {
+        slotPlans.push({
+          kind: "structured",
+          literal: structuredLiteral,
+          insertReason: `${methodName} appends a structured value into an exact receiver slot`,
+        });
+        handledIndices.add(index);
+        continue;
+      }
+
       if (isSupportedExactAppendValue(argument)) {
         slotPlans.push({
           kind: "value",
@@ -466,6 +495,9 @@ export function handleSupportedValueFateCall(
         receiverPath,
         methodName,
         slotPlans,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
       )) {
         if (sawSpreadArgument) {
           recordArrayBoundary(

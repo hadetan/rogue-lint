@@ -111,6 +111,86 @@ function addDeclarationIds(project: ProjectContext, ids: Set<string>, declaratio
   }
 }
 
+function unwrapTrackedExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+
+  while (
+    ts.isParenthesizedExpression(current)
+    || ts.isAsExpression(current)
+    || ts.isSatisfiesExpression(current)
+    || ts.isNonNullExpression(current)
+    || ts.isTypeAssertionExpression(current)
+  ) {
+    current = current.expression;
+  }
+
+  return current;
+}
+
+function collectPrototypeAliasClassDeclarations(
+  project: ProjectContext,
+  sourceFile: ts.SourceFile,
+  expression: ts.Expression,
+  classes: Map<string, ts.ClassDeclaration>,
+  visitedSymbols: Set<string>,
+  depth = 0,
+): void {
+  if (depth > 4) {
+    return;
+  }
+
+  const current = unwrapTrackedExpression(expression);
+  if (
+    ts.isPropertyAccessExpression(current)
+    && current.name.text === "prototype"
+    && ts.isIdentifier(current.expression)
+  ) {
+    const classSymbol = project.checker.getSymbolAtLocation(current.expression);
+    const classDeclaration = classSymbol?.declarations?.find(ts.isClassDeclaration);
+    const className = classDeclaration ? getNodeName(classDeclaration) : undefined;
+    if (classDeclaration && className) {
+      classes.set(className, classDeclaration);
+    }
+    return;
+  }
+
+  if (!ts.isIdentifier(current)) {
+    return;
+  }
+
+  const symbol = project.checker.getSymbolAtLocation(current);
+  const underlying = symbol && (symbol.flags & ts.SymbolFlags.Alias)
+    ? project.checker.getAliasedSymbol(symbol)
+    : symbol;
+  if (!underlying) {
+    return;
+  }
+
+  const symbolKey = getSymbolKey(underlying);
+  if (visitedSymbols.has(symbolKey)) {
+    return;
+  }
+  visitedSymbols.add(symbolKey);
+
+  for (const declaration of underlying.declarations ?? []) {
+    if (
+      ts.isVariableDeclaration(declaration)
+      && ts.isIdentifier(declaration.name)
+      && declaration.initializer
+      && declaration.getSourceFile() === sourceFile
+    ) {
+      collectPrototypeAliasClassDeclarations(
+        project,
+        sourceFile,
+        declaration.initializer,
+        classes,
+        visitedSymbols,
+        depth + 1,
+      );
+    }
+  }
+}
+
 function collectFactoryPrototypeClassDeclarations(
   project: ProjectContext,
   declaration: ts.VariableDeclaration,
@@ -130,16 +210,14 @@ function collectFactoryPrototypeClassDeclarations(
       && ts.isIdentifier(node.left.expression)
       && node.left.expression.text === exportedName
       && node.left.name.text === "prototype"
-      && ts.isPropertyAccessExpression(node.right)
-      && ts.isIdentifier(node.right.expression)
-      && node.right.name.text === "prototype"
     ) {
-      const classSymbol = project.checker.getSymbolAtLocation(node.right.expression);
-      const classDeclaration = classSymbol?.declarations?.find(ts.isClassDeclaration);
-      const className = classDeclaration ? getNodeName(classDeclaration) : undefined;
-      if (classDeclaration && className) {
-        classes.set(className, classDeclaration);
-      }
+      collectPrototypeAliasClassDeclarations(
+        project,
+        declaration.getSourceFile(),
+        node.right,
+        classes,
+        new Set<string>(),
+      );
     }
 
     ts.forEachChild(node, visit);

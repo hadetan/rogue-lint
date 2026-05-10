@@ -6,6 +6,7 @@ import type {
   TrackedObjectStructuralRole,
 } from "../../types.js";
 import {
+  STRUCTURAL_HELPER_FIELD_NAMES,
   STRUCTURAL_RECORD_FIELD_NAMES,
   STRUCTURAL_STATE_FIELD_NAMES,
 } from "./model.js";
@@ -136,40 +137,62 @@ function isStructurallySimpleExpression(expression: ts.Expression): boolean {
 export function classifyTrackedObjectStructuralRole(
   node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
 ): TrackedObjectStructuralRole | undefined {
-  if (!ts.isObjectLiteralExpression(node)) {
+  const classifyObjectLiteralRole = (
+    objectLiteral: ts.ObjectLiteralExpression,
+  ): TrackedObjectStructuralRole | undefined => {
+    const fieldNames: string[] = [];
+    let allSimple = true;
+    for (const property of objectLiteral.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        return undefined;
+      }
+      const propertyName = getStaticObjectLiteralPropertyName(property);
+      if (!propertyName) {
+        return undefined;
+      }
+      fieldNames.push(propertyName);
+      if (ts.isPropertyAssignment(property) && !isStructurallySimpleExpression(property.initializer)) {
+        allSimple = false;
+      }
+    }
+
+    if (fieldNames.length === 0) {
+      return undefined;
+    }
+
+    if (fieldNames.some((fieldName) => STRUCTURAL_STATE_FIELD_NAMES.has(fieldName))) {
+      return "state-holder";
+    }
+
+    if (fieldNames.every((fieldName) => STRUCTURAL_HELPER_FIELD_NAMES.has(fieldName))) {
+      return "structural-record";
+    }
+
+    if (
+      fieldNames.includes("kind")
+      || fieldNames.includes("state")
+      || (fieldNames.length <= 4 && allSimple)
+    ) {
+      return "record";
+    }
+
+    return undefined;
+  };
+
+  if (ts.isObjectLiteralExpression(node)) {
+    return classifyObjectLiteralRole(node);
+  }
+
+  const concreteElements = node.elements.filter((element): element is ts.Expression => !ts.isSpreadElement(element));
+  if (concreteElements.length === 0) {
     return undefined;
   }
 
-  const fieldNames: string[] = [];
-  let allSimple = true;
-  for (const property of node.properties) {
-    if (ts.isSpreadAssignment(property)) {
-      return undefined;
-    }
-    const propertyName = getStaticObjectLiteralPropertyName(property);
-    if (!propertyName) {
-      return undefined;
-    }
-    fieldNames.push(propertyName);
-    if (ts.isPropertyAssignment(property) && !isStructurallySimpleExpression(property.initializer)) {
-      allSimple = false;
-    }
-  }
-
-  if (fieldNames.length === 0) {
-    return undefined;
-  }
-
-  if (fieldNames.some((fieldName) => STRUCTURAL_STATE_FIELD_NAMES.has(fieldName))) {
-    return "state-holder";
-  }
-
-  if (
-    fieldNames.includes("kind")
-    || fieldNames.includes("state")
-    || (fieldNames.length <= 4 && allSimple)
-  ) {
-    return "record";
+  const elementRoles = concreteElements.map((element) =>
+    ts.isObjectLiteralExpression(element) ? classifyObjectLiteralRole(element) : undefined,
+  );
+  if (elementRoles.every((role) => role === "structural-record" || role === "state-holder")) {
+    return "structural-record-array";
   }
 
   return undefined;
@@ -181,9 +204,17 @@ function getLeadingStructuralFieldName(segments: PathSegment[]): string | undefi
 }
 
 export function shouldSuppressStructuralPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
+  if (trackedObject.structuralRole === "structural-record-array") {
+    return segments[0]?.kind === "index";
+  }
+
   const fieldName = getLeadingStructuralFieldName(segments);
   if (!fieldName) {
     return false;
+  }
+
+  if (trackedObject.structuralRole === "structural-record") {
+    return STRUCTURAL_HELPER_FIELD_NAMES.has(fieldName);
   }
 
   if (trackedObject.structuralRole === "record") {
@@ -195,6 +226,12 @@ export function shouldSuppressStructuralPath(trackedObject: TrackedObject, segme
   }
 
   return false;
+}
+
+export function shouldSuppressStructuralRoot(trackedObject: TrackedObject): boolean {
+  return trackedObject.structuralRole === "structural-record"
+    || trackedObject.structuralRole === "structural-record-array"
+    || trackedObject.structuralRole === "state-holder";
 }
 
 export function getFunctionDepth(node: ts.Node): number {

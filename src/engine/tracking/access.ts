@@ -13,6 +13,7 @@ import {
   samePath,
 } from "../../shared/path-utils.js";
 import type {
+  AnalyzableCallableBinding,
   CallableReturnSummary,
   ForwardedParameterBinding,
   ProjectedArrayUsageContext,
@@ -31,6 +32,7 @@ import {
 } from "./bindings.js";
 import {
   getAnalyzableCallableBinding,
+  getAnalyzableCallableBindingFromDeclaration,
   getCallableReturnBinding,
 } from "./callables.js";
 import {
@@ -621,7 +623,13 @@ export function resolveTrackedObjectAccess(
       }
     }
 
-    const callable = getAnalyzableCallableBinding(project, node.expression);
+    const callable = resolveAnalyzableCallableBinding(
+      project,
+      node.expression,
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
     const binding = callable ? getCallableReturnBinding(functionReturnSummaries.get(callable.symbolKey)) : undefined;
     return binding
       ? {
@@ -683,6 +691,48 @@ export function resolveTrackedObjectAccess(
   return undefined;
 }
 
+export function resolveAnalyzableCallableBinding(
+  project: ProjectContext,
+  expression: ts.LeftHandSideExpression,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): AnalyzableCallableBinding | undefined {
+  const direct = getAnalyzableCallableBinding(project, expression);
+  if (direct) {
+    return direct;
+  }
+
+  let receiverExpression: ts.Expression | undefined;
+  let nextSegment: PathSegment | undefined;
+  if (ts.isPropertyAccessExpression(expression)) {
+    receiverExpression = expression.expression;
+    nextSegment = propertySegment(expression.name.text);
+  } else if (ts.isElementAccessExpression(expression) && expression.argumentExpression) {
+    receiverExpression = expression.expression;
+    nextSegment = extractBoundedElementAccessSegment(project, expression.argumentExpression);
+  }
+
+  if (!receiverExpression || !nextSegment) {
+    return undefined;
+  }
+
+  const receiver = resolveTrackedObjectAccess(
+    project,
+    receiverExpression,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+  if (!receiver || receiver.dynamic) {
+    return undefined;
+  }
+
+  return receiver.binding.trackedObject.callablePaths.get(
+    serializePath([...receiver.binding.prefix, ...receiver.segments, nextSegment]),
+  );
+}
+
 export function getForwardedParameterBindings(
   project: ProjectContext,
   node: ts.CallExpression,
@@ -690,8 +740,25 @@ export function getForwardedParameterBindings(
   functionReturnSummaries: Map<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): ForwardedParameterBinding[] {
-  const callable = getAnalyzableCallableBinding(project, node.expression);
+  const callable = resolveAnalyzableCallableBinding(
+    project,
+    node.expression,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
   if (!callable) {
+    return [];
+  }
+
+  const enclosingFunction = ts.findAncestor(
+    node,
+    (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+  );
+  const enclosingCallable = enclosingFunction
+    ? getAnalyzableCallableBindingFromDeclaration(project, enclosingFunction)
+    : undefined;
+  if (enclosingCallable?.symbolKey === callable.symbolKey) {
     return [];
   }
 

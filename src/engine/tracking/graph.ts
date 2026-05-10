@@ -33,10 +33,10 @@ import {
   getForwardedParameterBindings,
   getRetainedBindingContainerSlotKey,
   isLocallyOwnedRetainedBindingContainer,
+  resolveAnalyzableCallableBinding,
   resolveTrackedObjectAccess,
 } from "./access.js";
 import {
-  getAnalyzableCallableBinding,
   getAnalyzableCallableBindingFromDeclaration,
   getAnalyzableCallableName,
   getCallableReturnBinding,
@@ -146,14 +146,70 @@ function isTrackableObjectValue(node: ts.Expression): boolean {
   );
 }
 
+function isTrackableReturnObjectValue(node: ts.Expression): boolean {
+  if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
+    return isTrackableReturnObjectStructure(node);
+  }
+
+  return isTrackableObjectValue(node);
+}
+
+function isTrackableReturnObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression): boolean {
+  if (ts.isObjectLiteralExpression(node)) {
+    return node.properties.every((property) => {
+      if (ts.isSpreadAssignment(property)) {
+        return true;
+      }
+
+      if (ts.isMethodDeclaration(property)) {
+        return true;
+      }
+
+      if (ts.isShorthandPropertyAssignment(property)) {
+        return true;
+      }
+
+      if (
+        ts.isPropertyAssignment(property)
+        && (ts.isFunctionExpression(unwrapExpression(property.initializer)) || ts.isArrowFunction(unwrapExpression(property.initializer)))
+      ) {
+        return true;
+      }
+
+      return ts.isPropertyAssignment(property) && isTrackableReturnObjectValue(property.initializer);
+    });
+  }
+
+  const hasSpread = node.elements.some((element) => ts.isSpreadElement(element));
+  const hasConcreteElement = node.elements.some((element) => element && !ts.isSpreadElement(element));
+  if (hasSpread && !hasConcreteElement) {
+    return false;
+  }
+
+  return node.elements.every(
+    (element) => ts.isSpreadElement(element) || isTrackableReturnObjectValue(element as ts.Expression),
+  );
+}
+
 function isTrackableObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression): boolean {
   if (ts.isObjectLiteralExpression(node)) {
     return node.properties.every((property) => {
       if (ts.isSpreadAssignment(property)) {
-        return false;
+        return true;
+      }
+
+      if (ts.isMethodDeclaration(property)) {
+        return true;
       }
 
       if (ts.isShorthandPropertyAssignment(property)) {
+        return true;
+      }
+
+      if (
+        ts.isPropertyAssignment(property)
+        && (ts.isFunctionExpression(unwrapExpression(property.initializer)) || ts.isArrowFunction(unwrapExpression(property.initializer)))
+      ) {
         return true;
       }
 
@@ -164,6 +220,16 @@ function isTrackableObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayL
   return node.elements.every(
     (element) => !ts.isSpreadElement(element) && isTrackableObjectValue(element as ts.Expression),
   );
+}
+
+function getTrackableStructuredLiteralExpression(
+  expression: ts.Expression,
+): ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined {
+  const initializer = unwrapExpression(expression);
+  return (ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer))
+    && isTrackableObjectStructure(initializer)
+    ? initializer
+    : undefined;
 }
 
 function addTrackedObjectNode(
@@ -190,6 +256,17 @@ function addTrackedObjectNode(
         continue;
       }
 
+      if (ts.isMethodDeclaration(property)) {
+        const propertyName = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+          ? property.name.text
+          : undefined;
+        const callable = propertyName ? getAnalyzableCallableBindingFromDeclaration(project, property) : undefined;
+        if (propertyName && callable) {
+          trackedObject.callablePaths.set(serializePath([...segments, propertySegment(propertyName)]), callable);
+        }
+        continue;
+      }
+
       if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
         continue;
       }
@@ -208,6 +285,16 @@ function addTrackedObjectNode(
           "computed property names are not eligible for exact analysis",
         );
         continue;
+      }
+
+      if (ts.isPropertyAssignment(property)) {
+        const callableInitializer = unwrapExpression(property.initializer);
+        const callable = (ts.isFunctionExpression(callableInitializer) || ts.isArrowFunction(callableInitializer))
+          ? getAnalyzableCallableBindingFromDeclaration(project, callableInitializer)
+          : undefined;
+        if (callable) {
+          trackedObject.callablePaths.set(serializePath([...segments, propertySegment(propertyName)]), callable);
+        }
       }
 
       const fullPath = [...segments, propertySegment(propertyName)];
@@ -291,6 +378,7 @@ function registerTrackedLiteralAliases(
   if (ts.isObjectLiteralExpression(node)) {
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
+        markEscaped(trackedObject, segments, "object-spread", "object spread introduces opaque properties");
         continue;
       }
 
@@ -386,6 +474,49 @@ function registerTrackedLiteralAliases(
   });
 }
 
+export function materializeTrackedLiteralAtPath(
+  project: ProjectContext,
+  trackedObject: TrackedObject,
+  sourceFile: ts.SourceFile,
+  node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+  owner: string,
+  segments: PathSegment[],
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): void {
+  if (segments.length === 1 && segments[0]?.kind === "index") {
+    const literalRole = classifyTrackedObjectStructuralRole(node);
+    if (literalRole === "structural-record" || literalRole === "state-holder") {
+      if (!trackedObject.structuralRole || trackedObject.structuralRole === "structural-record-array") {
+        trackedObject.structuralRole = "structural-record-array";
+      }
+    } else if (trackedObject.structuralRole === "structural-record-array") {
+      trackedObject.structuralRole = undefined;
+    }
+  }
+
+  addTrackedObjectNode(
+    project,
+    trackedObject,
+    sourceFile,
+    node,
+    owner,
+    segments,
+    project.config.value.objectAnalysis.maxPathDepth,
+  );
+  registerTrackedLiteralAliases(
+    project,
+    trackedObject,
+    node,
+    segments,
+    project.config.value.objectAnalysis.maxPathDepth,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+}
+
 /**
  * Builds the tracked-object graph and analyzable callable summaries to a fixed point.
  */
@@ -446,6 +577,7 @@ export function buildTrackedObjects(
       rootEntity,
       structuralRole: classifyTrackedObjectStructuralRole(node),
       nodes: new Map(),
+      callablePaths: new Map(),
       descendantNodeKeys: new Map(),
       collections: new Map(),
       collectionStates: new Map(),
@@ -496,10 +628,13 @@ export function buildTrackedObjects(
 
   const getTrackableStructuredLiteral = (
     expression: ts.Expression,
+    options: { allowArraySpreadBoundary?: boolean } = {},
   ): ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined => {
     const initializer = unwrapExpression(expression);
     return (ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer))
-      && isTrackableObjectStructure(initializer)
+      && (options.allowArraySpreadBoundary
+        ? isTrackableReturnObjectStructure(initializer)
+        : isTrackableObjectStructure(initializer))
       ? initializer
       : undefined;
   };
@@ -536,7 +671,7 @@ export function buildTrackedObjects(
       return undefined;
     }
 
-    if (!getTrackableStructuredLiteral(declaration.initializer)) {
+    if (!getTrackableStructuredLiteral(declaration.initializer, { allowArraySpreadBoundary: true })) {
       return undefined;
     }
 
@@ -608,7 +743,7 @@ export function buildTrackedObjects(
       return undefined;
     }
 
-    return getTrackableStructuredLiteral(declaration.initializer);
+    return getTrackableStructuredLiteral(declaration.initializer, { allowArraySpreadBoundary: true });
   };
 
   const summarizeReturnExpression = (
@@ -630,12 +765,18 @@ export function buildTrackedObjects(
       return summarizeReturnExpression(callable, expression.expression);
     }
 
-    if ((ts.isObjectLiteralExpression(expression) || ts.isArrayLiteralExpression(expression)) && isTrackableObjectStructure(expression)) {
+    if ((ts.isObjectLiteralExpression(expression) || ts.isArrayLiteralExpression(expression)) && isTrackableReturnObjectStructure(expression)) {
       return createStructuredReturnSummary(callable, expression);
     }
 
     if (ts.isCallExpression(expression)) {
-      const nestedCallable = getAnalyzableCallableBinding(project, expression.expression);
+      const nestedCallable = resolveAnalyzableCallableBinding(
+        project,
+        expression.expression,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
       const summary = nestedCallable ? functionReturnSummaries.get(nestedCallable.symbolKey) : undefined;
       return summary && summary.kind !== "opaque" ? summary : undefined;
     }
@@ -822,7 +963,9 @@ export function buildTrackedObjects(
           ) {
             const symbolKey = getCanonicalSymbolKey(project, symbol);
             const returnedAliasCallable = resolveStructuredReturnAliasCallable(node);
-            const returnedAliasLiteral = returnedAliasCallable ? getTrackableStructuredLiteral(node.initializer) : undefined;
+            const returnedAliasLiteral = returnedAliasCallable
+              ? getTrackableStructuredLiteral(node.initializer, { allowArraySpreadBoundary: true })
+              : undefined;
             const binding = createTrackedBindingForLiteral(
               returnedAliasCallable && returnedAliasLiteral
                 ? `${returnedAliasCallable.symbolKey}:return:${ts.isObjectLiteralExpression(returnedAliasLiteral) ? "object" : "array"}`
@@ -904,6 +1047,51 @@ export function buildTrackedObjects(
         }
 
         if (ts.isCallExpression(node)) {
+          const analyzableCallable = resolveAnalyzableCallableBinding(
+            project,
+            node.expression,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          if (
+            analyzableCallable
+            && (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression))
+          ) {
+            node.arguments.forEach((argument, index) => {
+              const parameter = analyzableCallable.declaration.parameters[index];
+              if (!parameter || !ts.isIdentifier(parameter.name)) {
+                return;
+              }
+
+              const structuredLiteral = getTrackableStructuredLiteralExpression(argument);
+              if (!structuredLiteral) {
+                return;
+              }
+
+              const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+              if (!parameterSymbol) {
+                return;
+              }
+
+              const symbolKey = getCanonicalSymbolKey(project, parameterSymbol);
+              const binding = createTrackedBindingForLiteral(
+                symbolKey,
+                sourceFile,
+                structuredLiteral,
+                parameter.name.text,
+                "expression",
+                argument,
+              );
+              mergeTrackedBinding(
+                nextTrackedBySymbolId,
+                conflictedTrackedSymbolIds,
+                symbolKey,
+                binding,
+              );
+            });
+          }
+
           if (
             ts.isPropertyAccessExpression(node.expression)
             && node.expression.name.text === "set"
