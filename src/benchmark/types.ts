@@ -15,7 +15,7 @@ interface BenchmarkRepositoryRef {
   ref: string;
 }
 
-export type BenchmarkCoverageClass =
+type BenchmarkCoverageClass =
   | "application-entrypoint-driven"
   | "library-public-surface"
   | "workspace-monorepo-subproject";

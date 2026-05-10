@@ -10,6 +10,31 @@ function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
 }
 
+function normalizeAudit(entry: { category?: string; kind: string; name: string; location?: { file: string; line: number } }): string {
+  return `${entry.category ?? "-"}:${entry.kind}:${entry.location?.file ?? "-"}:${entry.location?.line ?? 0}:${entry.name}`;
+}
+
+const EXPECTED_SELF_HOST_SKIPS = [
+  "array-append-mutation:collection-boundary:src/benchmark/manifests.ts:248:result",
+  "array-reorder-mutation:collection-boundary:src/benchmark/manifests.ts:256:result",
+  "returned-object:array-element:src/project.ts:40:[0]",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:60:state",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:61:manifest",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:62:corpusPath",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:71:state",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:72:manifest",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:73:corpusPath",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:74:targetPath",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:75:problem",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:101:state",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:102:manifest",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:103:corpusPath",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:104:targetPath",
+  "returned-object:object-key:src/benchmark/run-benchmark.ts:105:problem",
+  "returned-object:object-key:src/engine/tracking/graph.ts:328:trackedObject",
+  "returned-object:object-key:src/engine/tracking/graph.ts:329:prefix",
+].sort();
+
 describe("rogue-lint analyzer", () => {
   it("finds unused files, exports, locals, class members, and object paths in application mode", async () => {
     const result = await analyzeProject({
@@ -910,6 +935,30 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "returned-object" && entry.name === "[0]")).toBe(false);
   });
 
+  it("preserves alias-backed projected helper returns while keeping unread siblings reportable", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-return-alias-projection-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "projectedSegments"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "selectiveSegments"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "selectiveSegments"
+      && finding.entity.name === "[1]"
+    )).toBe(true);
+    expect(result.skipped).toHaveLength(0);
+  });
+
   it("keeps public returned issue objects and collected keys live in library mode", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -981,17 +1030,19 @@ describe("rogue-lint analyzer", () => {
     ).toBe(false);
   });
 
-  it("keeps self-host reachability and diagnostics clean in library mode", async () => {
+  it("keeps the normalized self-host library-mode finding and skip surface stable", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
       targetPath: process.cwd(),
       format: "json",
       mode: "library",
-      includeKinds: ["unused-file"],
     });
 
+    expect(result.summary.findings).toBe(0);
     expect(result.findings).toHaveLength(0);
     expect(result.diagnostics).toHaveLength(0);
+    expect(result.summary.skipped).toBe(EXPECTED_SELF_HOST_SKIPS.length);
     expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);
-  });
+    expect(result.skipped.map(normalizeAudit).sort()).toEqual(EXPECTED_SELF_HOST_SKIPS);
+  }, 15000);
 });

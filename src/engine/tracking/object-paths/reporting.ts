@@ -26,8 +26,6 @@ export function finalizeObjectPathFindings(
   trackedObjects: Iterable<TrackedObject>,
 ): void {
   for (const tracked of trackedObjects) {
-    const keepAsPublicSurface = project.config.value.mode === "library" && tracked.rootEntity.kind === "export";
-
     for (const boundary of tracked.collectionBoundaries.values()) {
       if (shouldSuppressStructuralPath(tracked, boundary.path)) {
         continue;

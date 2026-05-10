@@ -523,12 +523,15 @@ export function markProjectionReads(
     if (alias) {
       const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
       if (sourceTrackedObject) {
-        alias.observed = true;
-        if (observeSubtree) {
-          markObservedSubtree(sourceTrackedObject, alias.sourcePath, trackedObjectsById);
-        } else {
-          markRead(sourceTrackedObject, alias.sourcePath);
-        }
+        markObservedAliasRead(
+          projection.trackedObject,
+          fullPath,
+          sourceTrackedObject,
+          alias.sourcePath,
+          alias,
+          trackedObjectsById,
+          observeSubtree,
+        );
         continue;
       }
     }
@@ -576,12 +579,15 @@ export function markProjectionElementRead(
   if (alias) {
     const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
     if (sourceTrackedObject) {
-      alias.observed = true;
-      if (observeSubtree) {
-        markObservedSubtree(sourceTrackedObject, alias.sourcePath, trackedObjectsById);
-      } else {
-        markRead(sourceTrackedObject, alias.sourcePath);
-      }
+      markObservedAliasRead(
+        projection.trackedObject,
+        elementPath,
+        sourceTrackedObject,
+        alias.sourcePath,
+        alias,
+        trackedObjectsById,
+        observeSubtree,
+      );
       return;
     }
   }
@@ -593,6 +599,27 @@ export function markProjectionElementRead(
   }
 }
 
+function markObservedAliasRead(
+  receiverTrackedObject: TrackedObject,
+  receiverPath: PathSegment[],
+  sourceTrackedObject: TrackedObject,
+  sourcePath: PathSegment[],
+  alias: { observed: boolean },
+  trackedObjectsById?: Map<string, TrackedObject>,
+  observeSubtree = false,
+): void {
+  alias.observed = true;
+
+  if (observeSubtree && trackedObjectsById) {
+    markObservedSubtree(receiverTrackedObject, receiverPath, trackedObjectsById);
+    markObservedSubtree(sourceTrackedObject, sourcePath, trackedObjectsById);
+    return;
+  }
+
+  markRead(receiverTrackedObject, receiverPath);
+  markRead(sourceTrackedObject, sourcePath);
+}
+
 function markObservedPath(
   trackedObject: TrackedObject,
   segments: PathSegment[],
@@ -602,8 +629,13 @@ function markObservedPath(
   if (alias) {
     const sourceTrackedObject = trackedObjectsById?.get(alias.sourceObjectId);
     if (sourceTrackedObject) {
-      alias.observed = true;
-      markRead(sourceTrackedObject, alias.sourcePath);
+      markObservedAliasRead(
+        trackedObject,
+        segments,
+        sourceTrackedObject,
+        alias.sourcePath,
+        alias,
+      );
       return;
     }
   }
