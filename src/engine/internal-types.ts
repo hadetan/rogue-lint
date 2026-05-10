@@ -56,7 +56,6 @@ export interface ProjectContext {
   checker: ts.TypeChecker;
   languageService: ts.LanguageService;
   compilerOptions: ts.CompilerOptions;
-  fileNames: string[];
 }
 
 interface ObjectNode {

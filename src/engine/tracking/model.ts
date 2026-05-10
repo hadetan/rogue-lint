@@ -54,6 +54,13 @@ export interface TrackedObjectBinding {
   prefix: PathSegment[];
 }
 
+export class TrackedObjectBindingRecord implements TrackedObjectBinding {
+  constructor(
+    public trackedObject: TrackedObject,
+    public prefix: PathSegment[],
+  ) {}
+}
+
 export type CallableReturnSummary =
   | { kind: "value" }
   | { kind: "structured"; binding: TrackedObjectBinding }

@@ -9,6 +9,7 @@ import { getSymbolKey } from "../../compiler/ast-utils.js";
 import {
   indexSegment,
   propertySegment,
+  serializePath,
   samePath,
 } from "../../shared/path-utils.js";
 import type {
@@ -36,6 +37,7 @@ import {
   getCollectionInfo,
   getConcreteProjectionPaths,
   getTrackedArrayLength,
+  hasTrackedChildren,
   resolveExactPathAlias,
 } from "./state.js";
 import { unwrapExpression } from "./syntax.js";
@@ -62,6 +64,14 @@ const EXACT_ARRAY_CALLBACK_METHODS = new Set([
   "reduceRight",
   "some",
 ]);
+
+function hasExactTrackedPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
+  const joinedPath = serializePath(segments);
+  return trackedObject.nodes.has(joinedPath)
+    || trackedObject.exactPathAliases.has(joinedPath)
+    || Boolean(getCollectionInfo(trackedObject, segments))
+    || hasTrackedChildren(trackedObject, segments);
+}
 
 function extractBoundedElementAccessSegment(
   project: ProjectContext,
@@ -415,9 +425,15 @@ export function resolveTrackedObjectAccess(
       return undefined;
     }
     const aliased = resolveExactPathAlias(nested.binding, [...nested.segments, propertySegment(node.name.text)], trackedObjectsById);
+    const nextSegments = sameTrackedBinding(aliased.binding, nested.binding)
+      ? [...nested.segments, propertySegment(node.name.text)]
+      : [];
+    if (sameTrackedBinding(aliased.binding, nested.binding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
+      return undefined;
+    }
     return {
       binding: aliased.binding,
-      segments: sameTrackedBinding(aliased.binding, nested.binding) ? [...nested.segments, propertySegment(node.name.text)] : [],
+      segments: nextSegments,
       dynamic: nested.dynamic,
       boundaryCategory: nested.boundaryCategory,
       boundaryReason: nested.boundaryReason,
@@ -456,9 +472,15 @@ export function resolveTrackedObjectAccess(
     if (boundedSegment) {
       const nextSegment = boundedSegment;
       const aliased = resolveExactPathAlias(nested.binding, [...nested.segments, nextSegment], trackedObjectsById);
+      const nextSegments = sameTrackedBinding(aliased.binding, nested.binding)
+        ? [...nested.segments, nextSegment]
+        : [];
+      if (sameTrackedBinding(aliased.binding, nested.binding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
+        return undefined;
+      }
       return {
         binding: aliased.binding,
-        segments: sameTrackedBinding(aliased.binding, nested.binding) ? [...nested.segments, nextSegment] : [],
+        segments: nextSegments,
         dynamic: nested.dynamic,
         boundaryCategory: nested.boundaryCategory,
         boundaryReason: nested.boundaryReason,

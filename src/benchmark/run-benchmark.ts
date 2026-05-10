@@ -12,6 +12,16 @@ import type {
   BenchmarkWorkspaceRun,
 } from "./types.js";
 
+class BenchmarkWorkspaceRunRecord implements BenchmarkWorkspaceRun {
+  constructor(
+    public docsPath: string,
+    public exitCode: 0 | 1,
+    public manifests: BenchmarkTargetManifest[],
+    public noCorpusInstalled: boolean,
+    public targets: BenchmarkTargetRun[],
+  ) {}
+}
+
 function hasConfigOverrides(config: BenchmarkTargetConfig): boolean {
   return Object.values(config).some((value) => value !== undefined);
 }
@@ -157,13 +167,15 @@ async function runBenchmarkManifests(workspaceRoot: string, manifests: Benchmark
       ? 1
       : 0;
 
-  return {
-    docsPath: getBenchmarkDocsPath(workspaceRoot),
+  targets.forEach((target) => observeTargetShape(target));
+
+  return new BenchmarkWorkspaceRunRecord(
+    getBenchmarkDocsPath(workspaceRoot),
     exitCode,
     manifests,
     noCorpusInstalled,
     targets,
-  };
+  );
 }
 
 export async function runWorkspaceBenchmark(workspaceRoot: string): Promise<BenchmarkWorkspaceRun> {

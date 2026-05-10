@@ -131,6 +131,46 @@ export function visitObjectPathSourceFile(
     return callable ? getCallableReturnBinding(functionReturnSummaries.get(callable.symbolKey)) : undefined;
   };
 
+  const isExactStructuredReturnExpression = (
+    callable: ReturnType<typeof getAnalyzableCallableBindingFromDeclaration> | undefined,
+    expression: ts.Expression,
+  ): boolean => {
+    if (!callable) {
+      return false;
+    }
+
+    const summary = functionReturnSummaries.get(callable.symbolKey);
+    if (summary?.kind !== "structured") {
+      return false;
+    }
+
+    const unwrapped = unwrapExpression(expression);
+    if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
+      return true;
+    }
+
+    if (!ts.isIdentifier(unwrapped)) {
+      return false;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(unwrapped);
+    const declaration = symbol?.declarations?.find(ts.isVariableDeclaration);
+    if (!declaration?.initializer) {
+      return false;
+    }
+
+    const enclosingFunction = ts.findAncestor(
+      declaration,
+      (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+    );
+    if (enclosingFunction !== callable.declaration) {
+      return false;
+    }
+
+    const initializer = unwrapExpression(declaration.initializer);
+    return ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer);
+  };
+
   const extractFinitePropertyUnionSegments = (argument: ts.Expression): PathSegment[] | undefined => {
     const node = unwrapExpression(argument);
     const type = project.checker.getTypeAtLocation(node);
@@ -384,11 +424,28 @@ export function visitObjectPathSourceFile(
     }
 
     if (ts.isReturnStatement(node) && node.expression) {
+      const resolved = resolveTrackedObjectAccess(
+        project,
+        node.expression,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      const enclosingFunction = ts.findAncestor(node, (candidate): candidate is ts.FunctionLikeDeclaration => ts.isFunctionLike(candidate));
+      const callable = enclosingFunction ? getAnalyzableCallableBindingFromDeclaration(project, enclosingFunction) : undefined;
+      const propagated = callable ? getCallableReturnBinding(functionReturnSummaries.get(callable.symbolKey)) : undefined;
+      const returnBinding = resolved && !resolved.dynamic
+        ? extendTrackedBinding(resolved.binding, resolved.segments)
+        : undefined;
       const returnedExpression = unwrapExpression(node.expression);
+      const returnedStructureStaysExact = Boolean(
+        (returnBinding && propagated && sameTrackedBinding(propagated, returnBinding))
+        || isExactStructuredReturnExpression(callable, returnedExpression),
+      );
       if (ts.isObjectLiteralExpression(returnedExpression) || ts.isArrayLiteralExpression(returnedExpression)) {
         if (getPublicReturnBinding(node)) {
           markObservedAggregateLiteralBindings(returnedExpression);
-        } else {
+        } else if (!returnedStructureStaysExact) {
           markEscapedAggregateLiteralBindings(
             returnedExpression,
             "returned-object",
@@ -397,26 +454,13 @@ export function visitObjectPathSourceFile(
         }
       }
 
-      const resolved = resolveTrackedObjectAccess(
-        project,
-        node.expression,
-        trackedBySymbolId,
-        functionReturnSummaries,
-        trackedObjectsById,
-      );
-      if (resolved && !resolved.dynamic) {
-        const returnBinding = extendTrackedBinding(resolved.binding, resolved.segments);
-        const enclosingFunction = ts.findAncestor(node, (candidate): candidate is ts.FunctionLikeDeclaration => ts.isFunctionLike(candidate));
-        const callable = enclosingFunction ? getAnalyzableCallableBindingFromDeclaration(project, enclosingFunction) : undefined;
-        const propagated = callable ? getCallableReturnBinding(functionReturnSummaries.get(callable.symbolKey)) : undefined;
-        if (!propagated || !sameTrackedBinding(propagated, returnBinding)) {
-          markEscaped(
-            returnBinding.trackedObject,
-            returnBinding.prefix,
-            "returned-object",
-            "returned object escapes local analysis",
-          );
-        }
+      if (returnBinding && !returnedStructureStaysExact) {
+        markEscaped(
+          returnBinding.trackedObject,
+          returnBinding.prefix,
+          "returned-object",
+          "returned object escapes local analysis",
+        );
       }
     }
 

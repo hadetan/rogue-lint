@@ -161,7 +161,7 @@ npm run prep
 ```
 
 `npm run self` and `npm run self:json` build the package and run `rogue-lint` against this repository in `library` mode.
-The repository regression suite also keeps a normalized self-host baseline for that library-mode output, including the currently accepted conservative skip surface.
+The repository regression suite also keeps a normalized self-host baseline for that library-mode output, enforcing zero findings, zero skips, and zero diagnostics.
 
 ## Release Checks
 

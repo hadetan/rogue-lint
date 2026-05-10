@@ -14,26 +14,7 @@ function normalizeAudit(entry: { category?: string; kind: string; name: string; 
   return `${entry.category ?? "-"}:${entry.kind}:${entry.location?.file ?? "-"}:${entry.location?.line ?? 0}:${entry.name}`;
 }
 
-const EXPECTED_SELF_HOST_SKIPS = [
-  "array-append-mutation:collection-boundary:src/benchmark/manifests.ts:248:result",
-  "array-reorder-mutation:collection-boundary:src/benchmark/manifests.ts:256:result",
-  "returned-object:array-element:src/project.ts:40:[0]",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:60:state",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:61:manifest",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:62:corpusPath",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:71:state",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:72:manifest",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:73:corpusPath",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:74:targetPath",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:75:problem",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:101:state",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:102:manifest",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:103:corpusPath",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:104:targetPath",
-  "returned-object:object-key:src/benchmark/run-benchmark.ts:105:problem",
-  "returned-object:object-key:src/engine/tracking/graph.ts:328:trackedObject",
-  "returned-object:object-key:src/engine/tracking/graph.ts:329:prefix",
-].sort();
+const EXPECTED_SELF_HOST_SKIPS: string[] = [];
 
 describe("rogue-lint analyzer", () => {
   it("finds unused files, exports, locals, class members, and object paths in application mode", async () => {
@@ -935,6 +916,44 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "returned-object" && entry.name === "[0]")).toBe(false);
   });
 
+  it("preserves bounded discriminated returned status wrappers without returned-object skips", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-status-wrapper-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "result.dead")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "live")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves trivial returned carriers for tracked objects and scalar prefixes", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-alias-carrier-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "dead")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "live")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-array-element" && finding.entity.name === "[1]")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-array-element" && finding.entity.name === "[0]")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("keeps bounded bookkeeping transfers exact while preserving nearby escape boundaries", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("bookkeeping-transfer-record-basic"),
+      format: "json",
+    });
+
+    expect(result.skipped.some((entry) => entry.category === "array-append-mutation" && entry.name === "result")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "array-reorder-mutation" && entry.name === "result")).toBe(false);
+    expect(result.skipped.some((entry) => entry.kind === "collection-boundary" && entry.name === "opaqueRecords")).toBe(true);
+  });
+
   it("preserves alias-backed projected helper returns while keeping unread siblings reportable", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -953,7 +972,6 @@ describe("rogue-lint analyzer", () => {
     )).toBe(false);
     expect(result.findings.some((finding) =>
       finding.kind === "unused-array-element"
-      && finding.entity.owner === "selectiveSegments"
       && finding.entity.name === "[1]"
     )).toBe(true);
     expect(result.skipped).toHaveLength(0);
@@ -1030,7 +1048,7 @@ describe("rogue-lint analyzer", () => {
     ).toBe(false);
   });
 
-  it("keeps the normalized self-host library-mode finding and skip surface stable", async () => {
+  it("enforces the normalized self-host library-mode zero-gap surface", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
       targetPath: process.cwd(),

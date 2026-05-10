@@ -7,6 +7,13 @@ import type { DiagnosticRecord, ModuleEdge, ModuleGraph, ProjectContext } from "
 import { matchesPatterns } from "./shared/general-utils.js";
 import { normalizeSlashes, toRelative } from "./shared/path-utils.js";
 
+class ModuleGraphRecord implements ModuleGraph {
+  constructor(
+    public outgoing: Map<string, ModuleEdge[]>,
+    public unresolved: DiagnosticRecord[],
+  ) {}
+}
+
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 const BUILTIN_MODULES = new Set(
   builtinModules.flatMap((name) => (name.startsWith("node:") ? [name, name.slice(5)] : [name, `node:${name}`])),
@@ -117,7 +124,7 @@ export function buildModuleGraph(project: ProjectContext): ModuleGraph {
     outgoing.set(edge.from, existing);
   }
 
-  return { outgoing, unresolved };
+  return new ModuleGraphRecord(outgoing, unresolved);
 }
 
 function resolveProjectSourceFile(project: ProjectContext, candidate: string): string | undefined {

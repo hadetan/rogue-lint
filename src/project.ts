@@ -172,6 +172,5 @@ export function loadProject(cliOptions: CliOptions): ProjectContext {
     checker,
     languageService,
     compilerOptions,
-    fileNames,
   };
 }

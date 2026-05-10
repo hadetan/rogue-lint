@@ -239,13 +239,16 @@ function walkJsonFiles(directoryPath: string): string[] {
     return [];
   }
 
-  const entries = fs.readdirSync(directoryPath, { withFileTypes: true });
+  const entries = fs.readdirSync(directoryPath, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name));
   const result: string[] = [];
 
   for (const entry of entries) {
     const fullPath = path.join(directoryPath, entry.name);
     if (entry.isDirectory()) {
-      result.push(...walkJsonFiles(fullPath));
+      const nestedFiles = walkJsonFiles(fullPath);
+      for (const nestedFile of nestedFiles) {
+        result.push(nestedFile);
+      }
       continue;
     }
     if (entry.isFile() && entry.name.endsWith(".json")) {
@@ -253,7 +256,7 @@ function walkJsonFiles(directoryPath: string): string[] {
     }
   }
 
-  return result.sort((left, right) => left.localeCompare(right));
+  return result;
 }
 
 function parseManifest(filePath: string): BenchmarkTargetManifest {

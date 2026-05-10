@@ -79,7 +79,7 @@ function clearExactAliasesWithin(trackedObject: TrackedObject, segments: PathSeg
   }
 }
 
-function registerExactPathAlias(
+export function registerExactPathAlias(
   receiver: TrackedObject,
   receiverPath: PathSegment[],
   sourceBinding: TrackedObjectBinding,

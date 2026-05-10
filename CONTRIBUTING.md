@@ -144,7 +144,7 @@ npm run self
 npm run self:json
 ```
 
-The enforced self-host baseline now expects zero findings and zero diagnostics in library mode while keeping the current accepted conservative skip surface explicit in machine-readable output. If you intentionally change that skip surface, update the normalized baseline in `test/analyze.test.ts` alongside the implementation.
+The enforced self-host baseline now expects zero findings, zero skips, and zero diagnostics in library mode. If you intentionally change that contract, update the normalized baseline in `test/analyze.test.ts` alongside the implementation.
 
 Release-style gate:
 

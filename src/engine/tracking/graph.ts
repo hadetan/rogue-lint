@@ -18,6 +18,7 @@ import type {
   CallableReturnSummary,
   TrackedObjectBinding,
 } from "./model.js";
+import { TrackedObjectBindingRecord } from "./model.js";
 import {
   extendTrackedBinding,
   getCanonicalSymbolKey,
@@ -48,9 +49,13 @@ import {
   unwrapExpression,
 } from "./syntax.js";
 import {
+  ensureCollectionChildPath,
+  getCollectionInfo,
   indexTrackedObjectNode,
   markEscaped,
+  registerExactPathAlias,
   setCollectionInfo,
+  setTrackedArrayLength,
 } from "./state.js";
 
 /**
@@ -175,7 +180,9 @@ function addTrackedObjectNode(
   }
 
   if (ts.isObjectLiteralExpression(node)) {
-    const childPaths = setCollectionInfo(trackedObject, segments, "object").childPaths;
+    if (!getCollectionInfo(trackedObject, segments)) {
+      setCollectionInfo(trackedObject, segments, "object");
+    }
 
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
@@ -205,7 +212,7 @@ function addTrackedObjectNode(
 
       const fullPath = [...segments, propertySegment(propertyName)];
       const joinedPath = serializePath(fullPath);
-      childPaths.push(fullPath);
+      ensureCollectionChildPath(trackedObject, segments, fullPath);
       const entity = makeEntity(
         project.rootPath,
         fullPath.length === 1 ? "object-key" : "nested-path",
@@ -227,7 +234,14 @@ function addTrackedObjectNode(
       }
     }
   } else {
-    const childPaths = setCollectionInfo(trackedObject, segments, "array", node.elements.length).childPaths;
+    const collection = getCollectionInfo(trackedObject, segments) ?? setCollectionInfo(trackedObject, segments, "array", node.elements.length);
+    if (collection.kind === "array") {
+      setTrackedArrayLength(
+        trackedObject,
+        segments,
+        Math.max(collection.arrayLength ?? 0, node.elements.length),
+      );
+    }
 
     node.elements.forEach((element, index) => {
       if (!element || ts.isSpreadElement(element)) {
@@ -237,7 +251,7 @@ function addTrackedObjectNode(
 
       const fullPath = [...segments, indexSegment(index)];
       const joinedPath = serializePath(fullPath);
-      childPaths.push(fullPath);
+      ensureCollectionChildPath(trackedObject, segments, fullPath);
       const entity = makeEntity(
         project.rootPath,
         fullPath.length === 1 ? "array-element" : "nested-path",
@@ -258,6 +272,118 @@ function addTrackedObjectNode(
       }
     });
   }
+}
+
+function registerTrackedLiteralAliases(
+  project: ProjectContext,
+  trackedObject: TrackedObject,
+  node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+  segments: PathSegment[],
+  maxDepth: number,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): void {
+  if (segments.length > maxDepth) {
+    return;
+  }
+
+  if (ts.isObjectLiteralExpression(node)) {
+    for (const property of node.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        continue;
+      }
+
+      if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
+        continue;
+      }
+
+      const propertyName = ts.isShorthandPropertyAssignment(property)
+        ? property.name.text
+        : ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+          ? property.name.text
+          : undefined;
+
+      if (!propertyName) {
+        continue;
+      }
+
+      const fullPath = [...segments, propertySegment(propertyName)];
+      const initializer = ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer;
+      const unwrapped = unwrapExpression(initializer);
+
+      if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
+        registerTrackedLiteralAliases(
+          project,
+          trackedObject,
+          unwrapped,
+          fullPath,
+          maxDepth,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+        continue;
+      }
+
+      const resolved = resolveTrackedObjectAccess(
+        project,
+        unwrapped,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      if (resolved && !resolved.dynamic) {
+        registerExactPathAlias(
+          trackedObject,
+          fullPath,
+          extendTrackedBinding(resolved.binding, resolved.segments),
+          "returned structure keeps this nested binding exact",
+        );
+      }
+    }
+
+    return;
+  }
+
+  node.elements.forEach((element, index) => {
+    if (!element || ts.isSpreadElement(element)) {
+      return;
+    }
+
+    const fullPath = [...segments, indexSegment(index)];
+    const unwrapped = unwrapExpression(element);
+
+    if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
+      registerTrackedLiteralAliases(
+        project,
+        trackedObject,
+        unwrapped,
+        fullPath,
+        maxDepth,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      return;
+    }
+
+    const resolved = resolveTrackedObjectAccess(
+      project,
+      unwrapped,
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    if (resolved && !resolved.dynamic) {
+      registerExactPathAlias(
+        trackedObject,
+        fullPath,
+        extendTrackedBinding(resolved.binding, resolved.segments),
+        "returned structure keeps this nested binding exact",
+      );
+    }
+  });
 }
 
 /**
@@ -287,6 +413,27 @@ export function buildTrackedObjects(
   ): TrackedObjectBinding => {
     const existing = trackedLiteralBindings.get(symbolKey) ?? trackedReturnLiteralBindings.get(symbolKey);
     if (existing) {
+      addTrackedObjectNode(
+        project,
+        existing.trackedObject,
+        sourceFile,
+        node,
+        name,
+        [],
+        project.config.value.objectAnalysis.maxPathDepth,
+      );
+      if (kind === "expression") {
+        registerTrackedLiteralAliases(
+          project,
+          existing.trackedObject,
+          node,
+          [],
+          project.config.value.objectAnalysis.maxPathDepth,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+      }
       return existing;
     }
 
@@ -323,11 +470,20 @@ export function buildTrackedObjects(
       [],
       project.config.value.objectAnalysis.maxPathDepth,
     );
+    if (kind === "expression") {
+      registerTrackedLiteralAliases(
+        project,
+        trackedObject,
+        node,
+        [],
+        project.config.value.objectAnalysis.maxPathDepth,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+    }
 
-    const binding = {
-      trackedObject,
-      prefix: [],
-    };
+    const binding = new TrackedObjectBindingRecord(trackedObject, []);
 
     if (kind === "local") {
       trackedLiteralBindings.set(symbolKey, binding);
@@ -336,6 +492,123 @@ export function buildTrackedObjects(
     }
 
     return binding;
+  };
+
+  const getTrackableStructuredLiteral = (
+    expression: ts.Expression,
+  ): ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined => {
+    const initializer = unwrapExpression(expression);
+    return (ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer))
+      && isTrackableObjectStructure(initializer)
+      ? initializer
+      : undefined;
+  };
+
+  const createStructuredReturnBinding = (
+    callable: AnalyzableCallableBinding,
+    literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+  ): TrackedObjectBinding => {
+    const returnKind = ts.isObjectLiteralExpression(literal) ? "object" : "array";
+    return createTrackedBindingForLiteral(
+      `${callable.symbolKey}:return:${returnKind}`,
+      literal.getSourceFile(),
+      literal,
+      `${getAnalyzableCallableName(callable)}()`,
+      "expression",
+      literal,
+    );
+  };
+
+  const createStructuredReturnSummary = (
+    callable: AnalyzableCallableBinding,
+    literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+  ): CallableReturnSummary => {
+    return {
+      kind: "structured",
+      binding: createStructuredReturnBinding(callable, literal),
+    };
+  };
+
+  const resolveStructuredReturnAliasCallable = (
+    declaration: ts.VariableDeclaration,
+  ): AnalyzableCallableBinding | undefined => {
+    if (!ts.isIdentifier(declaration.name) || !declaration.initializer) {
+      return undefined;
+    }
+
+    if (!getTrackableStructuredLiteral(declaration.initializer)) {
+      return undefined;
+    }
+
+    const enclosingFunction = ts.findAncestor(
+      declaration,
+      (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+    );
+    const callable = enclosingFunction
+      ? getAnalyzableCallableBindingFromDeclaration(project, enclosingFunction)
+      : undefined;
+    if (!callable?.declaration.body) {
+      return undefined;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(declaration.name);
+    if (!symbol) {
+      return undefined;
+    }
+
+    const symbolKey = getCanonicalSymbolKey(project, symbol);
+    let returned = false;
+    const visit = (node: ts.Node): void => {
+      if (returned) {
+        return;
+      }
+
+      if (ts.isFunctionLike(node) && node !== callable.declaration) {
+        return;
+      }
+
+      if (ts.isReturnStatement(node) && node.expression) {
+        const expression = unwrapExpression(node.expression);
+        if (ts.isIdentifier(expression)) {
+          const returnedSymbol = project.checker.getSymbolAtLocation(expression);
+          if (returnedSymbol && getCanonicalSymbolKey(project, returnedSymbol) === symbolKey) {
+            returned = true;
+            return;
+          }
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(callable.declaration.body, visit);
+    return returned ? callable : undefined;
+  };
+
+  const resolveTrackableReturnedLiteralAlias = (
+    callable: AnalyzableCallableBinding,
+    candidate: ts.Expression,
+  ): ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined => {
+    const node = unwrapExpression(candidate);
+    if (!ts.isIdentifier(node)) {
+      return undefined;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(node);
+    const declaration = symbol?.declarations?.find(ts.isVariableDeclaration);
+    if (!declaration?.initializer) {
+      return undefined;
+    }
+
+    const enclosingFunction = ts.findAncestor(
+      declaration,
+      (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+    );
+    if (enclosingFunction !== callable.declaration) {
+      return undefined;
+    }
+
+    return getTrackableStructuredLiteral(declaration.initializer);
   };
 
   const summarizeReturnExpression = (
@@ -358,17 +631,7 @@ export function buildTrackedObjects(
     }
 
     if ((ts.isObjectLiteralExpression(expression) || ts.isArrayLiteralExpression(expression)) && isTrackableObjectStructure(expression)) {
-      return {
-        kind: "structured",
-        binding: createTrackedBindingForLiteral(
-          `${callable.symbolKey}:return:${expression.getStart(expression.getSourceFile())}`,
-          expression.getSourceFile(),
-          expression,
-          `${getAnalyzableCallableName(callable)}()`,
-          "expression",
-          expression,
-        ),
-      };
+      return createStructuredReturnSummary(callable, expression);
     }
 
     if (ts.isCallExpression(expression)) {
@@ -486,7 +749,10 @@ export function buildTrackedObjects(
 
       if (ts.isReturnStatement(node) && node.expression) {
         sawReturn = true;
-        const nextSummary = summarizeReturnExpression(callable, node.expression);
+        const returnedLiteralAlias = resolveTrackableReturnedLiteralAlias(callable, node.expression);
+        const nextSummary = returnedLiteralAlias
+          ? createStructuredReturnSummary(callable, returnedLiteralAlias)
+          : summarizeReturnExpression(callable, node.expression);
         if (!nextSummary) {
           unsupported = true;
           return;
@@ -555,13 +821,17 @@ export function buildTrackedObjects(
             && isTrackableObjectStructure(node.initializer)
           ) {
             const symbolKey = getCanonicalSymbolKey(project, symbol);
+            const returnedAliasCallable = resolveStructuredReturnAliasCallable(node);
+            const returnedAliasLiteral = returnedAliasCallable ? getTrackableStructuredLiteral(node.initializer) : undefined;
             const binding = createTrackedBindingForLiteral(
-              symbolKey,
+              returnedAliasCallable && returnedAliasLiteral
+                ? `${returnedAliasCallable.symbolKey}:return:${ts.isObjectLiteralExpression(returnedAliasLiteral) ? "object" : "array"}`
+                : symbolKey,
               sourceFile,
-              node.initializer,
-              node.name.text,
-              isExportedVariableDeclaration(node) ? "export" : "local",
-              node.name,
+              returnedAliasLiteral ?? node.initializer,
+              returnedAliasCallable ? `${getAnalyzableCallableName(returnedAliasCallable)}()` : node.name.text,
+              returnedAliasCallable ? "expression" : isExportedVariableDeclaration(node) ? "export" : "local",
+              returnedAliasLiteral ?? node.name,
             );
 
             mergeTrackedBinding(nextTrackedBySymbolId, conflictedTrackedSymbolIds, symbolKey, binding);
