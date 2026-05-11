@@ -1,0 +1,6 @@
+{
+  "name": "library-finite-dispatch-surface-basic",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
