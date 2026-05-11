@@ -106,6 +106,7 @@ export type TrackedObjectStructuralRole = "record" | "state-holder" | "structura
  */
 export interface TrackedObject {
   id: string;
+  reportingOwnerId?: string;
   canonicalSymbolKey: string;
   rootName: string;
   sourceFile: string;

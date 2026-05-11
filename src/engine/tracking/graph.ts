@@ -244,6 +244,7 @@ function getTrackableStructuredLiteralExpression(
     ? initializer
     : undefined;
 }
+
 function getKnownSpreadPropertyNames(expression: ts.Expression): string[] | undefined {
   const node = unwrapExpression(expression);
 

@@ -157,14 +157,6 @@ function markHelperParameterBoundary(
   }
 }
 
-function isSupportedNestedTrackedAliasUse(project: ProjectContext, node: ts.Identifier): boolean {
-  const parent = node.parent;
-  if (!ts.isPropertyAccessExpression(parent) || parent.expression !== node) {
-    return false;
-  }
-  return true;
-}
-
 function extractFiniteAccessSegments(project: ProjectContext, argument: ts.Expression): PathSegment[] | undefined {
   const node = unwrapExpression(argument);
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
@@ -780,7 +772,8 @@ export function summarizeHelperParameterUse(
         }
 
         if (isTrackedAliasIdentifier(candidate)) {
-          capturesTrackedAlias = !isSupportedNestedTrackedAliasUse(project, candidate);
+          const parent = candidate.parent;
+          capturesTrackedAlias = !ts.isPropertyAccessExpression(parent) || parent.expression !== candidate;
           return;
         }
 

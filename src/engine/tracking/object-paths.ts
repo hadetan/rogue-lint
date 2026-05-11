@@ -22,7 +22,6 @@ export function analyzeObjectPaths(
   }
 
   const { trackedBySymbolId, functionReturnSummaries, trackedObjectsById } = buildTrackedObjects(project, reachableFiles);
-  const trackedObjects = new Set<TrackedObject>(trackedObjectsById.values());
 
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {
@@ -40,5 +39,5 @@ export function analyzeObjectPaths(
     );
   }
 
-  finalizeObjectPathFindings(project, state, suppressionContext, trackedObjects);
+  finalizeObjectPathFindings(project, state, suppressionContext, trackedObjectsById.values());
 }

@@ -14,7 +14,24 @@ function normalizeAudit(entry: { category?: string; kind: string; name: string; 
   return `${entry.category ?? "-"}:${entry.kind}:${entry.location?.file ?? "-"}:${entry.location?.line ?? 0}:${entry.name}`;
 }
 
-const EXPECTED_SELF_HOST_SKIPS: string[] = [];
+function normalizeFinding(entry: { kind: string; entity: { name: string; location?: { file: string; line: number } } }): string {
+  return `-:${entry.kind}:${entry.entity.location?.file ?? "-"}:${entry.entity.location?.line ?? 0}:${entry.entity.name}`;
+}
+
+const EXPECTED_SELF_HOST_FINDINGS: string[] = [
+  "-:unused-array-element:src/engine/tracking/object-paths/visitor.ts:120:[0]",
+  "-:unused-array-element:src/engine/tracking/object-paths/visitor.ts:637:[0]",
+  "-:unused-array-element:src/engine/tracking/semantics.ts:193:[0]",
+  "-:unused-object-key:src/benchmark/run-benchmark.ts:104:format",
+];
+
+const EXPECTED_SELF_HOST_SKIPS: string[] = [
+  "array-callback-escape:collection-boundary:src/engine/tracking/semantics.ts:834:getExactHelperReadPaths()",
+  "returned-object:array-element:src/engine/tracking/graph.ts:269:[0]",
+  "returned-object:array-element:src/engine/tracking/semantics.ts:198:[0]",
+];
+const RETURNED_CONTEXT_USED_FIELD_NAMES = ["processors", "seen"];
+const OPAQUE_CALLBACK_USED_FIELD_NAMES = ["seen"];
 
 describe("rogue-lint analyzer", () => {
   it("finds unused files, exports, locals, class members, and object paths in application mode", async () => {
@@ -969,6 +986,16 @@ describe("rogue-lint analyzer", () => {
       && finding.entity.owner === "allProcessors"
       && ["string", "number"].includes(finding.entity.name)
     )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "initializeContext()"
+      && OPAQUE_CALLBACK_USED_FIELD_NAMES.includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) =>
+      entry.category === "opaque-object-call"
+      && entry.location?.file === "src/context.ts"
+      && OPAQUE_CALLBACK_USED_FIELD_NAMES.includes(entry.name)
+    )).toBe(false);
   });
 
   it("keeps finite dispatch table entries live for the exact call site when a returned context helper has multiple processor tables", async () => {
@@ -982,6 +1009,16 @@ describe("rogue-lint analyzer", () => {
       finding.kind === "unused-object-key"
       && finding.entity.owner === "allProcessors"
       && ["string", "number"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "initializeContext()"
+      && RETURNED_CONTEXT_USED_FIELD_NAMES.includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) =>
+      entry.category === "opaque-object-call"
+      && entry.location?.file === "src/context.ts"
+      && RETURNED_CONTEXT_USED_FIELD_NAMES.includes(entry.name)
     )).toBe(false);
   });
 
@@ -1441,7 +1478,7 @@ describe("rogue-lint analyzer", () => {
     ).toBe(false);
   });
 
-  it("enforces the normalized self-host library-mode zero-gap surface", async () => {
+  it("enforces the normalized self-host library-mode trusted residual surface", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
       targetPath: process.cwd(),
@@ -1449,11 +1486,11 @@ describe("rogue-lint analyzer", () => {
       mode: "library",
     });
 
-    expect(result.summary.findings).toBe(0);
-    expect(result.findings).toHaveLength(0);
     expect(result.diagnostics).toHaveLength(0);
+    expect(result.summary.findings).toBe(EXPECTED_SELF_HOST_FINDINGS.length);
     expect(result.summary.skipped).toBe(EXPECTED_SELF_HOST_SKIPS.length);
     expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);
+    expect(result.findings.map(normalizeFinding).sort()).toEqual(EXPECTED_SELF_HOST_FINDINGS);
     expect(result.skipped.map(normalizeAudit).sort()).toEqual(EXPECTED_SELF_HOST_SKIPS);
   }, 15000);
 });

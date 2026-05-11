@@ -32,7 +32,6 @@ import type {
   TrackedObjectBinding,
   TrackedValueFate,
 } from "./model.js";
-import { shouldSuppressStructuralPath } from "./syntax.js";
 
 /**
  * Shared tracked-object state and collection helpers for the exact tracking kernel.
@@ -419,24 +418,6 @@ export function isCollectionPathInvalidated(trackedObject: TrackedObject, segmen
     }
   }
   return false;
-}
-
-export function shouldReportCollectionBoundary(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
-  if (shouldSuppressStructuralPath(trackedObject, segments)) {
-    return false;
-  }
-
-  const joinedPath = serializePath(segments);
-  const collection = getCollectionInfo(trackedObject, segments);
-  const hasExactCoverage = trackedObject.nodes.has(joinedPath)
-    || hasTrackedChildren(trackedObject, segments)
-    || (collection?.childPaths.length ?? 0) > 0;
-
-  if (!hasExactCoverage) {
-    return false;
-  }
-
-  return !trackedObject.observedSubtrees.has(joinedPath) || isCollectionPathInvalidated(trackedObject, segments);
 }
 
 export function getNearestArrayCollectionPath(

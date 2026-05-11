@@ -72,6 +72,7 @@ const EXACT_ARRAY_CALLBACK_METHODS = new Set([
 function hasExactTrackedPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
   const joinedPath = serializePath(segments);
   return trackedObject.nodes.has(joinedPath)
+    || trackedObject.callablePaths.has(joinedPath)
     || trackedObject.exactPathAliases.has(joinedPath)
     || Boolean(getCollectionInfo(trackedObject, segments))
     || hasTrackedChildren(trackedObject, segments);
@@ -81,6 +82,7 @@ function cloneTrackedObjectForCallSite(base: TrackedObject, id: string): Tracked
   return {
     ...base,
     id,
+    reportingOwnerId: base.reportingOwnerId ?? base.id,
     descendantNodeKeys: new Map([...base.descendantNodeKeys.entries()].map(([key, value]) => [key, [...value]])),
     collections: new Map(base.collections),
     collectionStates: new Map(base.collectionStates),
@@ -90,13 +92,7 @@ function cloneTrackedObjectForCallSite(base: TrackedObject, id: string): Tracked
     placeStates: new Map(base.placeStates),
     observedSubtrees: new Set(),
     escapedPaths: new Map(base.escapedPaths),
-    exactPathAliases: new Map([...base.exactPathAliases.entries()].map(([key, alias]) => [
-      key,
-      {
-        ...alias,
-        sourcePath: [...alias.sourcePath],
-      },
-    ])),
+    exactPathAliases: new Map(),
     valueFates: base.valueFates.map((valueFate) => ({
       ...valueFate,
       path: [...valueFate.path],
@@ -105,6 +101,81 @@ function cloneTrackedObjectForCallSite(base: TrackedObject, id: string): Tracked
     reads: new Set(),
     writes: new Set(),
   };
+}
+
+function syncTrackedObjectForCallSite(target: TrackedObject, base: TrackedObject): void {
+  target.reportingOwnerId = base.reportingOwnerId ?? base.id;
+  target.descendantNodeKeys = new Map([...base.descendantNodeKeys.entries()].map(([key, value]) => [key, [...value]]));
+  target.collections = new Map(base.collections);
+  target.collectionStates = new Map(base.collectionStates);
+  target.collectionBoundaries = new Map(base.collectionBoundaries);
+  target.invalidatedCollectionPaths = new Set(base.invalidatedCollectionPaths);
+  target.invalidatedPaths = new Map(base.invalidatedPaths);
+  target.placeStates = new Map(base.placeStates);
+  target.escapedPaths = new Map(base.escapedPaths);
+  target.exactPathAliases = new Map();
+  target.valueFates = base.valueFates.map((valueFate) => ({
+    ...valueFate,
+    path: [...valueFate.path],
+    relatedPath: valueFate.relatedPath ? [...valueFate.relatedPath] : undefined,
+  }));
+}
+
+function getResolvedSpreadPropertySegments(binding: TrackedObjectBinding): PathSegment[] | undefined {
+  const collection = getCollectionInfo(binding.trackedObject, binding.prefix);
+  if (!collection || collection.kind !== "object") {
+    return undefined;
+  }
+
+  const propertySegments: PathSegment[] = [];
+  const seen = new Set<string>();
+
+  for (const childPath of collection.childPaths) {
+    if (childPath.length !== binding.prefix.length + 1) {
+      continue;
+    }
+
+    const segment = childPath[binding.prefix.length];
+    if (!segment || segment.kind !== "property") {
+      return undefined;
+    }
+
+    const key = `${segment.kind}:${segment.value}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    propertySegments.push(segment);
+  }
+
+  return propertySegments.length > 0 ? propertySegments : undefined;
+}
+
+function isPristineCallSiteClone(trackedObject: TrackedObject): boolean {
+  return trackedObject.reads.size === 0
+    && trackedObject.writes.size === 0
+    && trackedObject.observedSubtrees.size === 0
+    && [...trackedObject.exactPathAliases.values()].every((alias) => !alias.observed);
+}
+
+function collapseExactBindingPrefix(
+  binding: TrackedObjectBinding,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding {
+  let current = binding;
+
+  while (current.prefix.length > 0) {
+    const baseBinding = new TrackedObjectBindingRecord(current.trackedObject, []);
+    const aliased = resolveExactPathAlias(baseBinding, current.prefix, trackedObjectsById);
+    if (sameTrackedBinding(aliased.binding, baseBinding)) {
+      break;
+    }
+
+    current = aliased.binding;
+  }
+
+  return current;
 }
 
 function getReturnedStructuredLiteralFromExpression(
@@ -202,6 +273,31 @@ function registerSpecializedStructuredReturnAliases(
 
   if (ts.isObjectLiteralExpression(node)) {
     for (const property of node.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        const resolved = resolveTrackedObjectAccess(
+          project,
+          property.expression,
+          localBindings,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+        if (resolved && !resolved.dynamic) {
+          const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          const spreadSegments = getResolvedSpreadPropertySegments(spreadBinding);
+          if (spreadSegments) {
+            for (const spreadSegment of spreadSegments) {
+              registerExactPathAlias(
+                trackedObject,
+                [...segments, spreadSegment],
+                extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
+                "call-site structured return keeps this spread property exact",
+              );
+            }
+          }
+        }
+        continue;
+      }
+
       if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
         continue;
       }
@@ -316,6 +412,61 @@ function getCallSiteStructuredReturnBinding(
   const callSiteId = `${binding.trackedObject.id}:call:${node.getSourceFile().fileName}:${node.getStart()}`;
   const existing = trackedObjectsById.get(callSiteId);
   if (existing) {
+    if (isPristineCallSiteClone(existing)) {
+      syncTrackedObjectForCallSite(existing, binding.trackedObject);
+
+      const localBindings = new Map(trackedBySymbolId);
+      node.arguments.forEach((argument, index) => {
+        const parameter = callable.declaration.parameters[index];
+        if (!parameter || !ts.isIdentifier(parameter.name)) {
+          return;
+        }
+
+        const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+        if (!parameterSymbol) {
+          return;
+        }
+
+        const paramSymbolKey = getSymbolKey(parameterSymbol);
+        const baseBinding = trackedBySymbolId.get(paramSymbolKey);
+        const specializedArgumentBinding = baseBinding
+          ? getCallSiteStructuredArgumentBinding(
+              project,
+              node,
+              argument,
+              baseBinding,
+              trackedBySymbolId,
+              functionReturnSummaries,
+              trackedObjectsById,
+            )
+          : undefined;
+        if (specializedArgumentBinding) {
+          localBindings.set(paramSymbolKey, specializedArgumentBinding);
+        }
+      });
+
+      for (const forwarded of getForwardedParameterBindings(
+        project,
+        node,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      )) {
+        localBindings.set(forwarded.paramSymbolKey, forwarded.binding);
+      }
+
+      registerSpecializedStructuredReturnAliases(
+        project,
+        existing,
+        literal,
+        [],
+        project.config.value.objectAnalysis.maxPathDepth,
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+    }
+
     return new TrackedObjectBindingRecord(existing, []);
   }
 
@@ -323,6 +474,35 @@ function getCallSiteStructuredReturnBinding(
   trackedObjectsById.set(callSiteId, specialized);
 
   const localBindings = new Map(trackedBySymbolId);
+  node.arguments.forEach((argument, index) => {
+    const parameter = callable.declaration.parameters[index];
+    if (!parameter || !ts.isIdentifier(parameter.name)) {
+      return;
+    }
+
+    const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+    if (!parameterSymbol) {
+      return;
+    }
+
+    const paramSymbolKey = getSymbolKey(parameterSymbol);
+    const baseBinding = trackedBySymbolId.get(paramSymbolKey);
+    const specializedArgumentBinding = baseBinding
+      ? getCallSiteStructuredArgumentBinding(
+          project,
+          node,
+          argument,
+          baseBinding,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        )
+      : undefined;
+    if (specializedArgumentBinding) {
+      localBindings.set(paramSymbolKey, specializedArgumentBinding);
+    }
+  });
+
   for (const forwarded of getForwardedParameterBindings(
     project,
     node,
@@ -340,6 +520,56 @@ function getCallSiteStructuredReturnBinding(
     [],
     project.config.value.objectAnalysis.maxPathDepth,
     localBindings,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+
+  return new TrackedObjectBindingRecord(specialized, []);
+}
+
+function getCallSiteStructuredArgumentBinding(
+  project: ProjectContext,
+  node: ts.CallExpression,
+  argument: ts.Expression,
+  baseBinding: TrackedObjectBinding,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding | undefined {
+  const literal = unwrapExpression(argument);
+  if (!ts.isObjectLiteralExpression(literal) && !ts.isArrayLiteralExpression(literal)) {
+    return undefined;
+  }
+
+  const callSiteId = `${baseBinding.trackedObject.id}:arg:${node.getSourceFile().fileName}:${argument.getStart()}`;
+  const existing = trackedObjectsById.get(callSiteId);
+  if (existing) {
+    if (isPristineCallSiteClone(existing)) {
+      syncTrackedObjectForCallSite(existing, baseBinding.trackedObject);
+      registerSpecializedStructuredReturnAliases(
+        project,
+        existing,
+        literal,
+        [],
+        project.config.value.objectAnalysis.maxPathDepth,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+    }
+
+    return new TrackedObjectBindingRecord(existing, []);
+  }
+
+  const specialized = cloneTrackedObjectForCallSite(baseBinding.trackedObject, callSiteId);
+  trackedObjectsById.set(callSiteId, specialized);
+  registerSpecializedStructuredReturnAliases(
+    project,
+    specialized,
+    literal,
+    [],
+    project.config.value.objectAnalysis.maxPathDepth,
+    trackedBySymbolId,
     functionReturnSummaries,
     trackedObjectsById,
   );
@@ -713,11 +943,15 @@ export function resolveTrackedObjectAccess(
     if (!nested) {
       return undefined;
     }
-    const aliased = resolveExactPathAlias(nested.binding, [...nested.segments, propertySegment(node.name.text)], trackedObjectsById);
-    const nextSegments = sameTrackedBinding(aliased.binding, nested.binding)
-      ? [...nested.segments, propertySegment(node.name.text)]
+    const currentBinding = collapseExactBindingPrefix(
+      extendTrackedBinding(nested.binding, nested.segments),
+      trackedObjectsById,
+    );
+    const aliased = resolveExactPathAlias(currentBinding, [propertySegment(node.name.text)], trackedObjectsById);
+    const nextSegments = sameTrackedBinding(aliased.binding, currentBinding)
+      ? [propertySegment(node.name.text)]
       : [];
-    if (sameTrackedBinding(aliased.binding, nested.binding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
+    if (sameTrackedBinding(aliased.binding, currentBinding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
       return undefined;
     }
     return {
@@ -760,11 +994,15 @@ export function resolveTrackedObjectAccess(
     const boundedSegment = extractBoundedElementAccessSegment(project, node.argumentExpression);
     if (boundedSegment) {
       const nextSegment = boundedSegment;
-      const aliased = resolveExactPathAlias(nested.binding, [...nested.segments, nextSegment], trackedObjectsById);
-      const nextSegments = sameTrackedBinding(aliased.binding, nested.binding)
-        ? [...nested.segments, nextSegment]
+      const currentBinding = collapseExactBindingPrefix(
+        extendTrackedBinding(nested.binding, nested.segments),
+        trackedObjectsById,
+      );
+      const aliased = resolveExactPathAlias(currentBinding, [nextSegment], trackedObjectsById);
+      const nextSegments = sameTrackedBinding(aliased.binding, currentBinding)
+        ? [nextSegment]
         : [];
-      if (sameTrackedBinding(aliased.binding, nested.binding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
+      if (sameTrackedBinding(aliased.binding, currentBinding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
         return undefined;
       }
       return {

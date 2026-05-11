@@ -198,16 +198,6 @@ export interface BenchmarkWorkspaceRun {
 
 export const BENCHMARK_DOC_PATH = "benchmark/README.md";
 
-export const EMPTY_BENCHMARK_EXPECTATIONS: BenchmarkExpectations = {
-  mustFind: [],
-  mustNotFind: [],
-  mustSkip: [],
-  mustDiagnose: [],
-  mustNotDiagnose: [],
-  acceptedFindings: [],
-  knownSkips: [],
-};
-
 export const EMPTY_BENCHMARK_CONFIG: BenchmarkTargetConfig = {};
 
 export function isAnalysisMode(value: unknown): value is AnalysisMode {

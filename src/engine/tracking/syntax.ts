@@ -144,7 +144,8 @@ export function classifyTrackedObjectStructuralRole(
     let allSimple = true;
     for (const property of objectLiteral.properties) {
       if (ts.isSpreadAssignment(property)) {
-        return undefined;
+        allSimple = false;
+        continue;
       }
       const propertyName = getStaticObjectLiteralPropertyName(property);
       if (!propertyName) {

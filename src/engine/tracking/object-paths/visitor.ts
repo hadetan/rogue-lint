@@ -393,9 +393,29 @@ export function visitObjectPathSourceFile(
     const fullPath = [...binding.prefix, ...segments];
     const serialized = serializePath(fullPath);
     return binding.trackedObject.nodes.has(serialized)
+      || binding.trackedObject.callablePaths.has(serialized)
       || binding.trackedObject.exactPathAliases.has(serialized)
       || Boolean(getCollectionInfo(binding.trackedObject, fullPath))
       || hasTrackedChildren(binding.trackedObject, fullPath);
+  };
+
+  const collapseExactBindingPrefix = (binding: TrackedObjectBinding): TrackedObjectBinding => {
+    let current = binding;
+
+    while (current.prefix.length > 0) {
+      const baseBinding: TrackedObjectBinding = {
+        trackedObject: current.trackedObject,
+        prefix: [],
+      };
+      const aliased = resolveExactPathAlias(baseBinding, current.prefix, trackedObjectsById);
+      if (sameTrackedBinding(aliased.binding, baseBinding)) {
+        break;
+      }
+
+      current = aliased.binding;
+    }
+
+    return current;
   };
 
   const resolveFiniteLookupCandidates = (node: ts.ElementAccessExpression): FiniteLookupCandidate[] | undefined => {
@@ -410,8 +430,8 @@ export function visitObjectPathSourceFile(
       return undefined;
     }
 
-    const collectionPath = [...nested.binding.prefix, ...nested.segments];
-    if (getCollectionInfo(nested.binding.trackedObject, collectionPath)?.kind === "array") {
+    const collapsedBinding = collapseExactBindingPrefix(extendTrackedBinding(nested.binding, nested.segments));
+    if (getCollectionInfo(collapsedBinding.trackedObject, collapsedBinding.prefix)?.kind === "array") {
       return undefined;
     }
 
@@ -421,8 +441,8 @@ export function visitObjectPathSourceFile(
     }
 
     const exactCandidateSegments = candidateSegments.filter((candidateSegment) => hasExactTrackedPath(
-      nested.binding,
-      [...nested.segments, candidateSegment],
+      collapsedBinding,
+      [candidateSegment],
     ));
     if (exactCandidateSegments.length <= 1) {
       return undefined;
@@ -430,13 +450,13 @@ export function visitObjectPathSourceFile(
 
     return exactCandidateSegments.map((candidateSegment) => {
       const aliased = resolveExactPathAlias(
-        nested.binding,
-        [...nested.segments, candidateSegment],
+        collapsedBinding,
+        [candidateSegment],
         trackedObjectsById,
       );
       return {
         binding: aliased.binding,
-        segments: sameTrackedBinding(aliased.binding, nested.binding) ? [...nested.segments, candidateSegment] : [],
+        segments: sameTrackedBinding(aliased.binding, collapsedBinding) ? [candidateSegment] : [],
       };
     });
   };
@@ -633,6 +653,12 @@ export function visitObjectPathSourceFile(
 
     markObservedChildPaths(currentBinding.trackedObject, currentBinding.prefix, trackedObjectsById);
   };
+
+  const shouldReplayExactHelperReadPaths = (binding: TrackedObjectBinding): boolean => (
+    binding.trackedObject.structuralRole !== "structural-record"
+    && binding.trackedObject.structuralRole !== "structural-record-array"
+    && binding.trackedObject.structuralRole !== "state-holder"
+  );
 
   const visit = (node: ts.Node): void => {
     if (handledExactCallbackBodies.has(node)) {
@@ -959,9 +985,12 @@ export function visitObjectPathSourceFile(
             parameterMeaningfulUse,
             parameterSummaryCache,
           );
-          summary.exactReadPaths.forEach((readPath) => {
-            markExactHelperReadPath(extendTrackedBinding(resolved.binding, resolved.segments), readPath);
-          });
+          const helperReplayBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          if (shouldReplayExactHelperReadPaths(helperReplayBinding)) {
+            summary.exactReadPaths.forEach((readPath) => {
+              markExactHelperReadPath(helperReplayBinding, readPath);
+            });
+          }
           if (collectionInfo?.kind === "array") {
             if (summary.boundaryReason) {
               recordArrayBoundary(

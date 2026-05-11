@@ -12,7 +12,6 @@ import type {
 import {
   BENCHMARK_DOC_PATH,
   EMPTY_BENCHMARK_CONFIG,
-  EMPTY_BENCHMARK_EXPECTATIONS,
   isAnalysisMode,
   isBenchmarkCoverageClass,
 } from "./types.js";
@@ -174,7 +173,15 @@ function applyAcceptedDebtFallback<Matcher extends { label: string; maxCount?: n
 
 function parseExpectations(value: unknown, location: string): BenchmarkExpectations {
   if (value === undefined) {
-    return { ...EMPTY_BENCHMARK_EXPECTATIONS };
+    return {
+      mustFind: [],
+      mustNotFind: [],
+      mustSkip: [],
+      mustDiagnose: [],
+      mustNotDiagnose: [],
+      acceptedFindings: [],
+      knownSkips: [],
+    };
   }
 
   if (!isRecord(value)) {
