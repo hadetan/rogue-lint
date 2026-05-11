@@ -119,6 +119,24 @@ describe("rogue-lint analyzer", () => {
     expect(result.kept.some((entry) => entry.kind === "type" && entry.name === "ToolkitConfig")).toBe(true);
   });
 
+  it("keeps exported public object members live without implicitly preserving private helpers", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-public-object-members-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "coerce"
+      && ["string", "number", "boolean", "bigint", "date"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-local"
+      && finding.entity.name === "privateHelpers"
+    )).toBe(true);
+  });
+
   it("does not list cross-file referenced public exports as kept", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -176,7 +194,7 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.kind === "collection-boundary" && entry.name === "mutatedRows")).toBe(true);
   });
 
-  it("preserves exact collection siblings while reporting root-owned collection boundaries", async () => {
+  it("preserves exact collection siblings while keeping supported append growth exact and still reporting root-owned boundaries", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
       targetPath: fixturePath("collection-state-basic"),
@@ -188,6 +206,7 @@ describe("rogue-lint analyzer", () => {
     expect(kindsAndNames).toContain("unused-nested-path:[0].stale");
     expect(kindsAndNames).toContain("unused-nested-path:[0].dead");
     expect(kindsAndNames).toContain("unused-nested-path:[0].items[0].dead");
+    expect(kindsAndNames).toContain("unused-nested-path:[0].items[1].dead");
     expect(kindsAndNames).toContain("unused-nested-path:[0].safe.stale");
     expect(kindsAndNames).toContain("unused-nested-path:[1].safe.stale");
     expect(kindsAndNames).not.toContain("unused-nested-path:[1].stale");
@@ -195,7 +214,7 @@ describe("rogue-lint analyzer", () => {
 
     expect(result.skipped.some((entry) =>
       entry.kind === "collection-boundary" && entry.name === "stack" && entry.category === "array-append-mutation"
-    )).toBe(true);
+    )).toBe(false);
     expect(result.skipped.some((entry) =>
       entry.kind === "collection-boundary" && entry.name === "replaced[1]" && entry.category === "array-replacement-mutation"
     )).toBe(true);
@@ -204,11 +223,37 @@ describe("rogue-lint analyzer", () => {
     )).toBe(true);
     expect(result.skipped.some((entry) =>
       entry.kind === "collection-boundary" && entry.name === "nested[0].items" && entry.category === "array-append-mutation"
-    )).toBe(true);
+    )).toBe(false);
     expect(result.skipped.some((entry) =>
       entry.kind === "collection-boundary" && entry.name === "opaque" && entry.category === "array-opaque-mutation"
     )).toBe(true);
     expect(result.skipped.some((entry) => entry.name === "[0]")).toBe(false);
+  });
+
+  it("preserves benchmark-shaped pair collections through direct and materialized helper handoff", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("collection-pair-handoff-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && ["pairs", "syncPairs"].includes(finding.entity.owner ?? "")
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-nested-path"
+      && ["pairs", "syncPairs"].includes(finding.entity.owner ?? "")
+      && [
+        "[0].alwaysSet",
+        "[0].key",
+        "[0].key.status",
+        "[0].key.value",
+        "[0].value",
+        "[0].value.status",
+        "[0].value.value",
+      ].includes(finding.entity.name)
+    )).toBe(false);
   });
 
   it("promotes compiler safety diagnostics and reports invalidated reads conservatively", async () => {
@@ -912,6 +957,53 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(false);
   });
 
+  it("keeps finite dispatch table entries live through an opaque callback branch on a returned context", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("finite-dispatch-opaque-callback-context-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "allProcessors"
+      && ["string", "number"].includes(finding.entity.name)
+    )).toBe(false);
+  });
+
+  it("keeps finite dispatch table entries live for the exact call site when a returned context helper has multiple processor tables", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("finite-dispatch-multi-call-return-context-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "allProcessors"
+      && ["string", "number"].includes(finding.entity.name)
+    )).toBe(false);
+  });
+
+  it("keeps public finite dispatch-table members live while leaving unrelated keys dead", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-finite-dispatch-surface-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "allProcessors"
+      && ["string", "number", "boolean", "date", "template_literal"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "allProcessors"
+      && finding.entity.name === "unused"
+    )).toBe(true);
+  });
+
   it("preserves nested locale child paths after finite keyed dictionary lookup", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -931,6 +1023,55 @@ describe("rogue-lint analyzer", () => {
     )).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(false);
   });
+
+  it("preserves only benchmark-verified runtime locale dictionary keys", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("locale-runtime-format-selective-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "formatDictionary"
+      && ["template_literal", "mac"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-nested-path"
+      && finding.entity.owner === "formatDictionary"
+      && [
+        "template_literal.label",
+        "template_literal.gender",
+        "mac.label",
+        "mac.gender",
+      ].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "formatDictionary"
+      && ["regex", "uuidv4", "uuidv6"].includes(finding.entity.name)
+    )).toBe(true);
+  });
+
+  it("preserves source-backed locale format keys that are emitted outside the stale declared format union", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("locale-runtime-format-source-backed-extra-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "formatDictionary"
+      && ["template_literal", "mac"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "formatDictionary"
+      && ["regex", "uuidv4", "uuidv6"].includes(finding.entity.name)
+    )).toBe(true);
+  });
+
 
   it("preserves nested locale child paths after finite keyed lookup through optional chaining", async () => {
     const result = await analyzeProject({

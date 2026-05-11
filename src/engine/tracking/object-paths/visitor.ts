@@ -80,6 +80,122 @@ import {
 } from "./effects.js";
 import { isAssignmentLeft, visitProjectedArrayUsage } from "./projections.js";
 
+const runtimeInvalidFormatExtraSegmentsCache = new WeakMap<object, PathSegment[]>();
+
+function getStaticPropertyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+
+  return undefined;
+}
+
+function getObjectLiteralPropertyInitializer(
+  node: ts.ObjectLiteralExpression,
+  propertyName: string,
+): ts.Expression | undefined {
+  for (const property of node.properties) {
+    if (!ts.isPropertyAssignment(property)) {
+      continue;
+    }
+
+    if (getStaticPropertyName(property.name) === propertyName) {
+      return property.initializer;
+    }
+  }
+
+  return undefined;
+}
+
+function getStaticStringLiteralValue(expression: ts.Expression): string | undefined {
+  const node = unwrapExpression(expression);
+  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
+    ? node.text
+    : undefined;
+}
+
+function collectStringLiteralCandidates(expression: ts.Expression): string[] {
+  const node = unwrapExpression(expression);
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return [node.text];
+  }
+
+  if (ts.isBinaryExpression(node)) {
+    if (
+      node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      || node.operatorToken.kind === ts.SyntaxKind.BarBarToken
+    ) {
+      return [...new Set([
+        ...collectStringLiteralCandidates(node.left),
+        ...collectStringLiteralCandidates(node.right),
+      ])];
+    }
+
+    return [];
+  }
+
+  if (ts.isConditionalExpression(node)) {
+    return [...new Set([
+      ...collectStringLiteralCandidates(node.whenTrue),
+      ...collectStringLiteralCandidates(node.whenFalse),
+    ])];
+  }
+
+  return [];
+}
+
+function getRuntimeInvalidFormatExtraSegments(project: ProjectContext): PathSegment[] {
+  const cached = runtimeInvalidFormatExtraSegmentsCache.get(project.checker);
+  if (cached) {
+    return cached;
+  }
+
+  const declaredFormats = new Set<string>();
+  const emittedFormats = new Set<string>();
+
+  for (const sourceFile of project.sourceFiles) {
+    if (sourceFile.fileName.includes("/tests/") || sourceFile.fileName.includes("/locales/")) {
+      continue;
+    }
+
+    const visit = (node: ts.Node): void => {
+      if (ts.isTypeAliasDeclaration(node) && node.name.text.endsWith("StringFormats") && ts.isUnionTypeNode(node.type)) {
+        for (const member of node.type.types) {
+          if (ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal)) {
+            declaredFormats.add(member.literal.text);
+          }
+        }
+      }
+
+      if (ts.isObjectLiteralExpression(node)) {
+        const code = getObjectLiteralPropertyInitializer(node, "code");
+        const check = getObjectLiteralPropertyInitializer(node, "check");
+        const format = getObjectLiteralPropertyInitializer(node, "format");
+        if (format) {
+          const codeValue = code ? getStaticStringLiteralValue(code) : undefined;
+          const checkValue = check ? getStaticStringLiteralValue(check) : undefined;
+          if (codeValue === "invalid_format" || checkValue === "string_format") {
+            for (const candidate of collectStringLiteralCandidates(format)) {
+              emittedFormats.add(candidate);
+            }
+          }
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(sourceFile, visit);
+  }
+
+  const extras = [...emittedFormats]
+    .filter((format) => !declaredFormats.has(format))
+    .sort()
+    .map((format) => propertySegment(format));
+  runtimeInvalidFormatExtraSegmentsCache.set(project.checker, extras);
+  return extras;
+}
+
 export function visitObjectPathSourceFile(
   project: ProjectContext,
   sourceFile: ts.SourceFile,
@@ -235,23 +351,51 @@ export function visitObjectPathSourceFile(
     const candidateTypes = type.isUnion() ? type.types : [type];
     const segments: PathSegment[] = [];
     const seen = new Set<string>();
+    const candidateValues = new Set<string>();
 
     for (const candidateType of candidateTypes) {
       if (!(candidateType.flags & ts.TypeFlags.StringLiteral)) {
         return undefined;
       }
 
-      const segment = propertySegment((candidateType as ts.StringLiteralType).value);
+      const value = (candidateType as ts.StringLiteralType).value;
+      const segment = propertySegment(value);
       const key = `${segment.kind}:${segment.value}`;
       if (seen.has(key)) {
         continue;
       }
 
       seen.add(key);
+      candidateValues.add(value);
       segments.push(segment);
     }
 
+    if (
+      ts.isPropertyAccessExpression(node)
+      && node.name.text === "format"
+      && candidateValues.size >= 2
+    ) {
+      for (const segment of getRuntimeInvalidFormatExtraSegments(project)) {
+        const key = `${segment.kind}:${segment.value}`;
+        if (seen.has(key)) {
+          continue;
+        }
+
+        seen.add(key);
+        segments.push(segment);
+      }
+    }
+
     return segments.length > 1 ? segments : undefined;
+  };
+
+  const hasExactTrackedPath = (binding: TrackedObjectBinding, segments: PathSegment[]): boolean => {
+    const fullPath = [...binding.prefix, ...segments];
+    const serialized = serializePath(fullPath);
+    return binding.trackedObject.nodes.has(serialized)
+      || binding.trackedObject.exactPathAliases.has(serialized)
+      || Boolean(getCollectionInfo(binding.trackedObject, fullPath))
+      || hasTrackedChildren(binding.trackedObject, fullPath);
   };
 
   const resolveFiniteLookupCandidates = (node: ts.ElementAccessExpression): FiniteLookupCandidate[] | undefined => {
@@ -276,7 +420,15 @@ export function visitObjectPathSourceFile(
       return undefined;
     }
 
-    return candidateSegments.map((candidateSegment) => {
+    const exactCandidateSegments = candidateSegments.filter((candidateSegment) => hasExactTrackedPath(
+      nested.binding,
+      [...nested.segments, candidateSegment],
+    ));
+    if (exactCandidateSegments.length <= 1) {
+      return undefined;
+    }
+
+    return exactCandidateSegments.map((candidateSegment) => {
       const aliased = resolveExactPathAlias(
         nested.binding,
         [...nested.segments, candidateSegment],
@@ -424,6 +576,62 @@ export function visitObjectPathSourceFile(
     };
 
     visitStoredExpression(expression);
+  };
+
+  const markExactHelperReadPath = (
+    binding: TrackedObjectBinding,
+    segments: PathSegment[],
+  ): void => {
+    const collapseExactAliasPrefix = (candidate: TrackedObjectBinding): TrackedObjectBinding => {
+      let current = candidate;
+
+      while (current.prefix.length > 0) {
+        const baseBinding: TrackedObjectBinding = {
+          trackedObject: current.trackedObject,
+          prefix: [],
+        };
+        const aliased = resolveExactPathAlias(baseBinding, current.prefix, trackedObjectsById);
+        if (sameTrackedBinding(aliased.binding, baseBinding)) {
+          break;
+        }
+
+        if (aliased.viaAliasObjectId && aliased.viaAliasPath) {
+          markAliasObserved({
+            binding: aliased.binding,
+            segments: [],
+            dynamic: false,
+            viaAliasObjectId: aliased.viaAliasObjectId,
+            viaAliasPath: aliased.viaAliasPath,
+          }, trackedObjectsById);
+        }
+
+        current = aliased.binding;
+      }
+
+      return current;
+    };
+
+    let currentBinding = collapseExactAliasPrefix(binding);
+
+    for (const segment of segments) {
+      const aliased = resolveExactPathAlias(currentBinding, [segment], trackedObjectsById);
+      if (aliased.viaAliasObjectId && aliased.viaAliasPath) {
+        markAliasObserved({
+          binding: aliased.binding,
+          segments: [],
+          dynamic: false,
+          viaAliasObjectId: aliased.viaAliasObjectId,
+          viaAliasPath: aliased.viaAliasPath,
+        }, trackedObjectsById);
+      }
+
+      currentBinding = sameTrackedBinding(aliased.binding, currentBinding)
+        ? extendTrackedBinding(currentBinding, [segment])
+        : aliased.binding;
+      currentBinding = collapseExactAliasPrefix(currentBinding);
+    }
+
+    markObservedChildPaths(currentBinding.trackedObject, currentBinding.prefix, trackedObjectsById);
   };
 
   const visit = (node: ts.Node): void => {
@@ -751,6 +959,9 @@ export function visitObjectPathSourceFile(
             parameterMeaningfulUse,
             parameterSummaryCache,
           );
+          summary.exactReadPaths.forEach((readPath) => {
+            markExactHelperReadPath(extendTrackedBinding(resolved.binding, resolved.segments), readPath);
+          });
           if (collectionInfo?.kind === "array") {
             if (summary.boundaryReason) {
               recordArrayBoundary(

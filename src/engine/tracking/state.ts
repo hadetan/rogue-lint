@@ -723,7 +723,9 @@ export function markEscaped(
   trackedObject.escapedPaths.set(serializePath(segments), { category, reason });
   setPlaceState(trackedObject, segments, "escaped");
   addValueFate(trackedObject, "escaped-opaquely", segments, reason);
-  clearExactAliasesWithin(trackedObject, segments);
+  if (!(category === "opaque-object-call" && segments.length === 0)) {
+    clearExactAliasesWithin(trackedObject, segments);
+  }
 }
 
 export function getEscapedReason(trackedObject: TrackedObject, segments: PathSegment[]): EscapedPathRecord | undefined {

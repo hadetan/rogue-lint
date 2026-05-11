@@ -181,12 +181,14 @@ export type HelperParameterEffectKind =
 
 export interface HelperParameterSummary {
   effectKinds: Set<HelperParameterEffectKind>;
+  exactReadPaths: PathSegment[][];
   boundaryNode?: ts.Node;
   boundaryReason?: string;
 }
 
 export class HelperParameterSummaryState implements HelperParameterSummary {
   readonly effectKinds = new Set<HelperParameterEffectKind>();
+  readonly exactReadPaths: PathSegment[][] = [];
 
   constructor(
     public boundaryNode?: ts.Node,

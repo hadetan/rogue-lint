@@ -79,7 +79,7 @@ export function isPureObjectConstructorExpression(expression: ts.Expression): bo
   return (node.arguments ?? []).every((argument) => isStructurallySimpleExpression(argument));
 }
 
-function isStructurallySimpleExpression(expression: ts.Expression): boolean {
+export function isStructurallySimpleExpression(expression: ts.Expression): boolean {
   const node = unwrapExpression(expression);
   if (
     ts.isIdentifier(node)

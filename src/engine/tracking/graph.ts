@@ -46,6 +46,7 @@ import { isExportedVariableDeclaration } from "./semantics.js";
 import {
   ASSIGNMENT_OPERATORS,
   classifyTrackedObjectStructuralRole,
+  isStructurallySimpleExpression,
   unwrapExpression,
 } from "./syntax.js";
 import {
@@ -130,20 +131,32 @@ export function isTrackablePureExpression(expression: ts.Expression): boolean {
 }
 
 function isTrackableObjectValue(node: ts.Expression): boolean {
+  const unwrapped = unwrapExpression(node);
+
+  if (ts.isFunctionExpression(unwrapped) || ts.isArrowFunction(unwrapped)) {
+    return true;
+  }
+
+  if (
+    ts.isBinaryExpression(unwrapped)
+    && (unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      || unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken
+      || unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+  ) {
+    return isTrackableObjectValue(unwrapped.left) && isTrackableObjectValue(unwrapped.right);
+  }
+
+  if (ts.isConditionalExpression(unwrapped)) {
+    return isStructurallySimpleExpression(unwrapped.condition)
+      && isTrackableObjectValue(unwrapped.whenTrue)
+      && isTrackableObjectValue(unwrapped.whenFalse);
+  }
+
   if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
     return isTrackableObjectStructure(node);
   }
 
-  return (
-    ts.isIdentifier(node)
-    || ts.isNumericLiteral(node)
-    || ts.isStringLiteral(node)
-    || ts.isNoSubstitutionTemplateLiteral(node)
-    || node.kind === ts.SyntaxKind.TrueKeyword
-    || node.kind === ts.SyntaxKind.FalseKeyword
-    || node.kind === ts.SyntaxKind.NullKeyword
-    || node.kind === ts.SyntaxKind.BigIntLiteral
-  );
+  return isStructurallySimpleExpression(unwrapped);
 }
 
 function isTrackableReturnObjectValue(node: ts.Expression): boolean {
@@ -231,6 +244,131 @@ function getTrackableStructuredLiteralExpression(
     ? initializer
     : undefined;
 }
+function getKnownSpreadPropertyNames(expression: ts.Expression): string[] | undefined {
+  const node = unwrapExpression(expression);
+
+  if (ts.isObjectLiteralExpression(node)) {
+    const propertyNames: string[] = [];
+    for (const property of node.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        return undefined;
+      }
+
+      const propertyName = ts.isShorthandPropertyAssignment(property)
+        ? property.name.text
+        : ts.isPropertyAssignment(property) || ts.isMethodDeclaration(property)
+          ? ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+            ? property.name.text
+            : undefined
+          : undefined;
+      if (!propertyName) {
+        return undefined;
+      }
+
+      propertyNames.push(propertyName);
+    }
+
+    return propertyNames;
+  }
+
+  if (ts.isConditionalExpression(node)) {
+    const whenTrue = getKnownSpreadPropertyNames(node.whenTrue);
+    const whenFalse = getKnownSpreadPropertyNames(node.whenFalse);
+    if (!whenTrue || !whenFalse) {
+      return undefined;
+    }
+
+    return [...new Set([...whenTrue, ...whenFalse])];
+  }
+
+  if (ts.isBinaryExpression(node)) {
+    if (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+      return getKnownSpreadPropertyNames(node.right);
+    }
+
+    if (
+      node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      || node.operatorToken.kind === ts.SyntaxKind.BarBarToken
+    ) {
+      const left = getKnownSpreadPropertyNames(node.left);
+      const right = getKnownSpreadPropertyNames(node.right);
+      if (!left || !right) {
+        return undefined;
+      }
+
+      return [...new Set([...left, ...right])];
+    }
+  }
+
+  return undefined;
+}
+
+function getResolvedSpreadPropertySegments(binding: TrackedObjectBinding): PathSegment[] | undefined {
+  const collection = getCollectionInfo(binding.trackedObject, binding.prefix);
+  if (!collection || collection.kind !== "object") {
+    return undefined;
+  }
+
+  const propertySegments: PathSegment[] = [];
+  const seen = new Set<string>();
+
+  for (const childPath of collection.childPaths) {
+    if (childPath.length !== binding.prefix.length + 1) {
+      continue;
+    }
+
+    const segment = childPath[binding.prefix.length];
+    if (!segment || segment.kind !== "property") {
+      return undefined;
+    }
+
+    const key = `${segment.kind}:${segment.value}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    propertySegments.push(segment);
+  }
+
+  return propertySegments.length > 0 ? propertySegments : undefined;
+}
+
+function resolveTrackedSpreadSource(
+  project: ProjectContext,
+  expression: ts.Expression,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+) {
+  const unwrapped = unwrapExpression(expression);
+  if (ts.isCallExpression(unwrapped)) {
+    const callable = resolveAnalyzableCallableBinding(
+      project,
+      unwrapped.expression,
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    const summary = callable ? functionReturnSummaries.get(callable.symbolKey) : undefined;
+    const binding = summary ? getCallableReturnBinding(summary) : undefined;
+    if (binding) {
+      return {
+        binding,
+        segments: [],
+        dynamic: false,
+      };
+    }
+  }
+
+  return resolveTrackedObjectAccess(
+    project,
+    expression,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+}
 
 function addTrackedObjectNode(
   project: ProjectContext,
@@ -252,7 +390,19 @@ function addTrackedObjectNode(
 
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
-        markEscaped(trackedObject, segments, "object-spread", "object spread introduces opaque properties");
+        const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
+        if (!spreadPropertyNames) {
+          markEscaped(trackedObject, segments, "object-spread", "object spread introduces opaque properties");
+        } else {
+          for (const propertyName of spreadPropertyNames) {
+            markEscaped(
+              trackedObject,
+              [...segments, propertySegment(propertyName)],
+              "object-spread",
+              "object spread may overwrite this property",
+            );
+          }
+        }
         continue;
       }
 
@@ -378,7 +528,42 @@ function registerTrackedLiteralAliases(
   if (ts.isObjectLiteralExpression(node)) {
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
-        markEscaped(trackedObject, segments, "object-spread", "object spread introduces opaque properties");
+        const resolved = resolveTrackedSpreadSource(
+          project,
+          property.expression,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+        if (resolved && !resolved.dynamic) {
+          const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          const spreadSegments = getResolvedSpreadPropertySegments(spreadBinding);
+          if (spreadSegments) {
+            for (const spreadSegment of spreadSegments) {
+              registerExactPathAlias(
+                trackedObject,
+                [...segments, spreadSegment],
+                extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
+                "object spread keeps this property exact",
+              );
+            }
+            continue;
+          }
+        }
+
+        const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
+        if (!spreadPropertyNames) {
+          markEscaped(trackedObject, segments, "object-spread", "object spread introduces opaque properties");
+        } else {
+          for (const propertyName of spreadPropertyNames) {
+            markEscaped(
+              trackedObject,
+              [...segments, propertySegment(propertyName)],
+              "object-spread",
+              "object spread may overwrite this property",
+            );
+          }
+        }
         continue;
       }
 
@@ -397,6 +582,7 @@ function registerTrackedLiteralAliases(
       }
 
       const fullPath = [...segments, propertySegment(propertyName)];
+      trackedObject.exactPathAliases.delete(serializePath(fullPath));
       const initializer = ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer;
       const unwrapped = unwrapExpression(initializer);
 
@@ -1054,10 +1240,7 @@ export function buildTrackedObjects(
             functionReturnSummaries,
             trackedObjectsById,
           );
-          if (
-            analyzableCallable
-            && (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression))
-          ) {
+          if (analyzableCallable) {
             node.arguments.forEach((argument, index) => {
               const parameter = analyzableCallable.declaration.parameters[index];
               if (!parameter || !ts.isIdentifier(parameter.name)) {
