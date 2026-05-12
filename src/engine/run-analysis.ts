@@ -10,7 +10,7 @@ import { analyzeObjectPaths } from "./analyzers/object-paths.js";
 import { analyzeUnusedFiles } from "./analyzers/unused-files.js";
 import { analyzeSymbolLiveness } from "./analyzers/symbol-liveness.js";
 import { analyzeValueLiveness } from "./analyzers/value-liveness.js";
-import { collectPublicSurfaceIds } from "./analyzers/support.js";
+import { collectPublicSurface } from "./analyzers/support.js";
 import { validateFindingKindOwners } from "./finding-kind-owners.js";
 import { appendTrackingAnalysisDiagnostics } from "./tracking/diagnostics.js";
 
@@ -34,8 +34,8 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
   const graph = buildModuleGraph(project);
   const entrypointDiscovery = discoverEntrypoints(project);
   const reachableFiles = computeReachableFiles(entrypointDiscovery.entrypoints, graph);
-  const publicSurfaceIds = collectPublicSurfaceIds(project, entrypointDiscovery.publicSurfaceEntrypoints);
-  const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds);
+  const publicSurface = collectPublicSurface(project, entrypointDiscovery.publicSurfaceEntrypoints);
+  const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurface.ids, publicSurface.callableIds);
 
   state.diagnostics.push(...entrypointDiscovery.diagnostics);
   state.diagnostics.push(...graph.unresolved);

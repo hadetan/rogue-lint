@@ -47,7 +47,6 @@ export interface SuppressionContext {
  */
 export interface ProjectContext {
   rootPath: string;
-  packageJsonPath?: string;
   packageJson: Record<string, unknown> | null;
   config: ResolvedConfig;
   analyzableFiles: Set<string>;

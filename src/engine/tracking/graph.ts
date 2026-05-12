@@ -46,10 +46,8 @@ import type {
   TrackingStage,
   TrackingStageArtifacts,
 } from "./contracts.js";
-import { createContractViolation } from "./contracts.js";
 import {
   runTrackingConvergence,
-  TrackingConvergenceError,
   type TrackingConvergenceOptions,
   type TrackingConvergenceState,
 } from "./convergence.js";
@@ -776,7 +774,6 @@ export function buildTrackedObjects(
   const trackedLiteralBindings = new Map<string, TrackedObjectBinding>();
   const trackedReturnLiteralBindings = new Map<string, TrackedObjectBinding>();
   const trackedObjectsById = new Map<string, TrackedObject>();
-  const diagnostics: TrackingContractDiagnostic[] = [];
   const reachableSourceFileCount = project.sourceFiles.filter((sourceFile) => reachableFiles.has(sourceFile.fileName)).length;
 
   const createTrackedBindingForLiteral = (
@@ -1414,38 +1411,33 @@ export function buildTrackedObjects(
     };
   };
 
-  let convergenceResult;
-  try {
-    convergenceResult = runTrackingConvergence(
-      () => ({ trackedBySymbolId, functionReturnSummaries }),
-      computeNextTrackingState,
-      (nextState) => {
-        trackedBySymbolId.clear();
-        nextState.trackedBySymbolId.forEach((binding, symbolKey) => {
-          trackedBySymbolId.set(symbolKey, binding);
-        });
-        functionReturnSummaries.clear();
-        nextState.functionReturnSummaries.forEach((summary, symbolKey) => {
-          functionReturnSummaries.set(symbolKey, summary);
-        });
-      },
-      options,
-    );
-  } catch (error) {
-    if (error instanceof TrackingConvergenceError) {
-      diagnostics.push(error.diagnostic);
-    }
-    throw error;
-  }
-
-  diagnostics.push(...convergenceResult.diagnostics);
+  const convergenceResult = runTrackingConvergence(
+    () => ({ trackedBySymbolId, functionReturnSummaries }),
+    computeNextTrackingState,
+    (nextState) => {
+      trackedBySymbolId.clear();
+      nextState.trackedBySymbolId.forEach((binding, symbolKey) => {
+        trackedBySymbolId.set(symbolKey, binding);
+      });
+      functionReturnSummaries.clear();
+      nextState.functionReturnSummaries.forEach((summary, symbolKey) => {
+        functionReturnSummaries.set(symbolKey, summary);
+      });
+    },
+    options,
+  );
 
   const runtimeSummary = {
     seed: {
       reachableFileCount: reachableFiles.size,
       reachableSourceFileCount,
     },
-    convergence: convergenceResult.summary,
+    convergence: {
+      passes: convergenceResult.passes,
+      warningPassThreshold: convergenceResult.warningPassThreshold,
+      maxPasses: convergenceResult.maxPasses,
+      warned: convergenceResult.warned,
+    },
     totals: {
       trackedBindings: trackedBySymbolId.size,
       returnSummaries: functionReturnSummaries.size,
@@ -1476,43 +1468,42 @@ export function buildTrackedObjects(
     },
   };
 
-  const getStageArtifacts = <TStage extends TrackingStage>(
-    stage: TStage,
-  ): Extract<TrackingStageArtifacts, { stage: TStage }> => {
-    if (stage === "value-liveness") {
-      runtimeSummary.stageRequests["value-liveness"] += 1;
-      return {
-        stage,
-        returnSummaries: facts.returnSummaries,
-        runtimeSummary,
-      } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
-    }
+  const diagnostics: TrackingContractDiagnostic[] = [
+    ...convergenceResult.diagnostics,
+  ];
 
-    if (stage === "object-paths") {
-      runtimeSummary.stageRequests["object-paths"] += 1;
-      return {
-        stage,
-        bindings: facts.bindings,
-        returnSummaries: facts.returnSummaries,
-        aliases: facts.aliases,
-        boundaries: facts.boundaries,
-        runtimeSummary,
-      } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
-    }
-
-    const diagnostic = createContractViolation(
-      undefined,
-      `tracking stage '${stage}' is outside the declared tracking-kernel contract`,
-    );
-    diagnostics.push(diagnostic);
-    throw new Error(diagnostic.message);
-  };
-
-  return {
-    seed: runtimeSummary.seed,
-    facts,
-    runtimeSummary,
+  const runArtifacts: TrackingRunArtifacts = {
     diagnostics,
-    getStageArtifacts,
+    getStageArtifacts<TStage extends TrackingStage>(stage: TStage): Extract<TrackingStageArtifacts, { stage: TStage }> {
+      if (stage === "value-liveness") {
+        runtimeSummary.stageRequests["value-liveness"] += 1;
+        return {
+          stage,
+          returnSummaries: facts.returnSummaries,
+          runtimeSummary,
+        } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
+      }
+
+      if (stage === "object-paths") {
+        runtimeSummary.stageRequests["object-paths"] += 1;
+        return {
+          stage,
+          bindings: facts.bindings,
+          returnSummaries: facts.returnSummaries,
+          aliases: facts.aliases,
+          boundaries: facts.boundaries,
+          runtimeSummary,
+        } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
+      }
+
+      const diagnostic: TrackingContractDiagnostic = {
+        code: "contract-violation",
+        message: `tracking stage '${stage}' is outside the declared tracking-kernel contract`,
+      };
+      diagnostics.push(diagnostic);
+      throw new Error(diagnostic.message);
+    },
   };
+
+  return runArtifacts;
 }

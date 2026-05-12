@@ -12,6 +12,7 @@ import type {
 
 export interface AnalysisArtifacts {
   publicSurfaceIds: Set<string>;
+  publicCallableIds: Set<string>;
   referenceCaches: ReferenceCaches;
   getSemanticDiagnostics(sourceFile: ts.SourceFile): readonly ts.Diagnostic[];
   getTrackingRunArtifacts(): TrackingRunArtifacts;
@@ -22,6 +23,7 @@ export function createAnalysisArtifacts(
   project: ProjectContext,
   reachableFiles: Set<string>,
   publicSurfaceIds: Set<string>,
+  publicCallableIds: Set<string> = new Set<string>(),
   trackingConvergenceOptions?: TrackingConvergenceOptions,
 ): AnalysisArtifacts {
   const semanticDiagnosticsByFile = new Map<string, readonly ts.Diagnostic[]>();
@@ -41,6 +43,7 @@ export function createAnalysisArtifacts(
 
   return {
     publicSurfaceIds,
+    publicCallableIds,
     referenceCaches,
     getSemanticDiagnostics(sourceFile: ts.SourceFile): readonly ts.Diagnostic[] {
       const cached = semanticDiagnosticsByFile.get(sourceFile.fileName);

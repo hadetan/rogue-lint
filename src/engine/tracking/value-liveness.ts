@@ -88,10 +88,7 @@ export function analyzeValueLiveness(
   artifacts: AnalysisArtifacts,
 ): void {
   const stageContext = createValueLivenessStageContext(
-    project,
     reachableFiles,
-    state,
-    suppressionContext,
     artifacts,
   );
   const {

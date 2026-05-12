@@ -53,6 +53,7 @@ export interface ObjectPathSourceFileContext {
 export interface ObjectPathStageContext {
   project: ProjectContext;
   reachableFiles: Set<string>;
+  publicCallableIds: Set<string>;
   state: AnalysisState;
   suppressionContext: SuppressionContext;
   trackedBySymbolId: Map<string, TrackedObjectBinding>;
@@ -74,6 +75,7 @@ export function createObjectPathStageContext(
   return {
     project,
     reachableFiles,
+    publicCallableIds: artifacts.publicCallableIds,
     state,
     suppressionContext,
     trackedBySymbolId: trackingStageArtifacts.bindings.bySymbolId,

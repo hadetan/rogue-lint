@@ -39,29 +39,20 @@ type TrackingBoundarySurface = {
   readonly trackedObjectsById: Map<string, TrackedObject>;
 };
 
-export type TrackingConvergenceSummary = {
-  passes: number;
-  warningPassThreshold: number;
-  maxPasses: number;
-  warned: boolean;
-};
-
 type TrackingRuntimeSummary = {
   seed: TrackingSeedPhaseArtifacts;
-  convergence: TrackingConvergenceSummary;
+  convergence: {
+    passes: number;
+    warningPassThreshold: number;
+    maxPasses: number;
+    warned: boolean;
+  };
   totals: {
     trackedBindings: number;
     returnSummaries: number;
     trackedObjects: number;
   };
   stageRequests: Record<TrackingStage, number>;
-};
-
-type TrackingFacts = {
-  bindings: TrackingBindingsSurface;
-  returnSummaries: TrackingReturnSummarySurface;
-  aliases: TrackingAliasSurface;
-  boundaries: TrackingBoundarySurface;
 };
 
 type ValueLivenessTrackingStageArtifacts = {
@@ -82,20 +73,9 @@ type ObjectPathTrackingStageArtifacts = {
 export type TrackingStageArtifacts = ValueLivenessTrackingStageArtifacts | ObjectPathTrackingStageArtifacts;
 
 export type TrackingRunArtifacts = {
-  seed: TrackingSeedPhaseArtifacts;
-  facts: TrackingFacts;
-  runtimeSummary: TrackingRuntimeSummary;
   diagnostics: readonly TrackingContractDiagnostic[];
   getStageArtifacts<TStage extends TrackingStage>(stage: TStage): Extract<TrackingStageArtifacts, { stage: TStage }>;
 };
-
-export function createContractViolation(stage: TrackingStage | undefined, message: string): TrackingContractDiagnostic {
-  return {
-    code: "contract-violation",
-    message,
-    stage,
-  };
-}
 
 export function createConvergenceWarning(message: string): TrackingContractDiagnostic {
   return {

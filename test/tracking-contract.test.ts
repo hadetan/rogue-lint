@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { createAnalysisArtifacts } from "../src/engine/analysis-artifacts.js";
 import { createAnalysisState } from "../src/engine/analysis-state.js";
-import { collectPublicSurfaceIds } from "../src/engine/analyzers/support.js";
+import { collectPublicSurface } from "../src/engine/analyzers/support.js";
 import { createObjectPathStageContext } from "../src/engine/tracking/object-paths/context.js";
 import { extractFinitePropertyUnionSegments } from "../src/engine/tracking/object-paths/policy.js";
 import { createValueLivenessStageContext } from "../src/engine/tracking/value-liveness-context.js";
@@ -28,11 +28,13 @@ function createProjectContext(name: string) {
   });
   const entrypointDiscovery = discoverEntrypoints(project);
   const reachableFiles = computeReachableFiles(entrypointDiscovery.entrypoints, buildModuleGraph(project));
+  const publicSurface = collectPublicSurface(project, entrypointDiscovery.publicSurfaceEntrypoints);
 
   return {
     project,
     reachableFiles,
-    publicSurfaceIds: collectPublicSurfaceIds(project, entrypointDiscovery.publicSurfaceEntrypoints),
+    publicSurfaceIds: publicSurface.ids,
+    publicCallableIds: publicSurface.callableIds,
   };
 }
 
@@ -77,19 +79,18 @@ function findElementAccessExpression(
 
 describe("tracking kernel contract", () => {
   it("exposes run-scoped and stage-scoped tracking artifacts", () => {
-    const { project, reachableFiles, publicSurfaceIds } = createProjectContext("app-basic");
-    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds);
+    const { project, reachableFiles, publicSurfaceIds, publicCallableIds } = createProjectContext("app-basic");
+    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, publicCallableIds);
     const runArtifacts = artifacts.getTrackingRunArtifacts();
+    const initialValueStage = runArtifacts.getStageArtifacts("value-liveness");
 
-    expect(runArtifacts.seed.reachableFileCount).toBeGreaterThan(0);
-    expect(runArtifacts.seed.reachableSourceFileCount).toBeGreaterThan(0);
-    expect(runArtifacts.runtimeSummary.stageRequests["value-liveness"]).toBe(0);
-    expect(runArtifacts.runtimeSummary.stageRequests["object-paths"]).toBe(0);
+    expect(initialValueStage.runtimeSummary.seed.reachableFileCount).toBeGreaterThan(0);
+    expect(initialValueStage.runtimeSummary.seed.reachableSourceFileCount).toBeGreaterThan(0);
 
     const valueStage = artifacts.getTrackingStageArtifacts("value-liveness");
     expect(valueStage.returnSummaries.owner).toBe("return-summary-convergence");
     expect("bindings" in valueStage).toBe(false);
-    expect(valueStage.runtimeSummary.stageRequests["value-liveness"]).toBe(1);
+    expect(valueStage.runtimeSummary.stageRequests["value-liveness"]).toBe(2);
     expect(valueStage.runtimeSummary.stageRequests["object-paths"]).toBe(0);
 
     const objectPathStage = artifacts.getTrackingStageArtifacts("object-paths");
@@ -104,18 +105,19 @@ describe("tracking kernel contract", () => {
     const runArtifacts = buildTrackedObjects(project, reachableFiles, {
       warningPassThreshold: 1,
     });
+    const runtimeSummary = runArtifacts.getStageArtifacts("value-liveness").runtimeSummary;
 
-    expect(runArtifacts.runtimeSummary.convergence.passes).toBeGreaterThanOrEqual(1);
-    expect(runArtifacts.runtimeSummary.convergence.warned).toBe(true);
+    expect(runtimeSummary.convergence.passes).toBeGreaterThanOrEqual(1);
+    expect(runtimeSummary.convergence.warned).toBe(true);
     expect(runArtifacts.diagnostics.some((diagnostic) => diagnostic.code === "convergence-warning")).toBe(true);
   });
 
   it("fails explicitly when the convergence budget is exceeded", () => {
     const { project, reachableFiles } = createProjectContext("returned-object-basic");
     const baseline = buildTrackedObjects(project, reachableFiles);
-    const guardLimit = baseline.runtimeSummary.convergence.passes - 1;
+    const guardLimit = baseline.getStageArtifacts("value-liveness").runtimeSummary.convergence.passes - 1;
 
-    expect(baseline.runtimeSummary.convergence.passes).toBeGreaterThan(1);
+    expect(baseline.getStageArtifacts("value-liveness").runtimeSummary.convergence.passes).toBeGreaterThan(1);
     expect(() =>
       buildTrackedObjects(project, reachableFiles, {
         maxPasses: guardLimit,
@@ -134,8 +136,8 @@ describe("tracking kernel contract", () => {
   });
 
   it("keeps stage-local source-file bookkeeping isolated from shared tracking facts", () => {
-    const { project, reachableFiles, publicSurfaceIds } = createProjectContext("app-basic");
-    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds);
+    const { project, reachableFiles, publicSurfaceIds, publicCallableIds } = createProjectContext("app-basic");
+    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, publicCallableIds);
     const state = createAnalysisState();
     const suppressionContext = buildSuppressionContext(project);
     const reachableSourceFiles = project.sourceFiles.filter((sourceFile) => reachableFiles.has(sourceFile.fileName));
@@ -165,10 +167,7 @@ describe("tracking kernel contract", () => {
     expect(objectPathStage.trackedBySymbolId).toBe(artifacts.getTrackingStageArtifacts("object-paths").bindings.bySymbolId);
 
     const valueLivenessStage = createValueLivenessStageContext(
-      project,
       reachableFiles,
-      state,
-      suppressionContext,
       artifacts,
     );
     const valueFileA = valueLivenessStage.createSourceFileContext(reachableSourceFiles[0]);
@@ -184,6 +183,22 @@ describe("tracking kernel contract", () => {
     expect(valueLivenessStage.functionReturnSummaries).toBe(
       artifacts.getTrackingStageArtifacts("value-liveness").returnSummaries.byCallableId,
     );
+  });
+
+  it("keeps the value-liveness stage context surface narrow", () => {
+    const { project, reachableFiles, publicSurfaceIds, publicCallableIds } = createProjectContext("app-basic");
+    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, publicCallableIds);
+
+    const valueLivenessStage = createValueLivenessStageContext(
+      reachableFiles,
+      artifacts,
+    );
+
+    expect(Object.keys(valueLivenessStage).sort()).toEqual([
+      "createSourceFileContext",
+      "functionReturnSummaries",
+      "reachableFiles",
+    ]);
   });
 
   it("keeps locale-format recovery in the dedicated policy seam", () => {
@@ -208,8 +223,8 @@ describe("tracking kernel contract", () => {
   });
 
   it("adapts tracking warnings into analysis-facing diagnostics while keeping runtime summaries internal", () => {
-    const { project, reachableFiles, publicSurfaceIds } = createProjectContext("app-basic");
-    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, {
+    const { project, reachableFiles, publicSurfaceIds, publicCallableIds } = createProjectContext("app-basic");
+    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, publicCallableIds, {
       warningPassThreshold: 1,
     });
     const state = createAnalysisState();
@@ -220,6 +235,6 @@ describe("tracking kernel contract", () => {
       kind: "project-warning",
       message: expect.stringContaining("tracking warning:"),
     }));
-    expect(artifacts.getTrackingRunArtifacts().runtimeSummary.convergence.warned).toBe(true);
+    expect(artifacts.getTrackingStageArtifacts("value-liveness").runtimeSummary.convergence.warned).toBe(true);
   });
 });

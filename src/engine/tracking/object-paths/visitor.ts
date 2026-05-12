@@ -4,7 +4,7 @@ import type {
   PathSegment,
   TrackedObject,
 } from "../../../types.js";
-import { getSymbolKey, hasModifier, isReadLikeUse } from "../../../compiler/ast-utils.js";
+import { getSymbolKey, isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
 import {
   getAccessPath,
@@ -47,7 +47,6 @@ import {
   WHOLE_ARRAY_CONSUMPTION_METHODS,
   buildHelperBoundaryReason,
   classifySupportedCallArgumentUse,
-  isExportedVariableDeclaration,
   summarizeHelperParameterUse,
 } from "../semantics.js";
 import { unwrapExpression } from "../syntax.js";
@@ -92,6 +91,7 @@ export function visitObjectPathSourceFile(
 ): void {
   const {
     project,
+    publicCallableIds,
     trackedBySymbolId,
     functionReturnSummaries,
     trackedObjectsById,
@@ -165,40 +165,22 @@ export function visitObjectPathSourceFile(
       : undefined;
   };
 
-  const isPublicLibraryCallable = (declaration: ts.FunctionLikeDeclaration): boolean => {
-    if (project.config.value.mode !== "library") {
-      return false;
-    }
-
-    if (ts.isFunctionDeclaration(declaration)) {
-      return hasModifier(declaration, ts.SyntaxKind.ExportKeyword);
-    }
-
-    if (
-      ts.isMethodDeclaration(declaration)
-      || ts.isGetAccessorDeclaration(declaration)
-      || ts.isSetAccessorDeclaration(declaration)
-    ) {
-      const parent = declaration.parent;
-      return ts.isClassDeclaration(parent)
-        && hasModifier(parent, ts.SyntaxKind.ExportKeyword)
-        && !hasModifier(declaration, ts.SyntaxKind.PrivateKeyword)
-        && !hasModifier(declaration, ts.SyntaxKind.ProtectedKeyword);
-    }
-
-    return (ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
-      && ts.isVariableDeclaration(declaration.parent)
-      && isExportedVariableDeclaration(declaration.parent);
-  };
-
   const getPublicReturnBinding = (node: ts.Node): TrackedObjectBinding | undefined => {
+    if (project.config.value.mode !== "library") {
+      return undefined;
+    }
+
     const enclosingFunction = ts.findAncestor(node, (candidate): candidate is ts.FunctionLikeDeclaration => ts.isFunctionLike(candidate));
-    if (!enclosingFunction || !isPublicLibraryCallable(enclosingFunction)) {
+    if (!enclosingFunction) {
       return undefined;
     }
 
     const callable = getAnalyzableCallableBindingFromDeclaration(project, enclosingFunction);
-    return callable ? getCallableReturnBinding(functionReturnSummaries.get(callable.symbolKey)) : undefined;
+    if (!callable || !publicCallableIds.has(callable.symbolKey)) {
+      return undefined;
+    }
+
+    return getCallableReturnBinding(functionReturnSummaries.get(callable.symbolKey));
   };
 
   const isExactStructuredReturnExpression = (

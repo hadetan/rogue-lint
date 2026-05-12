@@ -1,0 +1,6 @@
+{
+  "name": "library-public-return-surface-basic",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

@@ -1504,6 +1504,48 @@ describe("rogue-lint analyzer", () => {
     expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "fieldErrors")).toBe(false);
   });
 
+  it("reports unread returned keys for exported helpers outside the package surface in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-public-return-surface-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "internalCarrier()"
+      && finding.entity.name === "stale"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "internalCarrier()"
+      && finding.entity.name === "keep"
+    )).toBe(false);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("keeps re-exported public callable return fields preserved in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-public-return-surface-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "publicCarrier()"
+      && finding.entity.name === "hidden"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "publicCarrier()"
+      && finding.entity.name === "live"
+    )).toBe(false);
+    expect(result.skipped).toHaveLength(0);
+  });
+
   it("tracks direct returned literals for whole-result and nested structured usage", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),

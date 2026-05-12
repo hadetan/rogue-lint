@@ -163,7 +163,6 @@ export function loadProject(options: AnalysisOptions): ProjectContext {
 
   return {
     rootPath,
-    packageJsonPath: packageJson.path,
     packageJson: packageJson.value,
     config,
     analyzableFiles,

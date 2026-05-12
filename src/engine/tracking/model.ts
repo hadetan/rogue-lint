@@ -68,7 +68,6 @@ export type CallableReturnSummary =
   | { kind: "opaque" };
 
 export interface ForwardedParameterBinding {
-  index: number;
   paramSymbolKey: string;
   binding: TrackedObjectBinding;
 }
@@ -157,6 +156,8 @@ export const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
   "callablePurity",
   "candidates",
   "cleanup",
+  "code",
+  "convergence",
   "directoryExists",
   "elementBindings",
   "elementPaths",
@@ -190,6 +191,7 @@ export const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
   "mustNotFind",
   "mustNotSkip",
   "mustSkip",
+  "passes",
   "name",
   "observeSourceAtInsert",
   "objectAnalysis",
@@ -211,6 +213,9 @@ export const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
   "to",
   "totals",
   "trackedObject",
+  "warned",
+  "warningPassThreshold",
+  "maxPasses",
 ]);
 
 export const STRUCTURAL_STATE_FIELD_NAMES = new Set([

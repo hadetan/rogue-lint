@@ -1418,7 +1418,6 @@ export function getForwardedParameterBindings(
     }
 
     forwarded.push({
-      index,
       paramSymbolKey: getSymbolKey(parameterSymbol),
       binding: extendTrackedBinding(resolved.binding, resolved.segments),
     });

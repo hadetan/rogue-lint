@@ -14,6 +14,37 @@ export interface ReferenceCaches {
   usage: Map<string, ReturnType<typeof summarizeReferenceUsage>>;
 }
 
+interface PublicSurface {
+  ids: Set<string>;
+  callableIds: Set<string>;
+}
+
+function getCanonicalPublicSurfaceSymbol(project: ProjectContext, symbol: ts.Symbol): ts.Symbol {
+  let current = symbol;
+  const visited = new Set<string>();
+
+  while (current.flags & ts.SymbolFlags.Alias) {
+    const symbolKey = getSymbolKey(current);
+    if (visited.has(symbolKey)) {
+      break;
+    }
+    visited.add(symbolKey);
+
+    const aliased = project.checker.getAliasedSymbol(current);
+    if (!aliased || aliased === current) {
+      break;
+    }
+
+    current = aliased;
+  }
+
+  return current;
+}
+
+function getCanonicalPublicSurfaceSymbolKey(project: ProjectContext, symbol: ts.Symbol): string {
+  return getSymbolKey(getCanonicalPublicSurfaceSymbol(project, symbol));
+}
+
 function isExternallyVisibleClassMember(member: ts.ClassElement): boolean {
   if (!member.name) {
     return false;
@@ -72,7 +103,62 @@ function addEnumMemberIds(project: ProjectContext, ids: Set<string>, declaration
   }
 }
 
-function addClassMemberIds(project: ProjectContext, ids: Set<string>, declaration: ts.ClassDeclaration, owner: string): void {
+function addCallableIdFromDeclaration(
+  project: ProjectContext,
+  callableIds: Set<string>,
+  declaration: ts.Declaration,
+): void {
+  if (ts.isFunctionDeclaration(declaration) && declaration.name) {
+    const symbol = project.checker.getSymbolAtLocation(declaration.name);
+    if (symbol) {
+      callableIds.add(getCanonicalPublicSurfaceSymbolKey(project, symbol));
+    }
+    return;
+  }
+
+  if (
+    (ts.isMethodDeclaration(declaration)
+      || ts.isGetAccessorDeclaration(declaration)
+      || ts.isSetAccessorDeclaration(declaration))
+    && !ts.isPrivateIdentifier(declaration.name)
+  ) {
+    const symbol = project.checker.getSymbolAtLocation(declaration.name);
+    if (symbol) {
+      callableIds.add(getCanonicalPublicSurfaceSymbolKey(project, symbol));
+    }
+    return;
+  }
+
+  if (
+    ts.isVariableDeclaration(declaration)
+    && ts.isIdentifier(declaration.name)
+    && declaration.initializer
+    && (
+      ts.isFunctionExpression(declaration.initializer)
+      || ts.isArrowFunction(declaration.initializer)
+      || (
+        ts.isConditionalExpression(declaration.initializer)
+        && (
+          ts.isFunctionExpression(declaration.initializer.whenFalse)
+          || ts.isArrowFunction(declaration.initializer.whenFalse)
+        )
+      )
+    )
+  ) {
+    const symbol = project.checker.getSymbolAtLocation(declaration.name);
+    if (symbol) {
+      callableIds.add(getCanonicalPublicSurfaceSymbolKey(project, symbol));
+    }
+  }
+}
+
+function addClassMemberIds(
+  project: ProjectContext,
+  ids: Set<string>,
+  callableIds: Set<string>,
+  declaration: ts.ClassDeclaration,
+  owner: string,
+): void {
   for (const member of declaration.members) {
     const memberNameNode = getDeclarationNameNode(member);
     const memberName = getNodeName(member);
@@ -90,10 +176,18 @@ function addClassMemberIds(project: ProjectContext, ids: Set<string>, declaratio
         owner,
       ).id,
     );
+
+    addCallableIdFromDeclaration(project, callableIds, member);
   }
 }
 
-function addDeclarationIds(project: ProjectContext, ids: Set<string>, declaration: ts.Declaration, name: string): void {
+function addDeclarationIds(
+  project: ProjectContext,
+  ids: Set<string>,
+  callableIds: Set<string>,
+  declaration: ts.Declaration,
+  name: string,
+): void {
   const nameNode = getDeclarationNameNode(declaration);
   if (!nameNode) {
     return;
@@ -107,7 +201,7 @@ function addDeclarationIds(project: ProjectContext, ids: Set<string>, declaratio
   }
 
   if (ts.isClassDeclaration(declaration)) {
-    addClassMemberIds(project, ids, declaration, name);
+    addClassMemberIds(project, ids, callableIds, declaration, name);
   }
 }
 
@@ -227,15 +321,14 @@ function collectFactoryPrototypeClassDeclarations(
   return [...classes.values()];
 }
 
-function collectPublicSurfaceIdsFromSymbol(
+function collectPublicSurfaceFromSymbol(
   project: ProjectContext,
   ids: Set<string>,
+  callableIds: Set<string>,
   symbol: ts.Symbol,
   visited: Set<string>,
 ): void {
-  const underlying = symbol.flags & ts.SymbolFlags.Alias
-    ? project.checker.getAliasedSymbol(symbol)
-    : symbol;
+  const underlying = getCanonicalPublicSurfaceSymbol(project, symbol);
   const symbolKey = getSymbolKey(underlying);
   if (visited.has(symbolKey)) {
     return;
@@ -247,7 +340,8 @@ function collectPublicSurfaceIdsFromSymbol(
     const name = getNodeName(declaration);
     if (name) {
       visitedNamedDeclaration = true;
-      addDeclarationIds(project, ids, declaration, name);
+      addDeclarationIds(project, ids, callableIds, declaration, name);
+      addCallableIdFromDeclaration(project, callableIds, declaration);
 
       if (ts.isVariableDeclaration(declaration)) {
         for (const linkedClass of collectFactoryPrototypeClassDeclarations(project, declaration)) {
@@ -255,8 +349,12 @@ function collectPublicSurfaceIdsFromSymbol(
           if (!linkedClassName) {
             continue;
           }
-          addClassMemberIds(project, ids, linkedClass, linkedClassName);
+          addClassMemberIds(project, ids, callableIds, linkedClass, linkedClassName);
         }
+      }
+
+      if (ts.isClassDeclaration(declaration)) {
+        addClassMemberIds(project, ids, callableIds, declaration, name);
       }
     }
   }
@@ -267,22 +365,18 @@ function collectPublicSurfaceIdsFromSymbol(
 
   const moduleExports = project.checker.getExportsOfModule(underlying);
   for (const exportedSymbol of moduleExports) {
-    collectPublicSurfaceIdsFromSymbol(project, ids, exportedSymbol, visited);
+    collectPublicSurfaceFromSymbol(project, ids, callableIds, exportedSymbol, visited);
   }
 }
 
-/**
- * Collects exported entity ids that should be preserved in library mode as package-facing surface.
- *
- * Only package entrypoints participate here. Bin roots remain reachable roots, but their exports are not
- * automatically promoted to public API.
- */
-export function collectPublicSurfaceIds(project: ProjectContext, entrypoints: string[]): Set<string> {
+export function collectPublicSurface(project: ProjectContext, entrypoints: string[]): PublicSurface {
+  const ids = new Set<string>();
+  const callableIds = new Set<string>();
+
   if (project.config.value.mode !== "library") {
-    return new Set<string>();
+    return { ids, callableIds };
   }
 
-  const ids = new Set<string>();
   const visitedSymbols = new Set<string>();
 
   for (const entrypoint of entrypoints) {
@@ -297,11 +391,11 @@ export function collectPublicSurfaceIds(project: ProjectContext, entrypoints: st
     }
 
     for (const exportedSymbol of project.checker.getExportsOfModule(moduleSymbol)) {
-      collectPublicSurfaceIdsFromSymbol(project, ids, exportedSymbol, visitedSymbols);
+      collectPublicSurfaceFromSymbol(project, ids, callableIds, exportedSymbol, visitedSymbols);
     }
   }
 
-  return ids;
+  return { ids, callableIds };
 }
 
 /**

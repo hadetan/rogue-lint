@@ -5,7 +5,6 @@ import {
   createConvergenceGuardExceeded,
   createConvergenceWarning,
   type TrackingContractDiagnostic,
-  type TrackingConvergenceSummary,
 } from "./contracts.js";
 
 export type TrackingConvergenceState = {
@@ -19,11 +18,14 @@ export type TrackingConvergenceOptions = {
 };
 
 type TrackingConvergenceResult = {
-  summary: TrackingConvergenceSummary;
+  passes: number;
+  warningPassThreshold: number;
+  maxPasses: number;
+  warned: boolean;
   diagnostics: TrackingContractDiagnostic[];
 };
 
-export class TrackingConvergenceError extends Error {
+class TrackingConvergenceError extends Error {
   readonly diagnostic: TrackingContractDiagnostic;
 
   constructor(message: string) {
@@ -82,12 +84,10 @@ export function runTrackingConvergence(
 
     if (!changed) {
       return {
-        summary: {
-          passes,
-          warningPassThreshold: normalized.warningPassThreshold,
-          maxPasses: normalized.maxPasses,
-          warned,
-        },
+        passes,
+        warningPassThreshold: normalized.warningPassThreshold,
+        maxPasses: normalized.maxPasses,
+        warned,
         diagnostics,
       };
     }
