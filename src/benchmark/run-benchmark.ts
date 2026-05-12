@@ -101,7 +101,6 @@ async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManif
     const result = await analyzeProject({
       cwd: workspaceRoot,
       targetPath,
-      format: "json",
       configPath,
       mode: manifest.config.mode,
     });

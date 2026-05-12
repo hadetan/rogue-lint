@@ -18,18 +18,9 @@ function normalizeFinding(entry: { kind: string; entity: { name: string; locatio
   return `-:${entry.kind}:${entry.entity.location?.file ?? "-"}:${entry.entity.location?.line ?? 0}:${entry.entity.name}`;
 }
 
-const EXPECTED_SELF_HOST_FINDINGS: string[] = [
-  "-:unused-array-element:src/engine/tracking/object-paths/visitor.ts:120:[0]",
-  "-:unused-array-element:src/engine/tracking/object-paths/visitor.ts:637:[0]",
-  "-:unused-array-element:src/engine/tracking/semantics.ts:193:[0]",
-  "-:unused-object-key:src/benchmark/run-benchmark.ts:104:format",
-];
+const EXPECTED_SELF_HOST_FINDINGS: string[] = [];
 
-const EXPECTED_SELF_HOST_SKIPS: string[] = [
-  "array-callback-escape:collection-boundary:src/engine/tracking/semantics.ts:834:getExactHelperReadPaths()",
-  "returned-object:array-element:src/engine/tracking/graph.ts:269:[0]",
-  "returned-object:array-element:src/engine/tracking/semantics.ts:198:[0]",
-];
+const EXPECTED_SELF_HOST_SKIPS: string[] = [];
 const RETURNED_CONTEXT_USED_FIELD_NAMES = ["processors", "seen"];
 const OPAQUE_CALLBACK_USED_FIELD_NAMES = ["seen"];
 
@@ -1109,7 +1100,6 @@ describe("rogue-lint analyzer", () => {
     )).toBe(true);
   });
 
-
   it("preserves nested locale child paths after finite keyed lookup through optional chaining", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1478,7 +1468,47 @@ describe("rogue-lint analyzer", () => {
     ).toBe(false);
   });
 
-  it("enforces the normalized self-host library-mode trusted residual surface", async () => {
+  it("does not surface helper bookkeeping residuals during self-host analysis", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: process.cwd(),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.location.file === "src/engine/tracking/object-paths/visitor.ts"
+      && [120, 637].includes(finding.entity.location.line)
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.location.file === "src/engine/tracking/semantics.ts"
+      && finding.entity.location.line === 193
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.location.file === "src/benchmark/run-benchmark.ts"
+      && finding.entity.location.line === 104
+      && finding.entity.name === "format"
+    )).toBe(false);
+    expect(result.skipped.some((entry) =>
+      entry.category === "array-callback-escape"
+      && entry.location?.file === "src/engine/tracking/semantics.ts"
+      && entry.location.line === 834
+      && entry.name === "getExactHelperReadPaths()"
+    )).toBe(false);
+    expect(result.skipped.some((entry) =>
+      entry.category === "returned-object"
+      && ((entry.location?.file === "src/engine/tracking/graph.ts" && entry.location.line === 269)
+        || (entry.location?.file === "src/engine/tracking/semantics.ts" && entry.location.line === 198))
+      && entry.name === "[0]"
+    )).toBe(false);
+  }, 15000);
+
+  it("enforces the normalized self-host library-mode zero-gap surface", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
       targetPath: process.cwd(),

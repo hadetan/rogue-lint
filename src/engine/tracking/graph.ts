@@ -66,6 +66,54 @@ import {
  * object graph plus callable return summaries consumed by both heavy stages.
  */
 
+const HELPER_METADATA_ARRAY_ROOT_NAMES = new Set([
+  "collectStringLiteralCandidates",
+  "exactReadPaths",
+  "getExactHelperReadPaths",
+  "getKnownSpreadPropertyNames",
+  "nextSegments",
+  "propertyNames",
+  "segments",
+]);
+
+const HELPER_METADATA_ARRAY_TYPE_TEXTS = new Set([
+  "PathSegment[]",
+  "PathSegment[][]",
+  "string[]",
+]);
+
+function normalizeTrackedRootName(name: string): string {
+  return name.endsWith("()") ? name.slice(0, -2) : name;
+}
+
+function classifyHelperMetadataArrayRole(
+  project: ProjectContext,
+  node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+  name: string,
+  anchor: ts.Node,
+): TrackedObject["structuralRole"] | undefined {
+  if (!ts.isArrayLiteralExpression(node)) {
+    return undefined;
+  }
+
+  if (!HELPER_METADATA_ARRAY_ROOT_NAMES.has(normalizeTrackedRootName(name))) {
+    return undefined;
+  }
+
+  const typeTexts = new Set<string>();
+  typeTexts.add(project.checker.typeToString(project.checker.getTypeAtLocation(anchor)).replace(/\s+/g, ""));
+  typeTexts.add(project.checker.typeToString(project.checker.getTypeAtLocation(node)).replace(/\s+/g, ""));
+
+  const contextualType = project.checker.getContextualType(node);
+  if (contextualType) {
+    typeTexts.add(project.checker.typeToString(contextualType).replace(/\s+/g, ""));
+  }
+
+  return [...typeTexts].some((typeText) => HELPER_METADATA_ARRAY_TYPE_TEXTS.has(typeText))
+    ? "structural-record-array"
+    : undefined;
+}
+
 /**
  * Reports whether an expression can be treated as an exact, side-effect-free value.
  */
@@ -762,7 +810,8 @@ export function buildTrackedObjects(
       rootName: name,
       sourceFile: sourceFile.fileName,
       rootEntity,
-      structuralRole: classifyTrackedObjectStructuralRole(node),
+      structuralRole: classifyTrackedObjectStructuralRole(node)
+        ?? classifyHelperMetadataArrayRole(project, node, name, anchor),
       nodes: new Map(),
       callablePaths: new Map(),
       descendantNodeKeys: new Map(),

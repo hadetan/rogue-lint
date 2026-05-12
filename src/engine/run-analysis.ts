@@ -1,7 +1,7 @@
 import { buildModuleGraph, computeReachableFiles, discoverEntrypoints } from "../module-graph.js";
 import { loadProject } from "../project.js";
 import { buildSuppressionContext } from "../suppressions.js";
-import type { AnalysisResult, CliOptions, FindingKind } from "../types.js";
+import type { AnalysisOptions, AnalysisResult, FindingKind } from "../types.js";
 import { getVersion, uniqueById } from "../shared/general-utils.js";
 import { createAnalysisState } from "./analysis-state.js";
 import { analyzeClassMembers } from "./analyzers/class-members.js";
@@ -25,8 +25,8 @@ interface AnalysisStage {
  * Analyzer-specific logic stays in stage modules so this entrypoint remains the only place that owns
  * execution order, shared caches, and final deduplication of findings, kept audits, skips, and diagnostics.
  */
-export async function analyzeProject(cliOptions: CliOptions): Promise<AnalysisResult> {
-  const project = loadProject(cliOptions);
+export async function analyzeProject(options: AnalysisOptions): Promise<AnalysisResult> {
+  const project = loadProject(options);
   const state = createAnalysisState();
   const suppressionContext = buildSuppressionContext(project);
   const graph = buildModuleGraph(project);
