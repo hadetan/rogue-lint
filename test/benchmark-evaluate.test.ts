@@ -56,6 +56,7 @@ describe("benchmark expectation evaluation", () => {
         mustFind: [],
         mustNotFind: [],
         mustSkip: [],
+        mustNotSkip: [],
         mustDiagnose: [],
         mustNotDiagnose: [],
         acceptedFindings: [
@@ -99,6 +100,7 @@ describe("benchmark expectation evaluation", () => {
         mustFind: [],
         mustNotFind: [],
         mustSkip: [],
+        mustNotSkip: [],
         mustDiagnose: [
           {
             label: "diagnostic anchor",
@@ -133,6 +135,7 @@ describe("benchmark expectation evaluation", () => {
         mustFind: [],
         mustNotFind: [],
         mustSkip: [],
+        mustNotSkip: [],
         mustDiagnose: [
           {
             label: "diagnostic anchor",
@@ -182,6 +185,7 @@ describe("benchmark expectation evaluation", () => {
         ],
         mustNotFind: [],
         mustSkip: [],
+        mustNotSkip: [],
         mustDiagnose: [],
         mustNotDiagnose: [],
         acceptedFindings: [],
@@ -191,6 +195,38 @@ describe("benchmark expectation evaluation", () => {
 
     expect(evaluation.contract.incomplete).toBe(false);
     expect(evaluation.required.mustFind.missing).toHaveLength(1);
+    expect(evaluation.failed).toBe(true);
+  });
+
+  it("fails negative skip anchors when a forbidden conservative skip is still present", () => {
+    const evaluation = evaluateBenchmarkExpectations(
+      [],
+      [createSkip()],
+      [],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [
+          {
+            label: "computed property skip must be gone",
+            category: "computed-property-access",
+            file: "src/example.ts",
+            name: "value",
+            maxCount: 0,
+          },
+        ],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    expect(evaluation.contract.incomplete).toBe(false);
+    expect(evaluation.required.mustNotSkip.violations).toHaveLength(1);
+    expect(evaluation.required.mustNotSkip.violations[0]?.actualCount).toBe(1);
+    expect(evaluation.unexpected.skips).toHaveLength(0);
     expect(evaluation.failed).toBe(true);
   });
 });

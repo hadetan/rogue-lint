@@ -252,7 +252,7 @@ function isSupportedExactAppendValue(argument: ts.Expression): boolean {
   );
 }
 
-function tryRegisterExactArrayInsertion(
+export function tryRegisterExactArrayInsertion(
   project: ProjectContext,
   trackedObject: TrackedObject,
   sourceFile: ts.SourceFile,

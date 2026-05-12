@@ -70,6 +70,7 @@ Each manifest can define:
 - optional `targetPath`
 - optional analyzer config overrides such as `mode`, `include`, `exclude`, `entrypoints`, and `hiddenRoots`
 - `mustFind`, `mustNotFind`, `mustSkip`, `mustDiagnose`, `mustNotDiagnose`
+- `mustNotSkip`
 - `acceptedFindings`, `knownSkips`
 - optional count bounds on expectation matchers via `minCount` and `maxCount`
 
@@ -87,10 +88,11 @@ The current suite is still missing:
 
 Required expectations determine benchmark success. A target with no required expectations is treated as an incomplete benchmark contract and does not count as a trusted pass.
 
-In the checked-in real-world suite, `mustFind`, `mustNotFind`, and `mustSkip` are the active contract:
+In the checked-in real-world suite, `mustFind`, `mustNotFind`, `mustSkip`, and `mustNotSkip` are the active contract:
 - `mustFind` pins trusted real detections we must keep reporting.
 - `mustNotFind` pins past false positives we must not reintroduce.
 - `mustSkip` pins trusted conservative boundaries we want to keep visible.
+- `mustNotSkip` pins conservative skip families we expect the engine to eliminate without hiding them in accepted skip debt.
 
 The harness still supports `acceptedFindings` and `knownSkips` for bounded-debt workflows, but the current checked-in manifests leave them empty on purpose so remaining engine gaps surface as unexpected findings and unexpected skips.
 

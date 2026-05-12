@@ -1037,6 +1037,41 @@ describe("rogue-lint analyzer", () => {
     )).toBe(false);
   });
 
+  it("keeps bounded helper-returned keyed reads exact across finite candidate keys", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("finite-returned-keyed-access-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "entries"
+      && finding.entity.name === "unused"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-nested-path"
+      && finding.entity.owner === "entries"
+      && ["email.dead", "url.dead", "unused.dead"].includes(finding.entity.name)
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.entity.owner === "entries"
+      && ["email.label", "url.label"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("keeps helper-returned wide keyed reads conservative with an explicit computed-property boundary", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("finite-returned-keyed-access-boundary-basic"),
+      format: "json",
+    });
+
+    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(true);
+  });
+
   it("keeps public finite dispatch-table members live while leaving unrelated keys dead", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1360,6 +1395,39 @@ describe("rogue-lint analyzer", () => {
     expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "keys")).toBe(false);
     expect(result.findings.some((finding) => finding.kind === "unused-array-element")).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves first-key reads across discriminant-narrowed _zod.run payload flows", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-run-payload-first-key-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "value"
+      && ["known", "extra"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("keeps unsupported returned key-array storage explicit with a boundary", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-key-array-boundary-basic"),
+      format: "json",
+    });
+
+    expect(result.skipped.some((entry) =>
+      entry.kind === "collection-boundary"
+      && entry.category === "array-opaque-mutation"
+      && entry.name === "keys"
+    )).toBe(true);
   });
 
   it("keeps bounded bookkeeping transfers exact while preserving nearby escape boundaries", async () => {

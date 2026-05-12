@@ -386,94 +386,24 @@ function registerSpecializedStructuredReturnAliases(
   });
 }
 
-function getCallSiteStructuredReturnBinding(
+function pathStartsWith(path: PathSegment[], prefix: PathSegment[]): boolean {
+  return path.length >= prefix.length && samePath(path.slice(0, prefix.length), prefix);
+}
+
+function buildCallSiteLocalBindings(
   project: ProjectContext,
   node: ts.CallExpression,
   callable: AnalyzableCallableBinding,
-  summary: CallableReturnSummary,
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
   functionReturnSummaries: Map<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
-): TrackedObjectBinding | undefined {
-  const binding = getCallableReturnBinding(summary);
-  if (!binding || summary.kind !== "structured") {
-    return binding;
-  }
-
-  if (callable.declaration.parameters.length === 0) {
-    return binding;
-  }
-
-  const literal = getStructuredReturnLiteral(project, callable);
-  if (!literal) {
-    return binding;
-  }
-
-  const callSiteId = `${binding.trackedObject.id}:call:${node.getSourceFile().fileName}:${node.getStart()}`;
-  const existing = trackedObjectsById.get(callSiteId);
-  if (existing) {
-    if (isPristineCallSiteClone(existing)) {
-      syncTrackedObjectForCallSite(existing, binding.trackedObject);
-
-      const localBindings = new Map(trackedBySymbolId);
-      node.arguments.forEach((argument, index) => {
-        const parameter = callable.declaration.parameters[index];
-        if (!parameter || !ts.isIdentifier(parameter.name)) {
-          return;
-        }
-
-        const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
-        if (!parameterSymbol) {
-          return;
-        }
-
-        const paramSymbolKey = getSymbolKey(parameterSymbol);
-        const baseBinding = trackedBySymbolId.get(paramSymbolKey);
-        const specializedArgumentBinding = baseBinding
-          ? getCallSiteStructuredArgumentBinding(
-              project,
-              node,
-              argument,
-              baseBinding,
-              trackedBySymbolId,
-              functionReturnSummaries,
-              trackedObjectsById,
-            )
-          : undefined;
-        if (specializedArgumentBinding) {
-          localBindings.set(paramSymbolKey, specializedArgumentBinding);
-        }
-      });
-
-      for (const forwarded of getForwardedParameterBindings(
-        project,
-        node,
-        trackedBySymbolId,
-        functionReturnSummaries,
-        trackedObjectsById,
-      )) {
-        localBindings.set(forwarded.paramSymbolKey, forwarded.binding);
-      }
-
-      registerSpecializedStructuredReturnAliases(
-        project,
-        existing,
-        literal,
-        [],
-        project.config.value.objectAnalysis.maxPathDepth,
-        localBindings,
-        functionReturnSummaries,
-        trackedObjectsById,
-      );
-    }
-
-    return new TrackedObjectBindingRecord(existing, []);
-  }
-
-  const specialized = cloneTrackedObjectForCallSite(binding.trackedObject, callSiteId);
-  trackedObjectsById.set(callSiteId, specialized);
-
+): {
+  localBindings: Map<string, TrackedObjectBinding>;
+  specializedBindings: Map<string, TrackedObjectBinding>;
+} {
   const localBindings = new Map(trackedBySymbolId);
+  const specializedBindings = new Map<string, TrackedObjectBinding>();
+
   node.arguments.forEach((argument, index) => {
     const parameter = callable.declaration.parameters[index];
     if (!parameter || !ts.isIdentifier(parameter.name)) {
@@ -500,6 +430,7 @@ function getCallSiteStructuredReturnBinding(
       : undefined;
     if (specializedArgumentBinding) {
       localBindings.set(paramSymbolKey, specializedArgumentBinding);
+      specializedBindings.set(paramSymbolKey, specializedArgumentBinding);
     }
   });
 
@@ -511,7 +442,170 @@ function getCallSiteStructuredReturnBinding(
     trackedObjectsById,
   )) {
     localBindings.set(forwarded.paramSymbolKey, forwarded.binding);
+    specializedBindings.set(forwarded.paramSymbolKey, forwarded.binding);
   }
+
+  return {
+    localBindings,
+    specializedBindings,
+  };
+}
+
+function remapCallSiteReturnBinding(
+  binding: TrackedObjectBinding,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  specializedBindings: Map<string, TrackedObjectBinding>,
+): TrackedObjectBinding {
+  for (const [symbolKey, specializedBinding] of specializedBindings) {
+    const baseBinding = trackedBySymbolId.get(symbolKey);
+    if (!baseBinding || binding.trackedObject.id !== baseBinding.trackedObject.id) {
+      continue;
+    }
+
+    if (!pathStartsWith(binding.prefix, baseBinding.prefix)) {
+      continue;
+    }
+
+    return extendTrackedBinding(specializedBinding, binding.prefix.slice(baseBinding.prefix.length));
+  }
+
+  return binding;
+}
+
+function specializeReturnedAliasBinding(
+  node: ts.CallExpression,
+  binding: TrackedObjectBinding,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  specializedBindings: Map<string, TrackedObjectBinding>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding {
+  const directRemapped = remapCallSiteReturnBinding(binding, trackedBySymbolId, specializedBindings);
+  if (!sameTrackedBinding(directRemapped, binding)) {
+    return directRemapped;
+  }
+
+  if (specializedBindings.size === 0 || binding.trackedObject.exactPathAliases.size === 0) {
+    return binding;
+  }
+
+  let changed = false;
+  const remappedAliases = new Map<string, TrackedObject["exactPathAliases"] extends Map<string, infer T> ? T : never>();
+
+  for (const [aliasPath, alias] of binding.trackedObject.exactPathAliases.entries()) {
+    const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
+    if (!sourceTrackedObject) {
+      remappedAliases.set(aliasPath, {
+        ...alias,
+        sourcePath: [...alias.sourcePath],
+      });
+      continue;
+    }
+
+    const remappedSource = remapCallSiteReturnBinding(
+      {
+        trackedObject: sourceTrackedObject,
+        prefix: alias.sourcePath,
+      },
+      trackedBySymbolId,
+      specializedBindings,
+    );
+    if (
+      remappedSource.trackedObject.id !== alias.sourceObjectId
+      || !samePath(remappedSource.prefix, alias.sourcePath)
+    ) {
+      changed = true;
+    }
+
+    remappedAliases.set(aliasPath, {
+      ...alias,
+      sourceObjectId: remappedSource.trackedObject.id,
+      sourcePath: remappedSource.prefix,
+    });
+  }
+
+  if (!changed) {
+    return binding;
+  }
+
+  const callSiteId = `${binding.trackedObject.id}:returned-call:${node.getSourceFile().fileName}:${node.getStart()}`;
+  const existing = trackedObjectsById.get(callSiteId);
+  const specialized = existing ?? cloneTrackedObjectForCallSite(binding.trackedObject, callSiteId);
+  if (existing) {
+    syncTrackedObjectForCallSite(specialized, binding.trackedObject);
+  } else {
+    trackedObjectsById.set(callSiteId, specialized);
+  }
+
+  specialized.exactPathAliases = remappedAliases;
+  return new TrackedObjectBindingRecord(specialized, binding.prefix);
+}
+
+function getCallSiteStructuredReturnBinding(
+  project: ProjectContext,
+  node: ts.CallExpression,
+  callable: AnalyzableCallableBinding,
+  summary: CallableReturnSummary,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding | undefined {
+  const binding = getCallableReturnBinding(summary);
+  if (!binding) {
+    return undefined;
+  }
+
+  if (callable.declaration.parameters.length === 0) {
+    return binding;
+  }
+
+  const { localBindings, specializedBindings } = buildCallSiteLocalBindings(
+    project,
+    node,
+    callable,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+  const remappedBinding = remapCallSiteReturnBinding(binding, trackedBySymbolId, specializedBindings);
+
+  if (summary.kind !== "structured") {
+    return specializeReturnedAliasBinding(
+      node,
+      remappedBinding,
+      trackedBySymbolId,
+      specializedBindings,
+      trackedObjectsById,
+    );
+  }
+
+  const literal = getStructuredReturnLiteral(project, callable);
+  if (!literal) {
+    return remappedBinding;
+  }
+
+  const callSiteId = `${binding.trackedObject.id}:call:${node.getSourceFile().fileName}:${node.getStart()}`;
+  const existing = trackedObjectsById.get(callSiteId);
+  if (existing) {
+    if (isPristineCallSiteClone(existing)) {
+      syncTrackedObjectForCallSite(existing, binding.trackedObject);
+
+      registerSpecializedStructuredReturnAliases(
+        project,
+        existing,
+        literal,
+        [],
+        project.config.value.objectAnalysis.maxPathDepth,
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+    }
+
+    return new TrackedObjectBindingRecord(existing, []);
+  }
+
+  const specialized = cloneTrackedObjectForCallSite(binding.trackedObject, callSiteId);
+  trackedObjectsById.set(callSiteId, specialized);
 
   registerSpecializedStructuredReturnAliases(
     project,
@@ -527,7 +621,7 @@ function getCallSiteStructuredReturnBinding(
   return new TrackedObjectBindingRecord(specialized, []);
 }
 
-function getCallSiteStructuredArgumentBinding(
+export function getCallSiteStructuredArgumentBinding(
   project: ProjectContext,
   node: ts.CallExpression,
   argument: ts.Expression,

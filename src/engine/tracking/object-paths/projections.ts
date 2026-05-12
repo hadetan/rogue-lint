@@ -7,10 +7,12 @@ import type {
 import { isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { resolveProjectionAccess } from "../access.js";
 import type { ProjectedArrayUsageContext } from "../model.js";
+import { classifySupportedCallArgumentUse } from "../semantics.js";
 import {
   getCollectionInfo,
   getConcreteProjectionPaths,
   hasTrackedChildren,
+  markProjectionChildReads,
   markProjectionReads,
   markProjectionWrites,
 } from "../state.js";
@@ -49,7 +51,7 @@ export function visitProjectedArrayUsage(
     }
 
     if (ts.isCallExpression(current)) {
-      for (const argument of current.arguments) {
+      for (const [argumentIndex, argument] of current.arguments.entries()) {
         const projected = resolveProjectionAccess(project, argument, context);
         if (!projected) {
           continue;
@@ -67,6 +69,23 @@ export function visitProjectedArrayUsage(
             projected.boundaryReason ?? "array callback escapes exact local analysis",
             true,
           );
+          continue;
+        }
+
+        const supportedArgumentUse = classifySupportedCallArgumentUse(
+          current.expression.getText(current.getSourceFile()),
+          argumentIndex,
+        );
+        if (supportedArgumentUse?.kind === "observe-subtree") {
+          markProjectionReads(projected.projection, trackedObjectsById, projected.suffix, true);
+          continue;
+        }
+
+        if (
+          supportedArgumentUse?.kind === "observe-keys"
+          || supportedArgumentUse?.kind === "observe-values"
+        ) {
+          markProjectionChildReads(projected.projection, trackedObjectsById, projected.suffix);
           continue;
         }
 

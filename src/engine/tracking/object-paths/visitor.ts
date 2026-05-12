@@ -6,12 +6,13 @@ import type {
   SuppressionContext,
   TrackedObject,
 } from "../../../types.js";
-import { hasModifier, isReadLikeUse } from "../../../compiler/ast-utils.js";
+import { getSymbolKey, hasModifier, isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
 import type { AnalysisState } from "../../analysis-state.js";
 import {
   getAccessPath,
   getBindingSymbolKey,
+  getCallSiteStructuredArgumentBinding,
   getObjectBackedRetainedBindingSlotKeyFromAccess,
   getRetainedBindingContainerSlotKey,
   getSupportedArrayCallbackIndexParamIndex,
@@ -39,6 +40,7 @@ import {
 import type {
   ArrayProjectionBinding,
   CallableReturnSummary,
+  ExactAppendSlotPlan,
   HelperParameterSummary,
   ProjectedArrayUsageContext,
   TrackedObjectBinding,
@@ -64,6 +66,7 @@ import {
   markObservedChildPaths,
   markEscaped,
   markObservedSubtree,
+  markProjectionChildReads,
   markProjectionElementRead,
   markProjectionReads,
   markProjectionWrites,
@@ -77,10 +80,25 @@ import {
   maybeInvalidateReplacedTrackedPath,
   maybeReportInvalidatedRead,
   recordArrayBoundary,
+  tryRegisterExactArrayInsertion,
 } from "./effects.js";
 import { isAssignmentLeft, visitProjectedArrayUsage } from "./projections.js";
 
 const runtimeInvalidFormatExtraSegmentsCache = new WeakMap<object, PathSegment[]>();
+
+interface HelperExactAppendPlan {
+  call: ts.CallExpression;
+  sourceFile: ts.SourceFile;
+  methodName: "push" | "unshift";
+  relativeCollectionPath: PathSegment[];
+  slotPlans: ExactAppendSlotPlan[];
+}
+
+interface HelperProjectedUsagePlan {
+  statement: ts.Statement;
+  relativeCollectionPath: PathSegment[];
+  elementSymbolKey: string;
+}
 
 function getStaticPropertyName(name: ts.PropertyName): string | undefined {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
@@ -212,6 +230,7 @@ export function visitObjectPathSourceFile(
   }
 
   const finiteLookupBindings = new Map<string, FiniteLookupCandidate[]>();
+  const helperFiniteReturnCache = new Map<string, { candidates: FiniteLookupCandidate[]; suffix: PathSegment[] } | null>();
   const projectionContext: ProjectedArrayUsageContext = {
     elementBindings: projectionBindings,
     receiverBindings: new Map(),
@@ -222,6 +241,8 @@ export function visitObjectPathSourceFile(
   const handledSpreadAppendStarts = new Set<number>();
   const parameterMeaningfulUse = new Map<string, boolean | null>();
   const parameterSummaryCache = new Map<string, HelperParameterSummary | null>();
+  const helperExactAppendPlanCache = new Map<string, HelperExactAppendPlan[] | null>();
+  const helperProjectedUsagePlanCache = new Map<string, HelperProjectedUsagePlan[] | null>();
 
   const getProjectedNestedArrayBinding = (
     projection: ArrayProjectionBinding,
@@ -461,6 +482,67 @@ export function visitObjectPathSourceFile(
     });
   };
 
+  const getHelperFiniteReturnPlan = (
+    callable: ts.FunctionLikeDeclaration,
+  ): { candidates: FiniteLookupCandidate[]; suffix: PathSegment[] } | undefined => {
+    if (!callable.body) {
+      return undefined;
+    }
+
+    const helperSymbol = getAnalyzableCallableBindingFromDeclaration(project, callable)?.symbolKey;
+    if (!helperSymbol) {
+      return undefined;
+    }
+
+    const cached = helperFiniteReturnCache.get(helperSymbol);
+    if (cached !== undefined) {
+      return cached ?? undefined;
+    }
+
+    let plan: { candidates: FiniteLookupCandidate[]; suffix: PathSegment[] } | undefined;
+    let unsupported = false;
+    const visitReturn = (candidate: ts.Node): void => {
+      if (unsupported) {
+        return;
+      }
+
+      if (ts.isFunctionLike(candidate) && candidate !== callable) {
+        return;
+      }
+
+      if (ts.isReturnStatement(candidate) && candidate.expression) {
+        const next = resolveFiniteLookupRead(candidate.expression);
+        if (!next) {
+          unsupported = true;
+          return;
+        }
+
+        if (!plan) {
+          plan = next;
+        } else if (
+          plan.suffix.length !== next.suffix.length
+          || serializePath(plan.suffix) !== serializePath(next.suffix)
+          || plan.candidates.length !== next.candidates.length
+          || plan.candidates.some((existing, index) => {
+            const other = next.candidates[index];
+            return !other
+              || existing.binding.trackedObject.id !== other.binding.trackedObject.id
+              || serializePath(existing.binding.prefix) !== serializePath(other.binding.prefix)
+              || serializePath(existing.segments) !== serializePath(other.segments);
+          })
+        ) {
+          unsupported = true;
+        }
+      }
+
+      ts.forEachChild(candidate, visitReturn);
+    };
+
+    ts.forEachChild(callable.body, visitReturn);
+    helperFiniteReturnCache.set(helperSymbol, !unsupported && plan ? plan : null);
+    return !unsupported && plan ? plan : undefined;
+  };
+
   const resolveFiniteLookupRead = (node: ts.Expression): { candidates: FiniteLookupCandidate[]; suffix: PathSegment[] } | undefined => {
     if (ts.isElementAccessExpression(node)) {
       const candidates = resolveFiniteLookupCandidates(node);
@@ -474,7 +556,20 @@ export function visitObjectPathSourceFile(
       const aliasCandidates = !directCandidates && ts.isIdentifier(node.expression)
         ? finiteLookupBindings.get(getBindingSymbolKey(project, node.expression) ?? "")
         : undefined;
-      const candidates = directCandidates ?? aliasCandidates;
+      const helperCandidates = !directCandidates && !aliasCandidates && ts.isCallExpression(node.expression)
+        ? (() => {
+            const callable = resolveAnalyzableCallableBinding(
+              project,
+              node.expression.expression,
+              trackedBySymbolId,
+              functionReturnSummaries,
+              trackedObjectsById,
+            )?.declaration;
+            const plan = callable ? getHelperFiniteReturnPlan(callable) : undefined;
+            return plan?.suffix.length === 0 ? plan.candidates : undefined;
+          })()
+        : undefined;
+      const candidates = directCandidates ?? aliasCandidates ?? helperCandidates;
       return candidates ? { candidates, suffix: [propertySegment(node.name.text)] } : undefined;
     }
 
@@ -660,6 +755,221 @@ export function visitObjectPathSourceFile(
     && binding.trackedObject.structuralRole !== "state-holder"
   );
 
+  const getHelperExactAppendPlans = (
+    callable: ts.FunctionLikeDeclaration,
+    parameter: ts.Identifier,
+  ): HelperExactAppendPlan[] => {
+    const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
+    const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
+    if (!parameterSymbolKey) {
+      return [];
+    }
+
+    const cached = helperExactAppendPlanCache.get(parameterSymbolKey);
+    if (cached !== undefined) {
+      return cached ?? [];
+    }
+
+    const baseBinding = trackedBySymbolId.get(parameterSymbolKey);
+    if (!baseBinding || !callable.body) {
+      helperExactAppendPlanCache.set(parameterSymbolKey, null);
+      return [];
+    }
+
+    const basePrefix = serializePath(baseBinding.prefix);
+    const plans: HelperExactAppendPlan[] = [];
+    const helperSourceFile = callable.getSourceFile();
+
+    const visitHelper = (candidate: ts.Node): void => {
+      if (candidate !== callable.body && ts.isFunctionLike(candidate)) {
+        return;
+      }
+
+      if (
+        ts.isCallExpression(candidate)
+        && ts.isPropertyAccessExpression(candidate.expression)
+        && (candidate.expression.name.text === "push" || candidate.expression.name.text === "unshift")
+      ) {
+        const resolvedReceiver = resolveTrackedObjectAccess(
+          project,
+          candidate.expression.expression,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+        if (resolvedReceiver && !resolvedReceiver.dynamic) {
+          const receiverBinding = extendTrackedBinding(resolvedReceiver.binding, resolvedReceiver.segments);
+          const receiverPrefix = serializePath(receiverBinding.prefix.slice(0, baseBinding.prefix.length));
+          const receiverCollection = getCollectionInfo(receiverBinding.trackedObject, receiverBinding.prefix);
+          if (
+            receiverBinding.trackedObject.id === baseBinding.trackedObject.id
+            && receiverPrefix === basePrefix
+            && receiverCollection?.kind === "array"
+          ) {
+            const slotPlans: ExactAppendSlotPlan[] = [];
+            let exactStructuredAppend = candidate.arguments.length > 0;
+
+            for (const argument of candidate.arguments) {
+              const structuredLiteral = unwrapExpression(argument);
+              if (ts.isObjectLiteralExpression(structuredLiteral) || ts.isArrayLiteralExpression(structuredLiteral)) {
+                slotPlans.push({
+                  kind: "structured",
+                  literal: structuredLiteral,
+                  insertReason: `${candidate.expression.name.text} appends a structured value into an exact receiver slot`,
+                });
+                continue;
+              }
+
+              exactStructuredAppend = false;
+              break;
+            }
+
+            if (exactStructuredAppend) {
+              plans.push({
+                call: candidate,
+                sourceFile: helperSourceFile,
+                methodName: candidate.expression.name.text,
+                relativeCollectionPath: receiverBinding.prefix.slice(baseBinding.prefix.length),
+                slotPlans,
+              });
+            }
+          }
+        }
+      }
+
+      ts.forEachChild(candidate, visitHelper);
+    };
+
+    visitHelper(callable.body);
+    helperExactAppendPlanCache.set(parameterSymbolKey, plans.length > 0 ? plans : null);
+    return plans;
+  };
+
+  const replayHelperExactAppendPlans = (
+    callable: ts.FunctionLikeDeclaration,
+    parameter: ts.Identifier,
+    binding: TrackedObjectBinding,
+  ): void => {
+    const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
+    if (!parameterSymbol) {
+      return;
+    }
+
+    const plans = getHelperExactAppendPlans(callable, parameter);
+    if (plans.length === 0) {
+      return;
+    }
+
+    const localBindings = new Map(trackedBySymbolId);
+    localBindings.set(getSymbolKey(parameterSymbol), binding);
+
+    for (const plan of plans) {
+      tryRegisterExactArrayInsertion(
+        project,
+        binding.trackedObject,
+        plan.sourceFile,
+        plan.call,
+        [...binding.prefix, ...plan.relativeCollectionPath],
+        plan.methodName,
+        plan.slotPlans,
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+    }
+  };
+
+  const getHelperProjectedUsagePlans = (
+    callable: ts.FunctionLikeDeclaration,
+    parameter: ts.Identifier,
+  ): HelperProjectedUsagePlan[] => {
+    const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
+    const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
+    if (!parameterSymbolKey) {
+      return [];
+    }
+
+    const cached = helperProjectedUsagePlanCache.get(parameterSymbolKey);
+    if (cached !== undefined) {
+      return cached ?? [];
+    }
+
+    const baseBinding = trackedBySymbolId.get(parameterSymbolKey);
+    if (!baseBinding || !callable.body) {
+      helperProjectedUsagePlanCache.set(parameterSymbolKey, null);
+      return [];
+    }
+
+    const basePrefix = serializePath(baseBinding.prefix);
+    const plans: HelperProjectedUsagePlan[] = [];
+
+    const visitHelper = (candidate: ts.Node): void => {
+      if (candidate !== callable.body && ts.isFunctionLike(candidate)) {
+        return;
+      }
+
+      if (ts.isForOfStatement(candidate)) {
+        const resolved = resolveTrackedObjectAccess(
+          project,
+          candidate.expression,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+        const elementSymbolKey = getBindingSymbolKey(project, candidate.initializer);
+        if (resolved && !resolved.dynamic && elementSymbolKey) {
+          const receiverBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          const receiverPrefix = serializePath(receiverBinding.prefix.slice(0, baseBinding.prefix.length));
+          const receiverCollection = getCollectionInfo(receiverBinding.trackedObject, receiverBinding.prefix);
+          if (
+            receiverBinding.trackedObject.id === baseBinding.trackedObject.id
+            && receiverPrefix === basePrefix
+            && receiverCollection?.kind === "array"
+          ) {
+            plans.push({
+              statement: candidate.statement,
+              relativeCollectionPath: receiverBinding.prefix.slice(baseBinding.prefix.length),
+              elementSymbolKey,
+            });
+          }
+        }
+      }
+
+      ts.forEachChild(candidate, visitHelper);
+    };
+
+    visitHelper(callable.body);
+    helperProjectedUsagePlanCache.set(parameterSymbolKey, plans.length > 0 ? plans : null);
+    return plans;
+  };
+
+  const replayHelperProjectedUsages = (
+    callable: ts.FunctionLikeDeclaration,
+    parameter: ts.Identifier,
+    binding: TrackedObjectBinding,
+  ): void => {
+    for (const plan of getHelperProjectedUsagePlans(callable, parameter)) {
+      const projection = getProjectionBinding(
+        binding.trackedObject,
+        [...binding.prefix, ...plan.relativeCollectionPath],
+      );
+      if (!projection) {
+        continue;
+      }
+
+      visitProjectedArrayUsage(
+        project,
+        plan.statement,
+        {
+          elementBindings: new Map([[plan.elementSymbolKey, projection]]),
+          receiverBindings: new Map(),
+          indexBindings: new Map(),
+        },
+        trackedObjectsById,
+      );
+    }
+  };
+
   const visit = (node: ts.Node): void => {
     if (handledExactCallbackBodies.has(node)) {
       return;
@@ -679,6 +989,20 @@ export function visitObjectPathSourceFile(
           getCanonicalSymbolKey(project, target),
           extendTrackedBinding(resolved.binding, resolved.segments),
         );
+      }
+
+      if (target && ts.isCallExpression(node.initializer)) {
+        const callable = resolveAnalyzableCallableBinding(
+          project,
+          node.initializer.expression,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        )?.declaration;
+        const plan = callable ? getHelperFiniteReturnPlan(callable) : undefined;
+        if (plan?.suffix.length === 0) {
+          finiteLookupBindings.set(getCanonicalSymbolKey(project, target), plan.candidates);
+        }
       }
     }
 
@@ -985,11 +1309,27 @@ export function visitObjectPathSourceFile(
             parameterMeaningfulUse,
             parameterSummaryCache,
           );
-          const helperReplayBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+          const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
+          const baseBinding = parameterSymbolKey ? trackedBySymbolId.get(parameterSymbolKey) : undefined;
+          const specializedArgumentBinding = baseBinding
+            ? getCallSiteStructuredArgumentBinding(
+                project,
+                node,
+                argument,
+                baseBinding,
+                trackedBySymbolId,
+                functionReturnSummaries,
+                trackedObjectsById,
+              )
+            : undefined;
+          const helperReplayBinding = specializedArgumentBinding ?? extendTrackedBinding(resolved.binding, resolved.segments);
           if (shouldReplayExactHelperReadPaths(helperReplayBinding)) {
             summary.exactReadPaths.forEach((readPath) => {
               markExactHelperReadPath(helperReplayBinding, readPath);
             });
+            replayHelperExactAppendPlans(analyzableCallable, parameter.name, helperReplayBinding);
+            replayHelperProjectedUsages(analyzableCallable, parameter.name, helperReplayBinding);
           }
           if (collectionInfo?.kind === "array") {
             if (summary.boundaryReason) {
@@ -1334,7 +1674,24 @@ export function visitObjectPathSourceFile(
           }
           markProjectionWrites(projected.projection, trackedObjectsById, projected.suffix);
         } else {
-          markProjectionReads(projected.projection, trackedObjectsById, projected.suffix);
+          const parentCall = ts.isCallExpression(node.parent) ? node.parent : undefined;
+          const argumentIndex = parentCall
+            ? parentCall.arguments.findIndex((argument) => argument === node)
+            : -1;
+          const supportedArgumentUse = parentCall && argumentIndex >= 0
+            ? classifySupportedCallArgumentUse(parentCall.expression.getText(sourceFile), argumentIndex)
+            : undefined;
+
+          if (supportedArgumentUse?.kind === "observe-subtree") {
+            markProjectionReads(projected.projection, trackedObjectsById, projected.suffix, true);
+          } else if (
+            supportedArgumentUse?.kind === "observe-keys"
+            || supportedArgumentUse?.kind === "observe-values"
+          ) {
+            markProjectionChildReads(projected.projection, trackedObjectsById, projected.suffix);
+          } else {
+            markProjectionReads(projected.projection, trackedObjectsById, projected.suffix);
+          }
         }
         return ts.forEachChild(node, visit);
       }

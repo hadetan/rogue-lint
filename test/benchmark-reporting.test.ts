@@ -81,6 +81,7 @@ function createManifest(id: string, coverageClass: BenchmarkTargetManifest["cove
       mustFind: [],
       mustNotFind: [],
       mustSkip: [],
+      mustNotSkip: [],
       mustDiagnose: [],
       mustNotDiagnose: [],
       acceptedFindings: [],
@@ -135,6 +136,7 @@ describe("benchmark reporting", () => {
         mustFind: [],
         mustNotFind: [],
         mustSkip: [],
+        mustNotSkip: [],
         mustDiagnose: [],
         mustNotDiagnose: [],
         acceptedFindings: [
@@ -170,6 +172,7 @@ describe("benchmark reporting", () => {
         mustFind: [],
         mustNotFind: [],
         mustSkip: [],
+        mustNotSkip: [],
         mustDiagnose: [
           {
             label: "diagnostic anchor",
@@ -223,6 +226,7 @@ describe("benchmark reporting", () => {
         ],
         mustNotFind: [],
         mustSkip: [],
+        mustNotSkip: [],
         mustDiagnose: [],
         mustNotDiagnose: [],
         acceptedFindings: [
@@ -241,5 +245,52 @@ describe("benchmark reporting", () => {
 
     expect(report).toContain("Coarse accepted and known matchers are labeled as 'coarse matcher: same-file churn is surfaced only in the raw records below'.");
     expect(report).toContain("accepted local debt [coarse matcher: same-file churn is surfaced only in the raw records below]");
+  });
+
+  it("renders must-not-skip violations explicitly", () => {
+    const target = createAnalyzedTarget(
+      "must-not-skip-target",
+      "library-public-surface",
+      [],
+      [
+        {
+          id: "skip-1",
+          kind: "object-key",
+          name: "value",
+          reason: "computed property access prevents exact path analysis",
+          category: "computed-property-access",
+          location: {
+            file: "src/example.ts",
+            line: 1,
+            column: 1,
+          },
+        },
+      ],
+      [],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [
+          {
+            label: "forbidden computed-property skip",
+            category: "computed-property-access",
+            file: "src/example.ts",
+            name: "value",
+            maxCount: 0,
+          },
+        ],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    const report = renderBenchmarkReport(createWorkspaceRun([target]));
+
+    expect(report).toContain("must-not-skip clean: 0/1");
+    expect(report).toContain("Must-Not-Skip Violations:");
+    expect(report).toContain("forbidden computed-property skip");
   });
 });

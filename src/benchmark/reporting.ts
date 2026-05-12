@@ -210,6 +210,7 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
     `- must-find matched: ${target.evaluation.required.mustFind.matched.length}/${target.evaluation.required.mustFind.total}`,
     `- must-not-find clean: ${target.evaluation.required.mustNotFind.clean.length}/${target.evaluation.required.mustNotFind.total}`,
     `- must-skip matched: ${target.evaluation.required.mustSkip.matched.length}/${target.evaluation.required.mustSkip.total}`,
+    `- must-not-skip clean: ${target.evaluation.required.mustNotSkip.clean.length}/${target.evaluation.required.mustNotSkip.total}`,
     `- must-diagnose matched: ${target.evaluation.required.mustDiagnose.matched.length}/${target.evaluation.required.mustDiagnose.total}`,
     `- must-not-diagnose clean: ${target.evaluation.required.mustNotDiagnose.clean.length}/${target.evaluation.required.mustNotDiagnose.total}`,
     "",
@@ -273,6 +274,14 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
       "Required Skip Count Violations",
       target.evaluation.required.mustSkip.overLimit,
       formatAudit,
+    ),
+  );
+  lines.push(
+    ...renderMatcherRecords<BenchmarkSkipMatcher, AuditRecord>(
+      "Must-Not-Skip Violations",
+      target.evaluation.required.mustNotSkip.violations,
+      formatAudit,
+      describeSkipMatcherPrecision,
     ),
   );
   lines.push(

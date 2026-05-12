@@ -63,6 +63,7 @@ export interface BenchmarkExpectations {
   mustFind: BenchmarkFindingMatcher[];
   mustNotFind: BenchmarkFindingMatcher[];
   mustSkip: BenchmarkSkipMatcher[];
+  mustNotSkip: BenchmarkSkipMatcher[];
   mustDiagnose: BenchmarkDiagnosticMatcher[];
   mustNotDiagnose: BenchmarkDiagnosticMatcher[];
   acceptedFindings: BenchmarkFindingMatcher[];
@@ -138,6 +139,7 @@ export interface BenchmarkEvaluation {
     mustFind: PositiveExpectationResult<BenchmarkFindingMatcher, FindingRecord>;
     mustNotFind: NegativeExpectationResult<BenchmarkFindingMatcher, FindingRecord>;
     mustSkip: PositiveExpectationResult<BenchmarkSkipMatcher, AuditRecord>;
+    mustNotSkip: NegativeExpectationResult<BenchmarkSkipMatcher, AuditRecord>;
     mustDiagnose: PositiveExpectationResult<BenchmarkDiagnosticMatcher, DiagnosticRecord>;
     mustNotDiagnose: NegativeExpectationResult<BenchmarkDiagnosticMatcher, DiagnosticRecord>;
   };

@@ -25,6 +25,7 @@ import {
   CollectionInfoRecord,
   CollectionState,
 } from "./model.js";
+import { extendTrackedBinding } from "./bindings.js";
 import type {
   ArrayProjectionBinding,
   ExactAppendSlotPlan,
@@ -492,36 +493,133 @@ export function getConcreteProjectionPaths(
   return concretePaths;
 }
 
+interface ProjectionAliasHop {
+  receiverTrackedObject: TrackedObject;
+  receiverPath: PathSegment[];
+}
+
+interface ResolvedProjectionTarget {
+  binding: TrackedObjectBinding;
+  aliasHops: ProjectionAliasHop[];
+}
+
+function hasConcreteTrackedPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
+  if (segments.length === 0) {
+    return true;
+  }
+
+  const serializedPath = serializePath(segments);
+  return (
+    trackedObject.nodes.has(serializedPath)
+    || trackedObject.collections.has(serializedPath)
+    || trackedObject.exactPathAliases.has(serializedPath)
+    || hasTrackedChildren(trackedObject, segments)
+  );
+}
+
+function resolveProjectionTargets(
+  projection: ArrayProjectionBinding,
+  trackedObjectsById: Map<string, TrackedObject>,
+  suffix: PathSegment[] = [],
+): ResolvedProjectionTarget[] {
+  const targets: ResolvedProjectionTarget[] = [];
+
+  for (const elementPath of projection.elementPaths) {
+    let currentBinding: TrackedObjectBinding = {
+      trackedObject: projection.trackedObject,
+      prefix: elementPath,
+    };
+    const aliasHops: ProjectionAliasHop[] = [];
+
+    const rootAlias = resolveExactPathAlias(currentBinding, [], trackedObjectsById);
+    if (rootAlias.viaAliasObjectId && rootAlias.viaAliasPath) {
+      const receiverTrackedObject = trackedObjectsById.get(rootAlias.viaAliasObjectId);
+      if (receiverTrackedObject) {
+        aliasHops.push({
+          receiverTrackedObject,
+          receiverPath: rootAlias.viaAliasPath,
+        });
+      }
+      currentBinding = rootAlias.binding;
+    }
+
+    for (const segment of suffix) {
+      const aliased = resolveExactPathAlias(currentBinding, [segment], trackedObjectsById);
+      if (aliased.viaAliasObjectId && aliased.viaAliasPath) {
+        const receiverTrackedObject = trackedObjectsById.get(aliased.viaAliasObjectId);
+        if (receiverTrackedObject) {
+          aliasHops.push({
+            receiverTrackedObject,
+            receiverPath: aliased.viaAliasPath,
+          });
+        }
+        currentBinding = aliased.binding;
+        continue;
+      }
+
+      currentBinding = extendTrackedBinding(currentBinding, [segment]);
+    }
+
+    if (hasConcreteTrackedPath(currentBinding.trackedObject, currentBinding.prefix)) {
+      targets.push({
+        binding: currentBinding,
+        aliasHops,
+      });
+    }
+  }
+
+  return targets;
+}
+
+function markProjectionAliasHopObserved(hop: ProjectionAliasHop): void {
+  const alias = hop.receiverTrackedObject.exactPathAliases.get(serializePath(hop.receiverPath));
+  if (alias) {
+    alias.observed = true;
+  }
+  markRead(hop.receiverTrackedObject, hop.receiverPath);
+}
+
+function markResolvedProjectionTargetRead(
+  target: ResolvedProjectionTarget,
+  trackedObjectsById: Map<string, TrackedObject>,
+  mode: "self" | "subtree" | "children",
+): void {
+  for (const aliasHop of target.aliasHops) {
+    markProjectionAliasHopObserved(aliasHop);
+  }
+
+  if (mode === "subtree") {
+    markObservedSubtree(target.binding.trackedObject, target.binding.prefix, trackedObjectsById);
+    return;
+  }
+
+  if (mode === "children") {
+    markObservedChildPaths(target.binding.trackedObject, target.binding.prefix, trackedObjectsById);
+    return;
+  }
+
+  markRead(target.binding.trackedObject, target.binding.prefix);
+}
+
 export function markProjectionReads(
   projection: ArrayProjectionBinding,
   trackedObjectsById: Map<string, TrackedObject>,
   suffix: PathSegment[] = [],
   observeSubtree = false,
 ): void {
-  const concretePaths = getConcreteProjectionPaths(projection, suffix);
-  for (const fullPath of concretePaths) {
-    const alias = projection.trackedObject.exactPathAliases.get(serializePath(fullPath));
-    if (alias) {
-      const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
-      if (sourceTrackedObject) {
-        markObservedAliasRead(
-          projection.trackedObject,
-          fullPath,
-          sourceTrackedObject,
-          alias.sourcePath,
-          alias,
-          trackedObjectsById,
-          observeSubtree,
-        );
-        continue;
-      }
-    }
+  const mode = observeSubtree ? "subtree" : "self";
+  for (const target of resolveProjectionTargets(projection, trackedObjectsById, suffix)) {
+    markResolvedProjectionTargetRead(target, trackedObjectsById, mode);
+  }
+}
 
-    if (observeSubtree) {
-      markObservedSubtree(projection.trackedObject, fullPath, trackedObjectsById);
-    } else {
-      markRead(projection.trackedObject, fullPath);
-    }
+export function markProjectionChildReads(
+  projection: ArrayProjectionBinding,
+  trackedObjectsById: Map<string, TrackedObject>,
+  suffix: PathSegment[] = [],
+): void {
+  for (const target of resolveProjectionTargets(projection, trackedObjectsById, suffix)) {
+    markResolvedProjectionTargetRead(target, trackedObjectsById, "children");
   }
 }
 
@@ -530,18 +628,8 @@ export function markProjectionWrites(
   trackedObjectsById: Map<string, TrackedObject>,
   suffix: PathSegment[],
 ): void {
-  const concretePaths = getConcreteProjectionPaths(projection, suffix);
-  for (const fullPath of concretePaths) {
-    const alias = projection.trackedObject.exactPathAliases.get(serializePath(fullPath));
-    if (alias) {
-      const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
-      if (sourceTrackedObject) {
-        markWrite(sourceTrackedObject, alias.sourcePath);
-        continue;
-      }
-    }
-
-    markWrite(projection.trackedObject, fullPath);
+  for (const target of resolveProjectionTargets(projection, trackedObjectsById, suffix)) {
+    markWrite(target.binding.trackedObject, target.binding.prefix);
   }
 }
 
@@ -556,27 +644,12 @@ export function markProjectionElementRead(
     return;
   }
 
-  const alias = projection.trackedObject.exactPathAliases.get(serializePath(elementPath));
-  if (alias) {
-    const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
-    if (sourceTrackedObject) {
-      markObservedAliasRead(
-        projection.trackedObject,
-        elementPath,
-        sourceTrackedObject,
-        alias.sourcePath,
-        alias,
-        trackedObjectsById,
-        observeSubtree,
-      );
-      return;
-    }
-  }
-
-  if (observeSubtree) {
-    markObservedSubtree(projection.trackedObject, elementPath, trackedObjectsById);
-  } else {
-    markRead(projection.trackedObject, elementPath);
+  for (const target of resolveProjectionTargets({
+    trackedObject: projection.trackedObject,
+    sourcePath: projection.sourcePath,
+    elementPaths: [elementPath],
+  }, trackedObjectsById)) {
+    markResolvedProjectionTargetRead(target, trackedObjectsById, observeSubtree ? "subtree" : "self");
   }
 }
 

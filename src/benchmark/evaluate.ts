@@ -217,6 +217,7 @@ export function evaluateBenchmarkExpectations(
     expectations.mustFind.length
     + expectations.mustNotFind.length
     + expectations.mustSkip.length
+    + expectations.mustNotSkip.length
     + expectations.mustDiagnose.length
     + expectations.mustNotDiagnose.length;
   const incompleteContract = requiredAnchorTotal === 0;
@@ -226,6 +227,7 @@ export function evaluateBenchmarkExpectations(
   const acceptedFindings = evaluateAccepted(findings, expectations.acceptedFindings, matchesFinding);
 
   const mustSkip = evaluatePositive(skips, expectations.mustSkip, matchesSkip);
+  const mustNotSkip = evaluateNegative(skips, expectations.mustNotSkip, matchesSkip);
   const knownSkips = evaluateAccepted(skips, expectations.knownSkips, matchesSkip);
 
   const mustDiagnose = evaluatePositive(diagnostics, expectations.mustDiagnose, matchesDiagnostic);
@@ -238,6 +240,7 @@ export function evaluateBenchmarkExpectations(
   );
   const unexpectedSkips = skips.filter((record) =>
     !matchesAny(record, expectations.mustSkip, matchesSkip)
+    && !matchesAny(record, expectations.mustNotSkip, matchesSkip)
     && !matchesAny(record, expectations.knownSkips, matchesSkip),
   );
   const unexpectedDiagnostics = diagnostics.filter((record) =>
@@ -273,6 +276,7 @@ export function evaluateBenchmarkExpectations(
     || mustNotFind.violations.length > 0
     || mustSkip.missing.length > 0
     || mustSkip.overLimit.length > 0
+    || mustNotSkip.violations.length > 0
     || mustDiagnose.missing.length > 0
     || mustDiagnose.overLimit.length > 0
     || mustNotDiagnose.violations.length > 0
@@ -318,6 +322,7 @@ export function evaluateBenchmarkExpectations(
       mustFind,
       mustNotFind,
       mustSkip,
+      mustNotSkip,
       mustDiagnose,
       mustNotDiagnose,
     },
