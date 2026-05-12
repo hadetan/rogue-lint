@@ -1,13 +1,21 @@
+import ts from "typescript";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { createAnalysisArtifacts } from "../src/engine/analysis-artifacts.js";
+import { createAnalysisState } from "../src/engine/analysis-state.js";
 import { collectPublicSurfaceIds } from "../src/engine/analyzers/support.js";
+import { createObjectPathStageContext } from "../src/engine/tracking/object-paths/context.js";
+import { extractFinitePropertyUnionSegments } from "../src/engine/tracking/object-paths/policy.js";
+import { createValueLivenessStageContext } from "../src/engine/tracking/value-liveness-context.js";
 import { buildTrackedObjects } from "../src/engine/tracking/graph.js";
 import type { TrackingStage } from "../src/engine/tracking/contracts.js";
+import { appendTrackingAnalysisDiagnostics } from "../src/engine/tracking/diagnostics.js";
 import { buildModuleGraph, computeReachableFiles, discoverEntrypoints } from "../src/module-graph.js";
 import { loadProject } from "../src/project.js";
+import { propertySegment } from "../src/shared/path-utils.js";
+import { buildSuppressionContext } from "../src/suppressions.js";
 
 function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
@@ -26,6 +34,45 @@ function createProjectContext(name: string) {
     reachableFiles,
     publicSurfaceIds: collectPublicSurfaceIds(project, entrypointDiscovery.publicSurfaceEntrypoints),
   };
+}
+
+function findSourceFile(projectName: string, suffix: string) {
+  const { project } = createProjectContext(projectName);
+  const sourceFile = project.sourceFiles.find((candidate) => candidate.fileName.endsWith(suffix));
+
+  if (!sourceFile) {
+    throw new Error(`missing source file ${suffix} in fixture ${projectName}`);
+  }
+
+  return { project, sourceFile };
+}
+
+function findElementAccessExpression(
+  sourceFile: ts.SourceFile,
+  predicate: (node: ts.ElementAccessExpression) => boolean,
+): ts.ElementAccessExpression {
+  let match: ts.ElementAccessExpression | undefined;
+
+  const visit = (node: ts.Node): void => {
+    if (match) {
+      return;
+    }
+
+    if (ts.isElementAccessExpression(node) && predicate(node)) {
+      match = node;
+      return;
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  ts.forEachChild(sourceFile, visit);
+
+  if (!match) {
+    throw new Error(`missing matching element access in ${sourceFile.fileName}`);
+  }
+
+  return match;
 }
 
 describe("tracking kernel contract", () => {
@@ -84,5 +131,95 @@ describe("tracking kernel contract", () => {
       "outside the declared tracking-kernel contract",
     );
     expect(runArtifacts.diagnostics.some((diagnostic) => diagnostic.code === "contract-violation")).toBe(true);
+  });
+
+  it("keeps stage-local source-file bookkeeping isolated from shared tracking facts", () => {
+    const { project, reachableFiles, publicSurfaceIds } = createProjectContext("app-basic");
+    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds);
+    const state = createAnalysisState();
+    const suppressionContext = buildSuppressionContext(project);
+    const reachableSourceFiles = project.sourceFiles.filter((sourceFile) => reachableFiles.has(sourceFile.fileName));
+
+    expect(reachableSourceFiles.length).toBeGreaterThanOrEqual(2);
+
+    const objectPathStage = createObjectPathStageContext(
+      project,
+      reachableFiles,
+      state,
+      suppressionContext,
+      artifacts,
+    );
+    const objectFileA = objectPathStage.createSourceFileContext(reachableSourceFiles[0]);
+    const objectFileB = objectPathStage.createSourceFileContext(reachableSourceFiles[1]);
+
+    objectFileA.handledExactCallbackBodies.add(reachableSourceFiles[0]);
+    objectFileA.retainedContainerConflicts.add("config");
+    objectFileA.parameterMeaningfulUse.set("param", true);
+
+    expect(objectFileA.handledExactCallbackBodies).not.toBe(objectFileB.handledExactCallbackBodies);
+    expect(objectFileB.handledExactCallbackBodies.size).toBe(0);
+    expect(objectFileA.retainedContainerConflicts).not.toBe(objectFileB.retainedContainerConflicts);
+    expect(objectFileB.retainedContainerConflicts.size).toBe(0);
+    expect(objectFileA.parameterMeaningfulUse).not.toBe(objectFileB.parameterMeaningfulUse);
+    expect(objectFileB.parameterMeaningfulUse.size).toBe(0);
+    expect(objectPathStage.trackedBySymbolId).toBe(artifacts.getTrackingStageArtifacts("object-paths").bindings.bySymbolId);
+
+    const valueLivenessStage = createValueLivenessStageContext(
+      project,
+      reachableFiles,
+      state,
+      suppressionContext,
+      artifacts,
+    );
+    const valueFileA = valueLivenessStage.createSourceFileContext(reachableSourceFiles[0]);
+    const valueFileB = valueLivenessStage.createSourceFileContext(reachableSourceFiles[1]);
+
+    valueFileA.accesses.set("symbol", []);
+    valueFileA.parameterMeaningfulUse.set("param", true);
+
+    expect(valueFileA.accesses).not.toBe(valueFileB.accesses);
+    expect(valueFileB.accesses.size).toBe(0);
+    expect(valueFileA.parameterMeaningfulUse).not.toBe(valueFileB.parameterMeaningfulUse);
+    expect(valueFileB.parameterMeaningfulUse.size).toBe(0);
+    expect(valueLivenessStage.functionReturnSummaries).toBe(
+      artifacts.getTrackingStageArtifacts("value-liveness").returnSummaries.byCallableId,
+    );
+  });
+
+  it("keeps locale-format recovery in the dedicated policy seam", () => {
+    const { project, sourceFile } = findSourceFile("locale-runtime-format-source-backed-extra-basic", "/src/index.ts");
+    const formatLookup = findElementAccessExpression(
+      sourceFile,
+      (node) => ts.isIdentifier(node.expression) && node.expression.text === "formatDictionary",
+    );
+
+    const segments = extractFinitePropertyUnionSegments(project, formatLookup.argumentExpression);
+
+    expect(segments).toEqual(expect.arrayContaining([
+      propertySegment("email"),
+      propertySegment("url"),
+      propertySegment("mac"),
+      propertySegment("template_literal"),
+    ]));
+    expect(segments).not.toEqual(expect.arrayContaining([
+      propertySegment("uuidv4"),
+      propertySegment("uuidv6"),
+    ]));
+  });
+
+  it("adapts tracking warnings into analysis-facing diagnostics while keeping runtime summaries internal", () => {
+    const { project, reachableFiles, publicSurfaceIds } = createProjectContext("app-basic");
+    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, {
+      warningPassThreshold: 1,
+    });
+    const state = createAnalysisState();
+
+    appendTrackingAnalysisDiagnostics(state, artifacts);
+
+    expect(state.diagnostics).toContainEqual(expect.objectContaining({
+      kind: "project-warning",
+      message: expect.stringContaining("tracking warning:"),
+    }));
+    expect(artifacts.getTrackingRunArtifacts().runtimeSummary.convergence.warned).toBe(true);
   });
 });

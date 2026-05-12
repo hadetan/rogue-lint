@@ -19,9 +19,7 @@ import {
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 import { isTrackablePureExpression } from "./graph.js";
 import type {
-  TrackedValueBinding,
   ValueAccess,
-  ValueAnalysisCaches,
 } from "./model.js";
 import {
   getCallArgumentUse,
@@ -33,6 +31,7 @@ import {
   getControlFlowSignature,
   getFunctionDepth,
 } from "./syntax.js";
+import { createValueLivenessStageContext } from "./value-liveness-context.js";
 
 /**
  * Exactness-gated local value-fate analysis built on top of the shared tracked-object graph.
@@ -88,19 +87,32 @@ export function analyzeValueLiveness(
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): void {
-  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts("value-liveness");
-  const functionReturnSummaries = trackingStageArtifacts.returnSummaries.byCallableId;
+  const stageContext = createValueLivenessStageContext(
+    project,
+    reachableFiles,
+    state,
+    suppressionContext,
+    artifacts,
+  );
+  const {
+    functionReturnSummaries,
+  } = stageContext;
 
   for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
+    if (!stageContext.reachableFiles.has(sourceFile.fileName)) {
       continue;
     }
 
-    const trackedBindings = new Map<string, TrackedValueBinding>();
-    const accesses = new Map<string, ValueAccess[]>();
-    const valueAnalysisCaches: ValueAnalysisCaches = {
-      parameterMeaningfulUse: new Map(),
-      callablePurity: new Map(),
+    const sourceFileContext = stageContext.createSourceFileContext(sourceFile);
+    const {
+      trackedBindings,
+      accesses,
+      parameterMeaningfulUse,
+      callablePurity,
+    } = sourceFileContext;
+    const valueAnalysisCaches = {
+      parameterMeaningfulUse,
+      callablePurity,
     };
 
     const pushAccess = (symbolKey: string, access: ValueAccess): void => {

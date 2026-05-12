@@ -47,6 +47,7 @@ This module is responsible for:
 - discovering entrypoints and reachable files
 - creating shared per-run analysis artifacts, caches, and mutable state
 - executing analyzer stages in order
+- adapting internal tracking diagnostics into the normal analysis diagnostics surface
 - assembling the final `AnalysisResult`
 
 Do not move stage-specific semantics back into this file.
@@ -58,6 +59,7 @@ Owns shared per-run evidence.
 - compiler-diagnostic access used by low-coupling analyzers
 - lazy tracking-artifact construction shared by the exactness-sensitive tracking stages
 - the run-scoped tracking contract exposed through `getTrackingRunArtifacts()` and stage-scoped views exposed through `getTrackingStageArtifacts(...)`
+- internal test seams for tracking convergence validation without widening the public analysis API
 
 Put reusable per-run analysis evidence here when more than one stage needs the same derived view.
 
@@ -79,13 +81,17 @@ Owns the exactness-sensitive tracking subsystem used by the value-liveness and o
 - `core.ts`: stable internal facade that re-exports tracking stage entrypoints for analyzer wrappers
 - `contracts.ts`: explicit run-scoped tracking contract, ownership surfaces, runtime summaries, and internal diagnostics for stage consumers
 - `convergence.ts`: bounded convergence driver and guard policy for tracked bindings and callable return summaries
+- `diagnostics.ts`: adapter that turns tracking warnings and contract diagnostics into the normal analysis diagnostics flow
 - `value-liveness.ts`: exactness-gated local value-fate stage implementation
+- `value-liveness-context.ts`: explicit stage and source-file context builders for value-liveness-owned mutable bookkeeping
 - `object-paths.ts`: object-path stage orchestrator
-- `object-paths/`: stage-private helpers for object-path effects, projections, traversal, and reporting
+- `object-paths/`: stage-private helpers for object-path effects, projections, traversal, policy, and reporting
+- `object-paths/context.ts`: explicit stage and source-file context builders for object-path-owned mutable bookkeeping
+- `object-paths/policy.ts`: bounded source-shaped recovery helpers consumed by generic object-path traversal
 - `model.ts`, `syntax.ts`, `bindings.ts`: shared tracking vocabulary, structural helpers, and binding identity rules
 - `state.ts`, `access.ts`, `callables.ts`, `graph.ts`, `semantics.ts`: shared mutation, resolution, callable, graph, and helper-summary primitives
 
-`graph.ts` owns tracked-object seeding and the shared fact store, while `convergence.ts` owns pass-budget enforcement and churn signaling. Stage modules should consume those facts through the contract surfaces instead of reaching into ad hoc shared maps.
+`graph.ts` owns tracked-object seeding and the shared fact store, while `convergence.ts` owns pass-budget enforcement and churn signaling. Stage modules should consume those facts through the contract surfaces, keep source-file-local mutation inside their stage contexts, and route source-shaped bounded recovery through dedicated policy helpers instead of embedding those heuristics in generic traversal. Tracking warnings and contract violations should surface through `tracking/diagnostics.ts`, while richer runtime summaries stay available through the run-scoped tracking artifacts for focused validation.
 
 Start in the owning module here when a change affects:
 

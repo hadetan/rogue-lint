@@ -4,6 +4,7 @@ import type {
 } from "../../types.js";
 import type { AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { createObjectPathStageContext } from "./object-paths/context.js";
 import { finalizeObjectPathFindings } from "./object-paths/reporting.js";
 import { visitObjectPathSourceFile } from "./object-paths/visitor.js";
 
@@ -21,27 +22,26 @@ export function analyzeObjectPaths(
     return;
   }
 
-  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts("object-paths");
-  const trackedBySymbolId = trackingStageArtifacts.bindings.bySymbolId;
-  const functionReturnSummaries = trackingStageArtifacts.returnSummaries.byCallableId;
-  const trackedObjectsById = trackingStageArtifacts.aliases.trackedObjectsById;
-  const boundaryTrackedObjectsById = trackingStageArtifacts.boundaries.trackedObjectsById;
+  const stageContext = createObjectPathStageContext(
+    project,
+    reachableFiles,
+    state,
+    suppressionContext,
+    artifacts,
+  );
 
   for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
+    if (!stageContext.reachableFiles.has(sourceFile.fileName)) {
       continue;
     }
 
-    visitObjectPathSourceFile(
-      project,
-      sourceFile,
-      trackedBySymbolId,
-      functionReturnSummaries,
-      trackedObjectsById,
-      state,
-      suppressionContext,
-    );
+    visitObjectPathSourceFile(stageContext, stageContext.createSourceFileContext(sourceFile));
   }
 
-  finalizeObjectPathFindings(project, state, suppressionContext, boundaryTrackedObjectsById.values());
+  finalizeObjectPathFindings(
+    project,
+    state,
+    suppressionContext,
+    stageContext.boundaryTrackedObjectsById.values(),
+  );
 }

@@ -2,13 +2,10 @@ import ts from "typescript";
 
 import type {
   PathSegment,
-  ProjectContext,
-  SuppressionContext,
   TrackedObject,
 } from "../../../types.js";
 import { getSymbolKey, hasModifier, isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
-import type { AnalysisState } from "../../analysis-state.js";
 import {
   getAccessPath,
   getBindingSymbolKey,
@@ -39,10 +36,7 @@ import {
 } from "../callables.js";
 import type {
   ArrayProjectionBinding,
-  CallableReturnSummary,
   ExactAppendSlotPlan,
-  HelperParameterSummary,
-  ProjectedArrayUsageContext,
   TrackedObjectBinding,
 } from "../model.js";
 import {
@@ -82,167 +76,48 @@ import {
   recordArrayBoundary,
   tryRegisterExactArrayInsertion,
 } from "./effects.js";
+import type {
+  FiniteLookupCandidate,
+  HelperExactAppendPlan,
+  HelperProjectedUsagePlan,
+  ObjectPathSourceFileContext,
+  ObjectPathStageContext,
+} from "./context.js";
+import { extractFinitePropertyUnionSegments } from "./policy.js";
 import { isAssignmentLeft, visitProjectedArrayUsage } from "./projections.js";
 
-const runtimeInvalidFormatExtraSegmentsCache = new WeakMap<object, PathSegment[]>();
-
-interface HelperExactAppendPlan {
-  call: ts.CallExpression;
-  sourceFile: ts.SourceFile;
-  methodName: "push" | "unshift";
-  relativeCollectionPath: PathSegment[];
-  slotPlans: ExactAppendSlotPlan[];
-}
-
-interface HelperProjectedUsagePlan {
-  statement: ts.Statement;
-  relativeCollectionPath: PathSegment[];
-  elementSymbolKey: string;
-}
-
-function getStaticPropertyName(name: ts.PropertyName): string | undefined {
-  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
-    return name.text;
-  }
-
-  return undefined;
-}
-
-function getObjectLiteralPropertyInitializer(
-  node: ts.ObjectLiteralExpression,
-  propertyName: string,
-): ts.Expression | undefined {
-  for (const property of node.properties) {
-    if (!ts.isPropertyAssignment(property)) {
-      continue;
-    }
-
-    if (getStaticPropertyName(property.name) === propertyName) {
-      return property.initializer;
-    }
-  }
-
-  return undefined;
-}
-
-function getStaticStringLiteralValue(expression: ts.Expression): string | undefined {
-  const node = unwrapExpression(expression);
-  return ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
-    ? node.text
-    : undefined;
-}
-
-function collectStringLiteralCandidates(expression: ts.Expression): string[] {
-  const node = unwrapExpression(expression);
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-    return [node.text];
-  }
-
-  if (ts.isBinaryExpression(node)) {
-    if (
-      node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-      || node.operatorToken.kind === ts.SyntaxKind.BarBarToken
-    ) {
-      return [...new Set([
-        ...collectStringLiteralCandidates(node.left),
-        ...collectStringLiteralCandidates(node.right),
-      ])];
-    }
-
-    return [];
-  }
-
-  if (ts.isConditionalExpression(node)) {
-    return [...new Set([
-      ...collectStringLiteralCandidates(node.whenTrue),
-      ...collectStringLiteralCandidates(node.whenFalse),
-    ])];
-  }
-
-  return [];
-}
-
-function getRuntimeInvalidFormatExtraSegments(project: ProjectContext): PathSegment[] {
-  const cached = runtimeInvalidFormatExtraSegmentsCache.get(project.checker);
-  if (cached) {
-    return cached;
-  }
-
-  const declaredFormats = new Set<string>();
-  const emittedFormats = new Set<string>();
-
-  for (const sourceFile of project.sourceFiles) {
-    if (sourceFile.fileName.includes("/tests/") || sourceFile.fileName.includes("/locales/")) {
-      continue;
-    }
-
-    const visit = (node: ts.Node): void => {
-      if (ts.isTypeAliasDeclaration(node) && node.name.text.endsWith("StringFormats") && ts.isUnionTypeNode(node.type)) {
-        for (const member of node.type.types) {
-          if (ts.isLiteralTypeNode(member) && ts.isStringLiteral(member.literal)) {
-            declaredFormats.add(member.literal.text);
-          }
-        }
-      }
-
-      if (ts.isObjectLiteralExpression(node)) {
-        const code = getObjectLiteralPropertyInitializer(node, "code");
-        const check = getObjectLiteralPropertyInitializer(node, "check");
-        const format = getObjectLiteralPropertyInitializer(node, "format");
-        if (format) {
-          const codeValue = code ? getStaticStringLiteralValue(code) : undefined;
-          const checkValue = check ? getStaticStringLiteralValue(check) : undefined;
-          if (codeValue === "invalid_format" || checkValue === "string_format") {
-            for (const candidate of collectStringLiteralCandidates(format)) {
-              emittedFormats.add(candidate);
-            }
-          }
-        }
-      }
-
-      ts.forEachChild(node, visit);
-    };
-
-    ts.forEachChild(sourceFile, visit);
-  }
-
-  const extras = [...emittedFormats]
-    .filter((format) => !declaredFormats.has(format))
-    .sort()
-    .map((format) => propertySegment(format));
-  runtimeInvalidFormatExtraSegmentsCache.set(project.checker, extras);
-  return extras;
-}
-
 export function visitObjectPathSourceFile(
-  project: ProjectContext,
-  sourceFile: ts.SourceFile,
-  trackedBySymbolId: Map<string, TrackedObjectBinding>,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
-  trackedObjectsById: Map<string, TrackedObject>,
-  state: AnalysisState,
-  suppressionContext: SuppressionContext,
+  stageContext: ObjectPathStageContext,
+  sourceFileContext: ObjectPathSourceFileContext,
 ): void {
-  const projectionBindings = new Map<string, ArrayProjectionBinding>();
-  interface FiniteLookupCandidate {
-    binding: TrackedObjectBinding;
-    segments: PathSegment[];
-  }
-
-  const finiteLookupBindings = new Map<string, FiniteLookupCandidate[]>();
-  const helperFiniteReturnCache = new Map<string, { candidates: FiniteLookupCandidate[]; suffix: PathSegment[] } | null>();
-  const projectionContext: ProjectedArrayUsageContext = {
+  const {
+    project,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+    state,
+    suppressionContext,
+  } = stageContext;
+  const {
+    sourceFile,
+    projectionBindings,
+    projectionReceiverBindings,
+    projectionIndexBindings,
+    finiteLookupBindings,
+    helperFiniteReturnCache,
+    handledExactCallbackBodies,
+    retainedContainerConflicts,
+    handledSpreadAppendStarts,
+    parameterMeaningfulUse,
+    parameterSummaryCache,
+    helperExactAppendPlanCache,
+    helperProjectedUsagePlanCache,
+  } = sourceFileContext;
+  const projectionContext = {
     elementBindings: projectionBindings,
-    receiverBindings: new Map(),
-    indexBindings: new Map(),
+    receiverBindings: projectionReceiverBindings,
+    indexBindings: projectionIndexBindings,
   };
-  const handledExactCallbackBodies = new Set<ts.Node>();
-  const retainedContainerConflicts = new Set<string>();
-  const handledSpreadAppendStarts = new Set<number>();
-  const parameterMeaningfulUse = new Map<string, boolean | null>();
-  const parameterSummaryCache = new Map<string, HelperParameterSummary | null>();
-  const helperExactAppendPlanCache = new Map<string, HelperExactAppendPlan[] | null>();
-  const helperProjectedUsagePlanCache = new Map<string, HelperProjectedUsagePlan[] | null>();
 
   const getProjectedNestedArrayBinding = (
     projection: ArrayProjectionBinding,
@@ -366,50 +241,6 @@ export function visitObjectPathSourceFile(
     return ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer);
   };
 
-  const extractFinitePropertyUnionSegments = (argument: ts.Expression): PathSegment[] | undefined => {
-    const node = unwrapExpression(argument);
-    const type = project.checker.getTypeAtLocation(node);
-    const candidateTypes = type.isUnion() ? type.types : [type];
-    const segments: PathSegment[] = [];
-    const seen = new Set<string>();
-    const candidateValues = new Set<string>();
-
-    for (const candidateType of candidateTypes) {
-      if (!(candidateType.flags & ts.TypeFlags.StringLiteral)) {
-        return undefined;
-      }
-
-      const value = (candidateType as ts.StringLiteralType).value;
-      const segment = propertySegment(value);
-      const key = `${segment.kind}:${segment.value}`;
-      if (seen.has(key)) {
-        continue;
-      }
-
-      seen.add(key);
-      candidateValues.add(value);
-      segments.push(segment);
-    }
-
-    if (
-      ts.isPropertyAccessExpression(node)
-      && node.name.text === "format"
-      && candidateValues.size >= 2
-    ) {
-      for (const segment of getRuntimeInvalidFormatExtraSegments(project)) {
-        const key = `${segment.kind}:${segment.value}`;
-        if (seen.has(key)) {
-          continue;
-        }
-
-        seen.add(key);
-        segments.push(segment);
-      }
-    }
-
-    return segments.length > 1 ? segments : undefined;
-  };
-
   const hasExactTrackedPath = (binding: TrackedObjectBinding, segments: PathSegment[]): boolean => {
     const fullPath = [...binding.prefix, ...segments];
     const serialized = serializePath(fullPath);
@@ -456,7 +287,7 @@ export function visitObjectPathSourceFile(
       return undefined;
     }
 
-    const candidateSegments = extractFinitePropertyUnionSegments(node.argumentExpression);
+    const candidateSegments = extractFinitePropertyUnionSegments(project, node.argumentExpression);
     if (!candidateSegments) {
       return undefined;
     }

@@ -12,6 +12,7 @@ import { analyzeSymbolLiveness } from "./analyzers/symbol-liveness.js";
 import { analyzeValueLiveness } from "./analyzers/value-liveness.js";
 import { collectPublicSurfaceIds } from "./analyzers/support.js";
 import { validateFindingKindOwners } from "./finding-kind-owners.js";
+import { appendTrackingAnalysisDiagnostics } from "./tracking/diagnostics.js";
 
 interface AnalysisStage {
   enabled: boolean;
@@ -67,6 +68,8 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
       stage.run();
     }
   }
+
+  appendTrackingAnalysisDiagnostics(state, artifacts);
 
   const includeKinds = project.config.value.includeKinds;
   const filteredFindings =

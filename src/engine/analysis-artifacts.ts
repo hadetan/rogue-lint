@@ -3,6 +3,7 @@ import type ts from "typescript";
 import type { ProjectContext } from "../types.js";
 import type { ReferenceCaches } from "./analyzers/support.js";
 import { buildTrackedObjects } from "./tracking/graph.js";
+import type { TrackingConvergenceOptions } from "./tracking/convergence.js";
 import type {
   TrackingRunArtifacts,
   TrackingStage,
@@ -21,6 +22,7 @@ export function createAnalysisArtifacts(
   project: ProjectContext,
   reachableFiles: Set<string>,
   publicSurfaceIds: Set<string>,
+  trackingConvergenceOptions?: TrackingConvergenceOptions,
 ): AnalysisArtifacts {
   const semanticDiagnosticsByFile = new Map<string, readonly ts.Diagnostic[]>();
   const referenceCaches: ReferenceCaches = {
@@ -32,7 +34,7 @@ export function createAnalysisArtifacts(
 
   const getTrackingRunArtifacts = (): TrackingRunArtifacts => {
     if (!trackingArtifacts) {
-      trackingArtifacts = buildTrackedObjects(project, reachableFiles);
+      trackingArtifacts = buildTrackedObjects(project, reachableFiles, trackingConvergenceOptions);
     }
     return trackingArtifacts;
   };
