@@ -88,7 +88,8 @@ export function analyzeValueLiveness(
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): void {
-  const { functionReturnSummaries } = artifacts.getTrackingArtifacts();
+  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts("value-liveness");
+  const functionReturnSummaries = trackingStageArtifacts.returnSummaries.byCallableId;
 
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {

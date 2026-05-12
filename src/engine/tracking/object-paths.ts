@@ -21,7 +21,11 @@ export function analyzeObjectPaths(
     return;
   }
 
-  const { trackedBySymbolId, functionReturnSummaries, trackedObjectsById } = artifacts.getTrackingArtifacts();
+  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts("object-paths");
+  const trackedBySymbolId = trackingStageArtifacts.bindings.bySymbolId;
+  const functionReturnSummaries = trackingStageArtifacts.returnSummaries.byCallableId;
+  const trackedObjectsById = trackingStageArtifacts.aliases.trackedObjectsById;
+  const boundaryTrackedObjectsById = trackingStageArtifacts.boundaries.trackedObjectsById;
 
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {
@@ -39,5 +43,5 @@ export function analyzeObjectPaths(
     );
   }
 
-  finalizeObjectPathFindings(project, state, suppressionContext, trackedObjectsById.values());
+  finalizeObjectPathFindings(project, state, suppressionContext, boundaryTrackedObjectsById.values());
 }

@@ -26,7 +26,6 @@ import {
   getStaticGlobalThisPropertyName,
   mergeTrackedBinding,
   sameTrackedBinding,
-  sameTrackedBindingMap,
 } from "./bindings.js";
 import {
   getObjectBackedRetainedBindingSlotKeyFromAccess,
@@ -40,8 +39,20 @@ import {
   getAnalyzableCallableBindingFromDeclaration,
   getAnalyzableCallableName,
   getCallableReturnBinding,
-  sameCallableReturnSummaryMap,
 } from "./callables.js";
+import type {
+  TrackingContractDiagnostic,
+  TrackingRunArtifacts,
+  TrackingStage,
+  TrackingStageArtifacts,
+} from "./contracts.js";
+import { createContractViolation } from "./contracts.js";
+import {
+  runTrackingConvergence,
+  TrackingConvergenceError,
+  type TrackingConvergenceOptions,
+  type TrackingConvergenceState,
+} from "./convergence.js";
 import { isExportedVariableDeclaration } from "./semantics.js";
 import {
   ASSIGNMENT_OPERATORS,
@@ -758,16 +769,15 @@ export function materializeTrackedLiteralAtPath(
 export function buildTrackedObjects(
   project: ProjectContext,
   reachableFiles: Set<string>,
-): {
-  trackedBySymbolId: Map<string, TrackedObjectBinding>;
-  functionReturnSummaries: Map<string, CallableReturnSummary>;
-  trackedObjectsById: Map<string, TrackedObject>;
-} {
+  options?: TrackingConvergenceOptions,
+): TrackingRunArtifacts {
   const trackedBySymbolId = new Map<string, TrackedObjectBinding>();
   const functionReturnSummaries = new Map<string, CallableReturnSummary>();
   const trackedLiteralBindings = new Map<string, TrackedObjectBinding>();
   const trackedReturnLiteralBindings = new Map<string, TrackedObjectBinding>();
   const trackedObjectsById = new Map<string, TrackedObject>();
+  const diagnostics: TrackingContractDiagnostic[] = [];
+  const reachableSourceFileCount = project.sourceFiles.filter((sourceFile) => reachableFiles.has(sourceFile.fileName)).length;
 
   const createTrackedBindingForLiteral = (
     symbolKey: string,
@@ -1176,8 +1186,7 @@ export function buildTrackedObjects(
     return unsupported ? { kind: "opaque" } : summary ?? { kind: "opaque" };
   };
 
-  let changed = true;
-  while (changed) {
+  const computeNextTrackingState = (): TrackingConvergenceState => {
     const nextTrackedBySymbolId = new Map<string, TrackedObjectBinding>();
     const conflictedTrackedSymbolIds = new Set<string>();
 
@@ -1399,22 +1408,111 @@ export function buildTrackedObjects(
       ts.forEachChild(sourceFile, visit);
     }
 
-    changed =
-      !sameTrackedBindingMap(trackedBySymbolId, nextTrackedBySymbolId)
-      || !sameCallableReturnSummaryMap(functionReturnSummaries, nextFunctionReturnSummaries);
-    trackedBySymbolId.clear();
-    nextTrackedBySymbolId.forEach((binding, symbolKey) => {
-      trackedBySymbolId.set(symbolKey, binding);
-    });
-    functionReturnSummaries.clear();
-    nextFunctionReturnSummaries.forEach((summary, symbolKey) => {
-      functionReturnSummaries.set(symbolKey, summary);
-    });
+    return {
+      trackedBySymbolId: nextTrackedBySymbolId,
+      functionReturnSummaries: nextFunctionReturnSummaries,
+    };
+  };
+
+  let convergenceResult;
+  try {
+    convergenceResult = runTrackingConvergence(
+      () => ({ trackedBySymbolId, functionReturnSummaries }),
+      computeNextTrackingState,
+      (nextState) => {
+        trackedBySymbolId.clear();
+        nextState.trackedBySymbolId.forEach((binding, symbolKey) => {
+          trackedBySymbolId.set(symbolKey, binding);
+        });
+        functionReturnSummaries.clear();
+        nextState.functionReturnSummaries.forEach((summary, symbolKey) => {
+          functionReturnSummaries.set(symbolKey, summary);
+        });
+      },
+      options,
+    );
+  } catch (error) {
+    if (error instanceof TrackingConvergenceError) {
+      diagnostics.push(error.diagnostic);
+    }
+    throw error;
   }
 
+  diagnostics.push(...convergenceResult.diagnostics);
+
+  const runtimeSummary = {
+    seed: {
+      reachableFileCount: reachableFiles.size,
+      reachableSourceFileCount,
+    },
+    convergence: convergenceResult.summary,
+    totals: {
+      trackedBindings: trackedBySymbolId.size,
+      returnSummaries: functionReturnSummaries.size,
+      trackedObjects: trackedObjectsById.size,
+    },
+    stageRequests: {
+      "value-liveness": 0,
+      "object-paths": 0,
+    },
+  };
+
+  const facts = {
+    bindings: {
+      owner: "binding-convergence" as const,
+      bySymbolId: trackedBySymbolId,
+    },
+    returnSummaries: {
+      owner: "return-summary-convergence" as const,
+      byCallableId: functionReturnSummaries,
+    },
+    aliases: {
+      owner: "alias-state" as const,
+      trackedObjectsById,
+    },
+    boundaries: {
+      owner: "boundary-state" as const,
+      trackedObjectsById,
+    },
+  };
+
+  const getStageArtifacts = <TStage extends TrackingStage>(
+    stage: TStage,
+  ): Extract<TrackingStageArtifacts, { stage: TStage }> => {
+    if (stage === "value-liveness") {
+      runtimeSummary.stageRequests["value-liveness"] += 1;
+      return {
+        stage,
+        returnSummaries: facts.returnSummaries,
+        runtimeSummary,
+      } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
+    }
+
+    if (stage === "object-paths") {
+      runtimeSummary.stageRequests["object-paths"] += 1;
+      return {
+        stage,
+        bindings: facts.bindings,
+        returnSummaries: facts.returnSummaries,
+        aliases: facts.aliases,
+        boundaries: facts.boundaries,
+        runtimeSummary,
+      } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
+    }
+
+    const diagnostic = createContractViolation(
+      undefined,
+      `tracking stage '${stage}' is outside the declared tracking-kernel contract`,
+    );
+    diagnostics.push(diagnostic);
+    throw new Error(diagnostic.message);
+  };
+
   return {
-    trackedBySymbolId,
-    functionReturnSummaries,
-    trackedObjectsById,
+    seed: runtimeSummary.seed,
+    facts,
+    runtimeSummary,
+    diagnostics,
+    getStageArtifacts,
   };
 }
