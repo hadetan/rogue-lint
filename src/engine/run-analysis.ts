@@ -4,15 +4,14 @@ import { buildSuppressionContext } from "../suppressions.js";
 import type { AnalysisOptions, AnalysisResult, FindingKind } from "../types.js";
 import { getVersion, uniqueById } from "../shared/general-utils.js";
 import { createAnalysisState } from "./analysis-state.js";
-import { analyzeClassMembers } from "./analyzers/class-members.js";
+import { createAnalysisArtifacts } from "./analysis-artifacts.js";
 import { analyzeCompilerSafetyDiagnostics } from "./analyzers/compiler-safety.js";
-import { analyzeInterfaceMembers } from "./analyzers/interface-members.js";
 import { analyzeObjectPaths } from "./analyzers/object-paths.js";
-import { analyzeUnusedExports } from "./analyzers/unused-exports.js";
 import { analyzeUnusedFiles } from "./analyzers/unused-files.js";
-import { analyzeUnusedLocals } from "./analyzers/unused-locals.js";
+import { analyzeSymbolLiveness } from "./analyzers/symbol-liveness.js";
 import { analyzeValueLiveness } from "./analyzers/value-liveness.js";
-import { collectPublicSurfaceIds, type ReferenceCaches } from "./analyzers/support.js";
+import { collectPublicSurfaceIds } from "./analyzers/support.js";
+import { validateFindingKindOwners } from "./finding-kind-owners.js";
 
 interface AnalysisStage {
   enabled: boolean;
@@ -26,6 +25,8 @@ interface AnalysisStage {
  * execution order, shared caches, and final deduplication of findings, kept audits, skips, and diagnostics.
  */
 export async function analyzeProject(options: AnalysisOptions): Promise<AnalysisResult> {
+  validateFindingKindOwners();
+
   const project = loadProject(options);
   const state = createAnalysisState();
   const suppressionContext = buildSuppressionContext(project);
@@ -33,11 +34,7 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
   const entrypointDiscovery = discoverEntrypoints(project);
   const reachableFiles = computeReachableFiles(entrypointDiscovery.entrypoints, graph);
   const publicSurfaceIds = collectPublicSurfaceIds(project, entrypointDiscovery.publicSurfaceEntrypoints);
-  const caches: ReferenceCaches = {
-    hasReference: new Map(),
-    exportReferences: new Map(),
-    usage: new Map(),
-  };
+  const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds);
 
   state.diagnostics.push(...entrypointDiscovery.diagnostics);
   state.diagnostics.push(...graph.unresolved);
@@ -49,32 +46,19 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
     },
     {
       enabled: true,
-      run: () => analyzeCompilerSafetyDiagnostics(project, reachableFiles, state, suppressionContext),
+      run: () => analyzeCompilerSafetyDiagnostics(project, reachableFiles, state, suppressionContext, artifacts),
     },
     {
       enabled: true,
-      run: () =>
-        analyzeUnusedExports(project, reachableFiles, publicSurfaceIds, state, suppressionContext, caches),
+      run: () => analyzeSymbolLiveness(project, reachableFiles, state, suppressionContext, artifacts),
     },
     {
       enabled: true,
-      run: () => analyzeUnusedLocals(project, reachableFiles, state, suppressionContext),
+      run: () => analyzeValueLiveness(project, reachableFiles, state, suppressionContext, artifacts),
     },
     {
       enabled: true,
-      run: () => analyzeValueLiveness(project, reachableFiles, state, suppressionContext),
-    },
-    {
-      enabled: true,
-      run: () => analyzeInterfaceMembers(project, reachableFiles, state, suppressionContext, caches),
-    },
-    {
-      enabled: true,
-      run: () => analyzeClassMembers(project, reachableFiles, publicSurfaceIds, state, suppressionContext, caches),
-    },
-    {
-      enabled: true,
-      run: () => analyzeObjectPaths(project, reachableFiles, state, suppressionContext),
+      run: () => analyzeObjectPaths(project, reachableFiles, state, suppressionContext, artifacts),
     },
   ];
 

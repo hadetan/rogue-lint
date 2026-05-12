@@ -19,6 +19,7 @@ Current finding kinds:
 
 - `unused-file`
 - `unused-export`
+- `unused-import`
 - `unused-type`
 - `unused-enum-member`
 - `unused-local`
@@ -40,6 +41,16 @@ Current report buckets:
 - `kept`
 - `skipped`
 - `diagnostics`
+
+Normalized symbol-liveness ownership currently covers:
+
+- `unused-import`
+- `unused-export`
+- `unused-type`
+- `unused-enum-member`
+- `unused-local`
+- `unused-class-member`
+- `unused-interface-member`
 
 ## 1. Whole-Project Reachability And Public Surface
 

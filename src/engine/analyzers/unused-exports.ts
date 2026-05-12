@@ -3,11 +3,11 @@ import { summarizeNonDeclarationReferences } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
 import { kindToFinding } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
+import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 import {
   buildPublicSurfaceAudit,
   collectExportCandidates,
   createReferenceKey,
-  type ReferenceCaches,
 } from "./support.js";
 
 /**
@@ -16,10 +16,9 @@ import {
 export function analyzeUnusedExports(
   project: ProjectContext,
   reachableFiles: Set<string>,
-  publicSurfaceIds: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
-  caches: ReferenceCaches,
+  artifacts: AnalysisArtifacts,
 ): void {
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {
@@ -28,7 +27,7 @@ export function analyzeUnusedExports(
 
     for (const candidate of collectExportCandidates(project, sourceFile)) {
       const cacheKey = createReferenceKey(sourceFile, candidate.node);
-      let referenceSummary = caches.exportReferences.get(cacheKey);
+      let referenceSummary = artifacts.referenceCaches.exportReferences.get(cacheKey);
       if (!referenceSummary) {
         referenceSummary = summarizeNonDeclarationReferences(
           project.languageService,
@@ -36,14 +35,14 @@ export function analyzeUnusedExports(
           candidate.node,
           project.analyzableFiles,
         );
-        caches.exportReferences.set(cacheKey, referenceSummary);
+        artifacts.referenceCaches.exportReferences.set(cacheKey, referenceSummary);
       }
 
       if (referenceSummary.crossFileReferences > 0) {
         continue;
       }
 
-      const keepReason = publicSurfaceIds.has(candidate.entity.id)
+      const keepReason = artifacts.publicSurfaceIds.has(candidate.entity.id)
         ? buildPublicSurfaceAudit(candidate.entity)
         : getSuppressionAudit(project, suppressionContext, candidate.entity, candidate.node);
 

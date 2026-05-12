@@ -9,6 +9,7 @@ export type AnalysisMode = "application" | "library";
 export type FindingKind =
   | "unused-file"
   | "unused-export"
+  | "unused-import"
   | "unused-local"
   | "unused-type"
   | "unused-enum-member"
@@ -30,6 +31,7 @@ export type FindingKind =
 export type EntityKind =
   | "file"
   | "export"
+  | "import"
   | "local"
   | "type"
   | "enum-member"

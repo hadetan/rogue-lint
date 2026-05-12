@@ -6,6 +6,7 @@ import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
+import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 
 /**
  * Converts TypeScript's unused-local diagnostics into rogue-lint findings after suppression checks.
@@ -15,6 +16,7 @@ export function analyzeUnusedLocals(
   reachableFiles: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
+  artifacts: AnalysisArtifacts,
 ): void {
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {
@@ -27,7 +29,7 @@ export function analyzeUnusedLocals(
       continue;
     }
 
-    for (const diagnostic of project.program.getSemanticDiagnostics(sourceFile)) {
+    for (const diagnostic of artifacts.getSemanticDiagnostics(sourceFile)) {
       if (diagnostic.code !== 6133 || !diagnostic.file || diagnostic.start === undefined) {
         continue;
       }

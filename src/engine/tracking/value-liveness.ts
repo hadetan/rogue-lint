@@ -16,7 +16,8 @@ import {
   addSkipped,
   type AnalysisState,
 } from "../analysis-state.js";
-import { buildTrackedObjects, isTrackablePureExpression } from "./graph.js";
+import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { isTrackablePureExpression } from "./graph.js";
 import type {
   TrackedValueBinding,
   ValueAccess,
@@ -85,8 +86,9 @@ export function analyzeValueLiveness(
   reachableFiles: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
+  artifacts: AnalysisArtifacts,
 ): void {
-  const { functionReturnSummaries } = buildTrackedObjects(project, reachableFiles);
+  const { functionReturnSummaries } = artifacts.getTrackingArtifacts();
 
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {

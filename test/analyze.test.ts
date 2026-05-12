@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.js";
+import { validateFindingKindOwners } from "../src/engine/finding-kind-owners.js";
 import { analyzeProject } from "../src/index.js";
 import { renderResult } from "../src/output/render-result.js";
 
@@ -25,6 +26,10 @@ const RETURNED_CONTEXT_USED_FIELD_NAMES = ["processors", "seen"];
 const OPAQUE_CALLBACK_USED_FIELD_NAMES = ["seen"];
 
 describe("rogue-lint analyzer", () => {
+  it("assigns every public finding kind to exactly one capability owner", () => {
+    expect(() => validateFindingKindOwners()).not.toThrow();
+  });
+
   it("finds unused files, exports, locals, class members, and object paths in application mode", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -172,6 +177,25 @@ describe("rogue-lint analyzer", () => {
 
     expect(result.kept.some((entry) => entry.name === "ignoredLocalOnly" && entry.reason === "suppressed by rogue-lint-ignore-next")).toBe(true);
     expect(result.kept.some((entry) => entry.name === "IgnoredLocalShape" && entry.reason === "suppressed by rogue-lint-ignore-next")).toBe(true);
+  });
+
+  it("reports unused imports while keeping referenced imports live", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("unused-import-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-import:unusedDefault");
+    expect(kindsAndNames).toContain("unused-import:unusedNamed");
+    expect(kindsAndNames).toContain("unused-import:unusedNamespace");
+    expect(kindsAndNames).toContain("unused-import:UnusedType");
+    expect(kindsAndNames).not.toContain("unused-import:usedDefault");
+    expect(kindsAndNames).not.toContain("unused-import:usedNamed");
+    expect(kindsAndNames).not.toContain("unused-import:usedNamespace");
+    expect(kindsAndNames).not.toContain("unused-import:UsedType");
   });
 
   it("supports exact and conservative array analysis", async () => {

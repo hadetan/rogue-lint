@@ -45,19 +45,29 @@ This module is responsible for:
 
 - loading the project context
 - discovering entrypoints and reachable files
-- creating shared per-run caches and mutable state
+- creating shared per-run analysis artifacts, caches, and mutable state
 - executing analyzer stages in order
 - assembling the final `AnalysisResult`
 
 Do not move stage-specific semantics back into this file.
 
+### `src/engine/analysis-artifacts.ts`
+
+Owns shared per-run evidence.
+
+- compiler-diagnostic access used by low-coupling analyzers
+- lazy tracking-artifact construction shared by the exactness-sensitive tracking stages
+
+Put reusable per-run analysis evidence here when more than one stage needs the same derived view.
+
 ### `src/engine/analyzers/`
 
 Owns stage entrypoints.
 
-- low-coupling stages such as `unused-files`, `unused-exports`, `unused-locals`, `class-members`, and `interface-members` live directly here
+- low-coupling stages such as `unused-files`, `compiler-safety`, and `symbol-liveness` live directly here
+- `symbol-liveness.ts` owns import, export, type, enum-member, local, class-member, and interface-member findings through helpers such as `unused-imports.ts`, `unused-exports.ts`, `unused-locals.ts`, `class-members.ts`, and `interface-members.ts`
 - `support.ts` holds shared export/reference helpers used across those stages
-- `value-liveness.ts` and `object-paths.ts` stay thin and delegate to stable tracking stage exports behind `src/engine/tracking/core.ts`
+- `value-liveness.ts` and `object-paths.ts` stay thin and delegate to stable tracking stage exports behind `src/engine/tracking/core.ts`, sharing the same tracked-graph artifacts per run
 
 Add a new module here when a concern can be executed as one stage in the orchestration pipeline.
 

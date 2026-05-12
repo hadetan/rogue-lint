@@ -6,7 +6,8 @@ import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, addSkipped, type AnalysisState } from "../analysis-state.js";
-import { buildPublicSurfaceAudit, createReferenceKey, type ReferenceCaches } from "./support.js";
+import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { buildPublicSurfaceAudit, createReferenceKey } from "./support.js";
 
 /**
  * Reports class members that are provably unread while recording decorator and computed-name boundaries conservatively.
@@ -14,10 +15,9 @@ import { buildPublicSurfaceAudit, createReferenceKey, type ReferenceCaches } fro
 export function analyzeClassMembers(
   project: ProjectContext,
   reachableFiles: Set<string>,
-  publicSurfaceIds: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
-  caches: ReferenceCaches,
+  artifacts: AnalysisArtifacts,
 ): void {
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {
@@ -47,7 +47,7 @@ export function analyzeClassMembers(
             className,
           );
 
-          if (publicSurfaceIds.has(entity.id)) {
+          if (artifacts.publicSurfaceIds.has(entity.id)) {
             addAudit(state.kept, buildPublicSurfaceAudit(entity));
             continue;
           }
@@ -73,7 +73,7 @@ export function analyzeClassMembers(
 
           const cacheKey = createReferenceKey(sourceFile, memberNameNode);
           const usage =
-            caches.usage.get(cacheKey)
+            artifacts.referenceCaches.usage.get(cacheKey)
             ?? summarizeReferenceUsage(
               project.languageService,
               project.program,
@@ -81,7 +81,7 @@ export function analyzeClassMembers(
               memberNameNode,
               project.analyzableFiles,
             );
-          caches.usage.set(cacheKey, usage);
+          artifacts.referenceCaches.usage.set(cacheKey, usage);
 
           if (usage.reads > 0) {
             continue;

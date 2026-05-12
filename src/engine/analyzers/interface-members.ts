@@ -6,7 +6,8 @@ import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName, hasModifier } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
-import { createReferenceKey, type ReferenceCaches } from "./support.js";
+import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { createReferenceKey } from "./support.js";
 
 /**
  * Reports internal interface members that have no proven non-declaration references.
@@ -16,7 +17,7 @@ export function analyzeInterfaceMembers(
   reachableFiles: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
-  caches: ReferenceCaches,
+  artifacts: AnalysisArtifacts,
 ): void {
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {
@@ -55,7 +56,7 @@ export function analyzeInterfaceMembers(
           }
 
           const cacheKey = createReferenceKey(sourceFile, memberNameNode);
-          let hasReferences = caches.hasReference.get(cacheKey);
+          let hasReferences = artifacts.referenceCaches.hasReference.get(cacheKey);
           if (hasReferences === undefined) {
             hasReferences = hasNonDeclarationReferences(
               project.languageService,
@@ -63,7 +64,7 @@ export function analyzeInterfaceMembers(
               memberNameNode,
               project.analyzableFiles,
             );
-            caches.hasReference.set(cacheKey, hasReferences);
+            artifacts.referenceCaches.hasReference.set(cacheKey, hasReferences);
           }
 
           if (hasReferences) {

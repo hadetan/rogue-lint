@@ -1,5 +1,6 @@
 import type { ProjectContext, SuppressionContext } from "../../types.js";
 import type { AnalysisState } from "../analysis-state.js";
+import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 import { analyzeValueLiveness as analyzeValueLivenessInCore } from "../tracking/core.js";
 
 /**
@@ -10,6 +11,7 @@ export function analyzeValueLiveness(
   reachableFiles: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
+  artifacts: AnalysisArtifacts,
 ): void {
-  analyzeValueLivenessInCore(project, reachableFiles, state, suppressionContext);
+  analyzeValueLivenessInCore(project, reachableFiles, state, suppressionContext, artifacts);
 }

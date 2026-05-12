@@ -6,6 +6,7 @@ import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
+import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 
 interface CompilerSafetyDiagnosticSpec {
   findingKind: "use-before-init";
@@ -84,13 +85,14 @@ export function analyzeCompilerSafetyDiagnostics(
   reachableFiles: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
+  artifacts: AnalysisArtifacts,
 ): void {
   for (const sourceFile of project.sourceFiles) {
     if (!reachableFiles.has(sourceFile.fileName)) {
       continue;
     }
 
-    for (const diagnostic of project.program.getSemanticDiagnostics(sourceFile)) {
+    for (const diagnostic of artifacts.getSemanticDiagnostics(sourceFile)) {
       const spec = COMPILER_SAFETY_DIAGNOSTICS.get(diagnostic.code);
       if (!spec || !diagnostic.file || diagnostic.start === undefined) {
         continue;
