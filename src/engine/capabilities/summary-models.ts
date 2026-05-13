@@ -2,23 +2,28 @@ import type { ProjectContext, SkipCategory } from "../../types.js";
 
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 import type { CallableReturnSummary } from "../tracking/model.js";
-import type { AnalysisCapabilityId, AnalysisCapabilityObligationRecord } from "./types.js";
+import type {
+  AnalysisCapabilityFactRecord,
+  AnalysisCapabilityId,
+  AnalysisCapabilityObligationRecord,
+} from "./types.js";
 
-type AnalysisCapabilitySummaryModelKind = "transport" | "retained-storage" | "escape" | "barrier";
-
-type AnalysisCapabilitySummaryModelSource = "same-project" | "library";
-
-interface AnalysisCapabilitySummaryModel {
-  id: string;
-  capabilityId: AnalysisCapabilityId;
-  source: AnalysisCapabilitySummaryModelSource;
-  kind: AnalysisCapabilitySummaryModelKind;
-  label: string;
-  category?: SkipCategory;
-  detailHint?: string;
+interface AnalysisCapabilitySummaryRegistry {
+  hasSameProjectReturnedStructureTransport: boolean;
 }
 
-type AnalysisCapabilitySummaryRegistry = ReadonlyMap<AnalysisCapabilityId, readonly AnalysisCapabilitySummaryModel[]>;
+const SAME_PROJECT_HELPER_TRANSPORT_LABEL = "same-project helper transport";
+const SAME_PROJECT_HELPER_RETAINED_STORAGE_LABEL = "same-project helper retained storage";
+const SAME_PROJECT_HELPER_ESCAPE_LABEL = "same-project helper escape";
+const SAME_PROJECT_RETURNED_STRUCTURE_LABEL = "same-project helper return summary";
+const BOUNDED_FINITE_KEY_READ_LABEL = "bounded finite key read";
+const PROMISE_ALL_TRANSPORT_LABEL = "Promise.all transport summary";
+const CALLBACK_TRANSPORT_BOUNDARY_LABEL = "callback transport boundary";
+const OPAQUE_HELPER_MUTATION_BOUNDARY_LABEL = "opaque helper mutation boundary";
+const OPAQUE_HELPER_TRANSPORT_BOUNDARY_LABEL = "opaque helper transport boundary";
+const ARRAY_AT_BOUNDARY_LABEL = "array .at boundary";
+const COMPUTED_KEY_BOUNDARY_LABEL = "computed key boundary";
+const DYNAMIC_INDEX_BOUNDARY_LABEL = "dynamic index boundary";
 
 const FALLBACK_BOUNDARY_LABELS: Record<AnalysisCapabilityId, string> = {
   "finite-keyed-access": "finite keyed access summary fallback",
@@ -27,110 +32,100 @@ const FALLBACK_BOUNDARY_LABELS: Record<AnalysisCapabilityId, string> = {
   "library-public-surface-aliasing": "public surface aliasing fallback",
 };
 
-const LIBRARY_SUMMARY_MODELS: readonly AnalysisCapabilitySummaryModel[] = [
-  {
-    id: "returned-structure-transport:promise-all-transport",
-    capabilityId: "returned-structure-transport",
-    source: "library",
-    kind: "transport",
-    label: "Promise.all transport summary",
-    detailHint: "Promise.all()",
-  },
-  {
-    id: "helper-transport:array-callback-boundary",
-    capabilityId: "helper-transport",
-    source: "library",
-    kind: "barrier",
-    label: "callback transport boundary",
-    category: "array-callback-escape",
-  },
-  {
-    id: "helper-transport:array-opaque-mutation-boundary",
-    capabilityId: "helper-transport",
-    source: "library",
-    kind: "retained-storage",
-    label: "opaque helper mutation boundary",
-    category: "array-opaque-mutation",
-  },
-  {
-    id: "helper-transport:opaque-object-call-boundary",
-    capabilityId: "helper-transport",
-    source: "library",
-    kind: "escape",
-    label: "opaque helper transport boundary",
-    category: "opaque-object-call",
-  },
-  {
-    id: "finite-keyed-access:array-at-boundary",
-    capabilityId: "finite-keyed-access",
-    source: "library",
-    kind: "barrier",
-    label: "array .at boundary",
-    category: "array-at-call",
-  },
-  {
-    id: "finite-keyed-access:computed-key-boundary",
-    capabilityId: "finite-keyed-access",
-    source: "library",
-    kind: "barrier",
-    label: "computed key boundary",
-    category: "computed-property-access",
-  },
-  {
-    id: "finite-keyed-access:dynamic-index-boundary",
-    capabilityId: "finite-keyed-access",
-    source: "library",
-    kind: "barrier",
-    label: "dynamic index boundary",
-    category: "dynamic-array-index",
-  },
-];
-
-function collectSameProjectModels(artifacts: AnalysisArtifacts): AnalysisCapabilitySummaryModel[] {
+function hasSameProjectTransportSummary(artifacts: AnalysisArtifacts): boolean {
   let returnSummaries: ReadonlyMap<string, CallableReturnSummary>;
 
   try {
     returnSummaries = artifacts.getTrackingStageArtifacts("value-liveness").returnSummaries.byCallableId;
   } catch {
-    return [];
+    return false;
   }
 
-  const hasTransportSummary = [...returnSummaries.values()].some((summary) =>
-    summary.kind === "structured" || summary.kind === "returned-alias",
-  );
+  for (const summary of returnSummaries.values()) {
+    if (summary.kind === "structured" || summary.kind === "returned-alias") {
+      return true;
+    }
+  }
 
-  return hasTransportSummary
-    ? [{
-      id: "returned-structure-transport:same-project-helper-return",
-      capabilityId: "returned-structure-transport",
-      source: "same-project",
-      kind: "transport",
-      label: "same-project helper return summary",
-    }]
-    : [];
+  return false;
 }
 
 export function createAnalysisCapabilitySummaryRegistry(
   _project: ProjectContext,
   artifacts: AnalysisArtifacts,
 ): AnalysisCapabilitySummaryRegistry {
-  const sameProjectModels = collectSameProjectModels(artifacts);
-  const modelsByCapability = new Map<AnalysisCapabilityId, AnalysisCapabilitySummaryModel[]>();
-
-  for (const model of [...sameProjectModels, ...LIBRARY_SUMMARY_MODELS]) {
-    const existing = modelsByCapability.get(model.capabilityId) ?? [];
-    existing.push(model);
-    modelsByCapability.set(model.capabilityId, existing);
-  }
-
-  return modelsByCapability;
+  return {
+    hasSameProjectReturnedStructureTransport: hasSameProjectTransportSummary(artifacts),
+  };
 }
 
-function getCapabilitySummaryModels(
-  registry: AnalysisCapabilitySummaryRegistry,
+function getCapabilityDetailHintLabel(
   capabilityId: AnalysisCapabilityId,
-): readonly AnalysisCapabilitySummaryModel[] {
-  return registry.get(capabilityId) ?? [];
+  detailHint?: string,
+): string | undefined {
+  if (!detailHint) {
+    return undefined;
+  }
+
+  switch (capabilityId) {
+    case "helper-transport":
+      if (detailHint.startsWith(SAME_PROJECT_HELPER_TRANSPORT_LABEL)) {
+        return SAME_PROJECT_HELPER_TRANSPORT_LABEL;
+      }
+      if (detailHint.startsWith(SAME_PROJECT_HELPER_RETAINED_STORAGE_LABEL)) {
+        return SAME_PROJECT_HELPER_RETAINED_STORAGE_LABEL;
+      }
+      if (detailHint.startsWith(SAME_PROJECT_HELPER_ESCAPE_LABEL)) {
+        return SAME_PROJECT_HELPER_ESCAPE_LABEL;
+      }
+      return undefined;
+    case "finite-keyed-access":
+      return detailHint.startsWith(BOUNDED_FINITE_KEY_READ_LABEL)
+        ? BOUNDED_FINITE_KEY_READ_LABEL
+        : undefined;
+    case "returned-structure-transport":
+      return detailHint.startsWith("Promise.all()")
+        ? PROMISE_ALL_TRANSPORT_LABEL
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function getCapabilityBoundaryCategoryLabel(
+  capabilityId: AnalysisCapabilityId,
+  category?: SkipCategory,
+): string | undefined {
+  if (category === undefined) {
+    return undefined;
+  }
+
+  switch (capabilityId) {
+    case "helper-transport":
+      switch (category) {
+        case "array-callback-escape":
+          return CALLBACK_TRANSPORT_BOUNDARY_LABEL;
+        case "array-opaque-mutation":
+          return OPAQUE_HELPER_MUTATION_BOUNDARY_LABEL;
+        case "opaque-object-call":
+          return OPAQUE_HELPER_TRANSPORT_BOUNDARY_LABEL;
+        default:
+          return undefined;
+      }
+    case "finite-keyed-access":
+      switch (category) {
+        case "array-at-call":
+          return ARRAY_AT_BOUNDARY_LABEL;
+        case "computed-property-access":
+          return COMPUTED_KEY_BOUNDARY_LABEL;
+        case "dynamic-array-index":
+          return DYNAMIC_INDEX_BOUNDARY_LABEL;
+        default:
+          return undefined;
+      }
+    default:
+      return undefined;
+  }
 }
 
 export function getCapabilityObligationDetailLabel(
@@ -138,16 +133,26 @@ export function getCapabilityObligationDetailLabel(
   capabilityId: AnalysisCapabilityId,
   obligation: Pick<AnalysisCapabilityObligationRecord, "detailHint">,
 ): string | undefined {
-  const models = getCapabilitySummaryModels(registry, capabilityId);
-  const detailHint = obligation.detailHint;
-  const hintedModel = detailHint
-    ? models.find((model) => model.detailHint !== undefined && detailHint.startsWith(model.detailHint))
-    : undefined;
-  if (hintedModel) {
-    return hintedModel.label;
+  const detailLabel = getCapabilityDetailHintLabel(capabilityId, obligation.detailHint);
+  if (detailLabel) {
+    return detailLabel;
   }
 
-  return models.find((model) => model.source === "same-project" && model.kind === "transport")?.label;
+  if (capabilityId === "returned-structure-transport" && registry.hasSameProjectReturnedStructureTransport) {
+    return SAME_PROJECT_RETURNED_STRUCTURE_LABEL;
+  }
+
+  return undefined;
+}
+
+export function getCapabilityFactDetailLabel(
+  _registry: ReturnType<typeof createAnalysisCapabilitySummaryRegistry>,
+  capabilityId: AnalysisCapabilityId,
+  fact: Pick<AnalysisCapabilityFactRecord, "detailHint" | "category">,
+): string | undefined {
+  return getCapabilityDetailHintLabel(capabilityId, fact.detailHint)
+    ?? getCapabilityBoundaryCategoryLabel(capabilityId, fact.category)
+    ?? fact.detailHint;
 }
 
 export function getCapabilityBoundaryDetailLabel(
@@ -155,11 +160,8 @@ export function getCapabilityBoundaryDetailLabel(
   capabilityId: AnalysisCapabilityId,
   category?: SkipCategory,
 ): string | undefined {
-  if (!category) {
-    return undefined;
-  }
-
-  return getCapabilitySummaryModels(registry, capabilityId).find((model) => model.category === category)?.label;
+  void registry;
+  return getCapabilityBoundaryCategoryLabel(capabilityId, category);
 }
 
 export function getCapabilityFallbackBoundaryLabel(capabilityId: AnalysisCapabilityId): string {

@@ -7,12 +7,16 @@ import type {
   SkipCategory,
 } from "../types.js";
 import type {
+  AnalysisCapabilityFactFamily,
+  AnalysisCapabilityFactOutcome,
+  AnalysisCapabilityFactRecord,
   AnalysisCapabilityId,
   AnalysisCapabilityObligationFamily,
   AnalysisCapabilityObligationRecord,
   AnalysisCapabilityOutcome,
 } from "./capabilities/types.js";
 import {
+  createCapabilityFactRecordId,
   createCapabilityObligationGapMessage,
   createProviderObligationRecordId,
 } from "./capabilities/types.js";
@@ -28,17 +32,69 @@ export interface AnalysisState {
   capabilityObligations: Map<string, AnalysisCapabilityObligationRecord>;
 }
 
+const capabilityFactsByState = new WeakMap<AnalysisState, Map<string, AnalysisCapabilityFactRecord>>();
+
 /**
  * Creates a fresh analysis-state container for a single orchestration pass.
  */
 export function createAnalysisState(): AnalysisState {
-  return {
+  const state: AnalysisState = {
     findings: [],
     kept: [],
     skipped: [],
     diagnostics: [],
     capabilityObligations: new Map(),
   };
+
+  capabilityFactsByState.set(state, new Map());
+  return state;
+}
+
+/**
+ * Registers a provider-facing capability fact emitted by analyzer or tracking code.
+ */
+export function registerCapabilityFact(
+  state: AnalysisState,
+  family: AnalysisCapabilityFactFamily,
+  entity: EntityRecord,
+  capabilityId: AnalysisCapabilityId,
+  outcome: AnalysisCapabilityFactOutcome,
+  options: {
+    category?: SkipCategory;
+    reason?: string;
+    detailHint?: string;
+  } = {},
+): void {
+  const id = createCapabilityFactRecordId(family, entity, capabilityId, options.detailHint);
+  const facts = capabilityFactsByState.get(state);
+  if (!facts || facts.has(id)) {
+    return;
+  }
+
+  facts.set(id, {
+    id,
+    family,
+    capabilityId,
+    entity,
+    outcome,
+    category: options.category,
+    reason: options.reason,
+    detailHint: options.detailHint,
+  });
+}
+
+/**
+ * Returns provider-facing capability facts emitted during analysis.
+ */
+export function getCapabilityFacts(
+  state: AnalysisState,
+): readonly AnalysisCapabilityFactRecord[] {
+  const facts = capabilityFactsByState.get(state);
+  if (!facts) {
+    return [];
+  }
+
+  return [...facts.values()];
 }
 
 /**

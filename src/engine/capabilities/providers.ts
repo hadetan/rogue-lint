@@ -3,6 +3,7 @@ import type { ProjectContext } from "../../types.js";
 
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 import {
+  getCapabilityFacts,
   getCapabilityObligations,
   type AnalysisState,
 } from "../analysis-state.js";
@@ -10,6 +11,7 @@ import {
   createAnalysisCapabilitySummaryRegistry,
   getCapabilityBoundaryDetailLabel,
   getCapabilityFallbackBoundaryLabel,
+  getCapabilityFactDetailLabel,
   getCapabilityObligationDetailLabel,
 } from "./summary-models.js";
 import {
@@ -19,6 +21,8 @@ import {
   createCapabilityEvidenceRecord,
   createDiagnosticCapabilityRecordId,
   createEmptyAnalysisCapabilityLedger,
+  type AnalysisCapabilityFactRecord,
+  type AnalysisCapabilityFactFamily,
   type AnalysisCapabilityId,
   type AnalysisCapabilityLedger,
   type AnalysisCapabilityObligationRecord,
@@ -26,8 +30,8 @@ import {
 
 interface AnalysisCapabilityProviderContext {
   project: ProjectContext;
-  state: AnalysisState;
   artifacts: AnalysisArtifacts;
+  facts: readonly AnalysisCapabilityFactRecord[];
   obligations: ReturnType<typeof getCapabilityObligations>;
   summaryRegistry: ReturnType<typeof createAnalysisCapabilitySummaryRegistry>;
   diagnostics: readonly DiagnosticRecord[];
@@ -53,7 +57,7 @@ function createRecordCapabilityIndex(
 
   for (const boundary of boundaries) {
     if (
-      (boundary.source === "obligation" || boundary.source === "diagnostic")
+      (boundary.source === "obligation" || boundary.source === "diagnostic" || boundary.source === "fact")
       && !recordCapabilityById.has(boundary.recordId)
     ) {
       recordCapabilityById.set(boundary.recordId, boundary.capabilityId);
@@ -244,6 +248,85 @@ function createSkippedBoundaryProvider(
   };
 }
 
+function createFactBackedProvider(
+  capabilityId: AnalysisCapabilityId,
+  family: AnalysisCapabilityFactFamily,
+): AnalysisCapabilityProvider {
+  return (context) => {
+    const ledger = createEmptyAnalysisCapabilityLedger();
+    const findingsById = new Map(context.findings.map((record) => [record.id, record]));
+    const keptById = new Map(context.kept.map((record) => [record.id, record]));
+    const skippedById = new Map(context.skipped.map((record) => [record.id, record]));
+
+    for (const fact of context.facts) {
+      if (fact.capabilityId !== capabilityId || fact.family !== family) {
+        continue;
+      }
+
+      const detailLabel = getCapabilityFactDetailLabel(
+        context.summaryRegistry,
+        capabilityId,
+        fact,
+      ) ?? getCapabilityFallbackBoundaryLabel(capabilityId);
+
+      ledger.evidences.push(
+        createCapabilityEvidenceRecord(capabilityId, "fact", fact.id, detailLabel),
+      );
+
+      if (fact.outcome === "live") {
+        const finding = findingsById.get(fact.entity.id);
+        if (finding) {
+          ledger.attributions.push(
+            createCapabilityAttributionRecord(capabilityId, "finding", finding.id),
+          );
+          ledger.evidences.push(
+            createCapabilityEvidenceRecord(capabilityId, "finding", finding.id, finding.kind),
+          );
+        }
+
+        const kept = keptById.get(fact.entity.id);
+        if (kept) {
+          ledger.attributions.push(
+            createCapabilityAttributionRecord(capabilityId, "kept", kept.id),
+          );
+          ledger.evidences.push(
+            createCapabilityEvidenceRecord(capabilityId, "kept", kept.id, kept.kind),
+          );
+        }
+        continue;
+      }
+
+      const skipped = skippedById.get(fact.entity.id);
+      if (!skipped) {
+        continue;
+      }
+
+      ledger.attributions.push(
+        createCapabilityAttributionRecord(capabilityId, "skipped", skipped.id),
+      );
+      ledger.evidences.push(
+        createCapabilityEvidenceRecord(capabilityId, "skipped", skipped.id, skipped.category ?? skipped.kind),
+      );
+      if (detailLabel !== skipped.category && detailLabel !== skipped.kind) {
+        ledger.evidences.push(
+          createCapabilityEvidenceRecord(capabilityId, "skipped", skipped.id, detailLabel),
+        );
+      }
+      ledger.boundaries.push(
+        createCapabilityBoundaryRecord(capabilityId, "skipped", skipped.id, detailLabel, skipped.category),
+      );
+    }
+
+    const providerLedger = {
+      ...ledger,
+      recordCapabilityById: createRecordCapabilityIndex(ledger.attributions, ledger.boundaries),
+      recordDetailById: createRecordDetailIndex(ledger.evidences, ledger.boundaries),
+    };
+    assertProviderCapabilityOwnership(capabilityId, providerLedger);
+    return providerLedger;
+  };
+}
+
 function mergeCapabilityLedgers(
   ledgers: readonly AnalysisCapabilityLedger[],
 ): AnalysisCapabilityLedger {
@@ -320,11 +403,13 @@ const ANALYSIS_CAPABILITY_PROVIDERS: readonly AnalysisCapabilityProvider[] = [
     "array-opaque-mutation",
     "opaque-object-call",
   ]),
+  createFactBackedProvider("helper-transport", "helper-transport"),
   createSkippedBoundaryProvider("finite-keyed-access", [
     "array-at-call",
     "computed-property-access",
     "dynamic-array-index",
   ]),
+  createFactBackedProvider("finite-keyed-access", "finite-keyed-access"),
 ];
 
 export function collectAnalysisCapabilityLedger(
@@ -334,8 +419,8 @@ export function collectAnalysisCapabilityLedger(
 ): AnalysisCapabilityLedger {
   const context: AnalysisCapabilityProviderContext = {
     project,
-    state,
     artifacts,
+    facts: getCapabilityFacts(state),
     obligations: getCapabilityObligations(state),
     summaryRegistry: createAnalysisCapabilitySummaryRegistry(project, artifacts),
     diagnostics: state.diagnostics as readonly DiagnosticRecord[],

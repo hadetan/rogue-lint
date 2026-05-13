@@ -12,6 +12,21 @@ export type AnalysisCapabilityObligationFamily =
 
 export type AnalysisCapabilityOutcome = "finding" | "kept" | "skipped" | "live" | "boundary";
 
+export type AnalysisCapabilityFactFamily = "helper-transport" | "finite-keyed-access";
+
+export type AnalysisCapabilityFactOutcome = "live" | "boundary";
+
+export interface AnalysisCapabilityFactRecord {
+  id: string;
+  family: AnalysisCapabilityFactFamily;
+  capabilityId: AnalysisCapabilityId;
+  entity: EntityRecord;
+  outcome: AnalysisCapabilityFactOutcome;
+  category?: SkipCategory;
+  reason?: string;
+  detailHint?: string;
+}
+
 export interface AnalysisCapabilityObligationRecord {
   id: string;
   family: AnalysisCapabilityObligationFamily;
@@ -21,9 +36,9 @@ export interface AnalysisCapabilityObligationRecord {
   detailHint?: string;
 }
 
-type CapabilityEvidenceSource = "finding" | "kept" | "skipped" | "diagnostic" | "obligation";
+type CapabilityEvidenceSource = "finding" | "kept" | "skipped" | "diagnostic" | "obligation" | "fact";
 
-type CapabilityBoundarySource = "skipped" | "diagnostic" | "obligation" | "boundary";
+type CapabilityBoundarySource = "skipped" | "diagnostic" | "obligation" | "boundary" | "fact";
 
 type CapabilityAttributionSource = "finding" | "kept" | "skipped";
 
@@ -126,4 +141,15 @@ export function createProviderObligationRecordId(
   capabilityId?: AnalysisCapabilityId,
 ): string {
   return capabilityId === undefined ? `${family}:${entity.id}` : `${capabilityId}:${family}:${entity.id}`;
+}
+
+export function createCapabilityFactRecordId(
+  family: AnalysisCapabilityFactFamily,
+  entity: Pick<EntityRecord, "id">,
+  capabilityId: AnalysisCapabilityId,
+  detailHint?: string,
+): string {
+  return detailHint === undefined
+    ? `${capabilityId}:${family}:${entity.id}`
+    : `${capabilityId}:${family}:${entity.id}:${detailHint}`;
 }

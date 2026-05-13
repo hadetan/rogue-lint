@@ -199,4 +199,51 @@ describe("analysis capability providers", () => {
     expect(helperSkip).toBeDefined();
     expect(helperLedger?.recordCapabilityById.get(helperSkip!.id)).toBe("helper-transport");
   });
+
+  it("records supported helper transport facts for exact same-project helper flows", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-readonly-basic"),
+      format: "json",
+    });
+    const ledger = getAnalysisCapabilityLedger(result);
+
+    expect(ledger?.evidences).toContainEqual(
+      expect.objectContaining({
+        capabilityId: "helper-transport",
+        source: "fact",
+        label: "same-project helper transport",
+      }),
+    );
+  });
+
+  it("prefers retained-storage helper fact labels over generic helper boundary labels", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-storage-basic"),
+      format: "json",
+    });
+    const ledger = getAnalysisCapabilityLedger(result);
+    const helperSkip = result.skipped.find((entry) => entry.category === "array-opaque-mutation");
+
+    expect(helperSkip).toBeDefined();
+    expect(ledger?.recordDetailById.get(helperSkip!.id)).toBe("same-project helper retained storage");
+  });
+
+  it("records bounded finite-key facts for exact finite lookup reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("finite-union-keyed-access-basic"),
+      format: "json",
+    });
+    const ledger = getAnalysisCapabilityLedger(result);
+
+    expect(ledger?.evidences).toContainEqual(
+      expect.objectContaining({
+        capabilityId: "finite-keyed-access",
+        source: "fact",
+        label: "bounded finite key read",
+      }),
+    );
+  });
 });

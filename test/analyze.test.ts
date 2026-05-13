@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.js";
+import { getAnalysisCapabilityLedger } from "../src/engine/capabilities/providers.js";
 import { validateFindingKindOwners } from "../src/engine/finding-kind-owners.js";
 import { analyzeProject } from "../src/index.js";
 import { renderResult } from "../src/output/render-result.js";
@@ -1786,5 +1787,26 @@ describe("rogue-lint analyzer", () => {
     expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);
     expect(result.findings.map(normalizeFinding).sort()).toEqual(EXPECTED_SELF_HOST_FINDINGS);
     expect(result.skipped.map(normalizeAudit).sort()).toEqual(EXPECTED_SELF_HOST_SKIPS);
+  }, 15000);
+
+  it("keeps helper and finite capability boundary debt out of the normalized self-host surface", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: process.cwd(),
+      format: "json",
+      mode: "library",
+    });
+    const ledger = getAnalysisCapabilityLedger(result);
+
+    expect(
+      ledger?.boundaries.filter((entry) =>
+        entry.capabilityId === "helper-transport" || entry.capabilityId === "finite-keyed-access"
+      ) ?? [],
+    ).toHaveLength(0);
+    expect(
+      ledger?.attributions.filter((entry) =>
+        entry.capabilityId === "helper-transport" || entry.capabilityId === "finite-keyed-access"
+      ) ?? [],
+    ).toHaveLength(0);
   }, 15000);
 });

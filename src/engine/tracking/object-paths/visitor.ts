@@ -7,6 +7,7 @@ import type {
 } from "../../../types.js";
 import { getSymbolKey, isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
+import { registerCapabilityFact } from "../../analysis-state.js";
 import {
   getAccessPath,
   getBindingSymbolKey,
@@ -54,6 +55,7 @@ import {
 import { unwrapExpression } from "../syntax.js";
 import {
   addValueFate,
+  buildCollectionBoundaryEntity,
   getCollectionInfo,
   getProjectionBinding,
   hasTrackedChildren,
@@ -139,12 +141,90 @@ export function visitObjectPathSourceFile(
     markObjectPathObservedChildPaths(overlayState, trackedObject, segments, aliasTrackedObjectsById);
   };
 
+  const getTrackedEntityAtPath = (
+    trackedObject: TrackedObject,
+    segments: PathSegment[],
+  ) => trackedObject.nodes.get(serializePath(segments))?.entity ?? trackedObject.rootEntity;
+
+  const registerBoundaryCapabilityFact = (
+    trackedObject: TrackedObject,
+    boundarySourceFile: ts.SourceFile,
+    node: ts.Node,
+    segments: PathSegment[],
+    category: SkipCategory,
+    reason: string,
+    detailHint?: string,
+  ): void => {
+    if (["array-callback-escape", "array-opaque-mutation", "opaque-object-call"].includes(category)) {
+      const entity = category === "array-callback-escape" || category === "array-opaque-mutation"
+        ? buildCollectionBoundaryEntity(project, trackedObject, boundarySourceFile, node, segments)
+        : getTrackedEntityAtPath(trackedObject, segments);
+      registerCapabilityFact(state, "helper-transport", entity, "helper-transport", "boundary", {
+        category,
+        reason,
+        detailHint,
+      });
+      return;
+    }
+
+    if (["array-at-call", "computed-property-access", "dynamic-array-index"].includes(category)) {
+      const entity = category === "array-at-call" || category === "dynamic-array-index"
+        ? buildCollectionBoundaryEntity(project, trackedObject, boundarySourceFile, node, segments)
+        : getTrackedEntityAtPath(trackedObject, segments);
+      registerCapabilityFact(state, "finite-keyed-access", entity, "finite-keyed-access", "boundary", {
+        category,
+        reason,
+        detailHint,
+      });
+    }
+  };
+
+  const registerLiveCapabilityFact = (
+    trackedObject: TrackedObject,
+    segments: PathSegment[],
+    capabilityId: "helper-transport" | "finite-keyed-access",
+    detailHint: string,
+  ): void => {
+    registerCapabilityFact(
+      state,
+      capabilityId,
+      getTrackedEntityAtPath(trackedObject, segments),
+      capabilityId,
+      "live",
+      { detailHint },
+    );
+  };
+
+  const getHelperTransportDetailHint = (
+    summary: ReturnType<typeof summarizeHelperParameterUse>,
+  ): string => {
+    if (
+      summary.boundaryReason?.includes("stores this value by reference")
+      || summary.boundaryReason?.includes("stores this value inside an aggregate literal")
+      || summary.boundaryReason?.includes("unsupported retained location")
+    ) {
+      return "same-project helper retained storage";
+    }
+
+    if (summary.effectKinds.has("retained-binding")) {
+      return "same-project helper retained storage";
+    }
+
+    if (summary.effectKinds.has("opaque-escape")) {
+      return "same-project helper escape";
+    }
+
+    return "same-project helper transport";
+  };
+
   const markEscaped = (
     trackedObject: TrackedObject,
     segments: PathSegment[],
     category: SkipCategory,
     reason: string,
+    detailHint?: string,
   ): void => {
+    registerBoundaryCapabilityFact(trackedObject, sourceFile, sourceFile, segments, category, reason, detailHint);
     markObjectPathEscaped(overlayState, trackedObject, segments, category, reason);
   };
 
@@ -209,7 +289,9 @@ export function visitObjectPathSourceFile(
     category: SkipCategory,
     reason: string,
     invalidate = false,
+    detailHint?: string,
   ): void => {
+    registerBoundaryCapabilityFact(trackedObject, boundarySourceFile, node, affectedPath, category, reason, detailHint);
     recordArrayBoundaryEffect(
       project,
       overlayState,
@@ -573,6 +655,12 @@ export function visitObjectPathSourceFile(
   ): void => {
     for (const candidate of candidates) {
       const fullPath = [...candidate.binding.prefix, ...candidate.segments, ...suffix];
+      registerLiveCapabilityFact(
+        candidate.binding.trackedObject,
+        fullPath,
+        "finite-keyed-access",
+        "bounded finite key read",
+      );
       maybeReportInvalidatedRead(
         project,
         sourceFile,
@@ -1321,6 +1409,14 @@ export function visitObjectPathSourceFile(
             replayHelperExactAppendPlans(analyzableCallable, parameter.name, helperReplayBinding);
             replayHelperProjectedUsages(analyzableCallable, parameter.name, helperReplayBinding);
           }
+          if (!summary.boundaryReason && (summary.effectKinds.size > 0 || summary.exactReadPaths.length > 0)) {
+            registerLiveCapabilityFact(
+              resolved.binding.trackedObject,
+              fullPath,
+              "helper-transport",
+              getHelperTransportDetailHint(summary),
+            );
+          }
           if (collectionInfo?.kind === "array") {
             if (summary.boundaryReason) {
               recordArrayBoundary(
@@ -1337,6 +1433,7 @@ export function visitObjectPathSourceFile(
                   "same-project helper receives this collection beyond exact local analysis",
                 ),
                 true,
+                getHelperTransportDetailHint(summary),
               );
             }
             continue;
@@ -1354,6 +1451,7 @@ export function visitObjectPathSourceFile(
                   ? "same-project helper receives this object beyond exact local analysis"
                   : "same-project helper receives this object path beyond exact local analysis",
               ),
+              getHelperTransportDetailHint(summary),
             );
           }
           continue;
@@ -1606,6 +1704,7 @@ export function visitObjectPathSourceFile(
                 "same-project helper receives this collection beyond exact local analysis",
               ),
               true,
+              getHelperTransportDetailHint(summary),
             );
           }
         }

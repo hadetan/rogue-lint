@@ -80,18 +80,27 @@ Add a new module here when a concern can be executed as one stage in the orchest
 Owns the provider-owned evidence kernel that sits between tracking facts and public report projection.
 
 - `types.ts`: capability ids, provider-owned obligation records, evidence and boundary records, and ledger indexes consumed by benchmark evaluation
-- `providers.ts`: provider execution context, provider registry, obligation-backed and boundary-backed capability providers, and the result-attached capability ledger
-- `summary-models.ts`: declarative summary-model registry for same-project return summaries and modeled library transport or barrier surfaces
+- `providers.ts`: provider execution context, provider registry, obligation-backed, fact-backed, and fallback skipped-boundary capability providers, and the result-attached capability ledger
+- `summary-models.ts`: executable summary lookups and fallback labels for same-project helper transport, bounded finite-key evidence, and modeled library transport or barrier surfaces
 - `report-assembly.ts`: projection adapter that keeps the public `findings`, `kept`, `skipped`, and `diagnostics` result categories stable while provider provenance stays internal
 
 Start here when a change affects:
 
 - capability-owned obligation seeding or resolution
+- provider-facing fact emission or fact-backed capability execution
 - capability evidence or conservative-boundary provenance
-- summary-model registration for helper or library transport
+- executable summary lookup rules for helper or library transport
 - capability-first benchmark prioritization details
 
 Keep provider-owned provenance here. Analyzer and tracking stages may seed obligations or emit public records, but the capability modules own how those surfaces are attributed, labeled, and projected downstream.
+
+The dominant benchmark seams now arrive here through provider-facing facts instead of only through post-hoc skip wrapping. `helper-transport` and `finite-keyed-access` should be extended in this layer first, with tracking continuing to supply the shared facts underneath.
+
+The first provider-driven benchmark run after this migration still highlighted three follow-on slices that can now be staged independently:
+
+- `finite-keyed-access` remains the dominant slice, with `computed-property-access` still accounting for most remaining benchmark debt.
+- `object-spread` and `returned-object` remain adjacent raw boundary families that still sit outside the provider-driven finite-key seam.
+- `helper-transport` is now a smaller isolated slice whose remaining debt is concentrated in opaque helper boundaries rather than mixed into generic finite-key work.
 
 ### `src/engine/tracking/`
 

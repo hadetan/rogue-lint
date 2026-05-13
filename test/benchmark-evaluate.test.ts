@@ -445,4 +445,67 @@ describe("benchmark expectation evaluation", () => {
       count: 1,
     });
   });
+
+  it("keeps helper and finite capability priorities isolated while preserving raw skip categories", () => {
+    const finiteSkip = createSkip({
+      id: "skip-finite",
+      category: "computed-property-access",
+      reason: "computed property access is not modeled exactly",
+    });
+    const helperSkip = createSkip({
+      id: "skip-helper",
+      category: "array-opaque-mutation",
+      kind: "array-element",
+      name: "[0]",
+      reason: "helper stores this value by reference beyond exact local analysis",
+      location: {
+        file: "src/helper.ts",
+        line: 8,
+        column: 1,
+      },
+    });
+    const result = createAnalysisResult([], [finiteSkip, helperSkip], []);
+    const capabilityLedger = createEmptyAnalysisCapabilityLedger();
+    capabilityLedger.recordCapabilityById = new Map([
+      [finiteSkip.id, "finite-keyed-access"],
+      [helperSkip.id, "helper-transport"],
+    ]);
+    capabilityLedger.recordDetailById = new Map([
+      [finiteSkip.id, "bounded finite key read"],
+      [helperSkip.id, "same-project helper retained storage"],
+    ]);
+    attachAnalysisCapabilityLedger(result, capabilityLedger);
+
+    const evaluation = evaluateBenchmarkExpectations(result, {
+      mustFind: [],
+      mustNotFind: [],
+      mustSkip: [],
+      mustNotSkip: [],
+      mustDiagnose: [],
+      mustNotDiagnose: [],
+      acceptedFindings: [],
+      knownSkips: [],
+    });
+
+    expect(evaluation.capabilityPriority).toEqual(
+      expect.arrayContaining([
+        {
+          capabilityId: "finite-keyed-access",
+          count: 1,
+          details: [{ label: "bounded finite key read", count: 1 }],
+        },
+        {
+          capabilityId: "helper-transport",
+          count: 1,
+          details: [{ label: "same-project helper retained storage", count: 1 }],
+        },
+      ]),
+    );
+    expect(evaluation.gapSignal.skipsByCategory).toEqual(
+      expect.arrayContaining([
+        ["computed-property-access", 1],
+        ["array-opaque-mutation", 1],
+      ]),
+    );
+  });
 });
