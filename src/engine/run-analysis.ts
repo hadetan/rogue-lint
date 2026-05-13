@@ -2,7 +2,7 @@ import { buildModuleGraph, computeReachableFiles, discoverEntrypoints } from "..
 import { loadProject } from "../project.js";
 import { buildSuppressionContext } from "../suppressions.js";
 import type { AnalysisOptions, AnalysisResult, FindingKind } from "../types.js";
-import { getVersion, uniqueById } from "../shared/general-utils.js";
+import { getVersion } from "../shared/general-utils.js";
 import { appendCapabilityCoverageDiagnostics, createAnalysisState } from "./analysis-state.js";
 import { createAnalysisArtifacts } from "./analysis-artifacts.js";
 import { analyzeCompilerSafetyDiagnostics } from "./analyzers/compiler-safety.js";
@@ -11,6 +11,8 @@ import { analyzeUnusedFiles } from "./analyzers/unused-files.js";
 import { analyzeSymbolLiveness } from "./analyzers/symbol-liveness.js";
 import { analyzeValueLiveness } from "./analyzers/value-liveness.js";
 import { collectPublicSurface } from "./analyzers/support.js";
+import { attachAnalysisCapabilityLedger, collectAnalysisCapabilityLedger } from "./capabilities/providers.js";
+import { assembleProviderBackedReportSurface } from "./capabilities/report-assembly.js";
 import { validateFindingKindOwners } from "./finding-kind-owners.js";
 import { appendTrackingAnalysisDiagnostics } from "./tracking/diagnostics.js";
 
@@ -72,25 +74,20 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
   appendTrackingAnalysisDiagnostics(state, artifacts);
   appendCapabilityCoverageDiagnostics(state);
 
+  const capabilityLedger = collectAnalysisCapabilityLedger(project, state, artifacts);
   const includeKinds = project.config.value.includeKinds;
-  const filteredFindings =
-    includeKinds.length > 0
-      ? state.findings.filter((finding) => includeKinds.includes(finding.kind))
-      : state.findings;
-
-  const findings = uniqueById(filteredFindings);
-  const kept = uniqueById(state.kept);
-  const skipped = uniqueById(state.skipped);
-  const diagnostics = uniqueById(
-    state.diagnostics.map((diagnostic, index) => ({ ...diagnostic, id: `${diagnostic.kind}:${index}` })),
-  ).map(({ id: _id, ...diagnostic }) => diagnostic);
+  const { findings, kept, skipped, diagnostics } = assembleProviderBackedReportSurface(
+    state,
+    capabilityLedger,
+    includeKinds,
+  );
 
   const byKind: Partial<Record<FindingKind, number>> = {};
   for (const finding of findings) {
     byKind[finding.kind] = (byKind[finding.kind] ?? 0) + 1;
   }
 
-  return {
+  const result: AnalysisResult = {
     tool: "rogue-lint",
     version: getVersion(),
     target: project.rootPath,
@@ -113,4 +110,8 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
     skipped,
     diagnostics,
   };
+
+  attachAnalysisCapabilityLedger(result, capabilityLedger);
+
+  return result;
 }

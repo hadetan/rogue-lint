@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { evaluateBenchmarkExpectations } from "../src/benchmark/evaluate.js";
 import { renderBenchmarkReport } from "../src/benchmark/reporting.js";
+import { attachAnalysisCapabilityLedger } from "../src/engine/capabilities/providers.js";
+import {
+  createDiagnosticCapabilityRecordId,
+  createEmptyAnalysisCapabilityLedger,
+} from "../src/engine/capabilities/types.js";
 import type {
   AnalysisResult,
   AuditRecord,
@@ -97,11 +102,11 @@ function createAnalyzedTarget(
   skips: AuditRecord[],
   diagnostics: DiagnosticRecord[],
   expectations: BenchmarkTargetManifest["expectations"],
+  result = createAnalysisResult(findings, skips, diagnostics),
 ): AnalyzedBenchmarkTarget {
   const manifest = createManifest(id, coverageClass);
   manifest.expectations = expectations;
-  const result = createAnalysisResult(findings, skips, diagnostics);
-  const evaluation = evaluateBenchmarkExpectations(findings, skips, diagnostics, expectations);
+  const evaluation = evaluateBenchmarkExpectations(result, expectations);
 
   return {
     state: "analyzed",
@@ -294,6 +299,63 @@ describe("benchmark reporting", () => {
     expect(report).toContain("forbidden computed-property skip");
   });
 
+  it("does not surface required skip anchors as gap worklist debt", () => {
+    const skip: AuditRecord = {
+      id: "skip-1",
+      kind: "object-key",
+      name: "value",
+      reason: "computed property access prevents exact path analysis",
+      category: "computed-property-access",
+      location: {
+        file: "src/example.ts",
+        line: 1,
+        column: 1,
+      },
+    };
+    const result = createAnalysisResult([], [skip], []);
+    const capabilityLedger = createEmptyAnalysisCapabilityLedger();
+    capabilityLedger.recordCapabilityById = new Map([
+      [skip.id, "finite-keyed-access"],
+    ]);
+    attachAnalysisCapabilityLedger(result, capabilityLedger);
+
+    const target = createAnalyzedTarget(
+      "required-skip-target",
+      "library-public-surface",
+      [],
+      [skip],
+      [],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [
+          {
+            label: "required conservative skip",
+            category: "computed-property-access",
+            file: "src/example.ts",
+            name: "value",
+            minCount: 1,
+            maxCount: 1,
+          },
+        ],
+        mustNotSkip: [],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+      result,
+    );
+
+    const report = renderBenchmarkReport(createWorkspaceRun([target]));
+
+    expect(report).toContain("must-skip matched: 1/1");
+    expect(report).not.toContain("Current Engine Gap Signal (Skip Categories):");
+    expect(report).not.toContain("Current Capability Gap Signal:");
+    expect(report).not.toContain("Prioritized Engine Gap Worklist:");
+    expect(report).not.toContain("Prioritized Capability Worklist:");
+  });
+
   it("surfaces unexpected capability coverage diagnostics in the workspace gap worklist", () => {
     const target = createAnalyzedTarget(
       "diagnostic-priority-target",
@@ -339,5 +401,85 @@ describe("benchmark reporting", () => {
       report.indexOf("accepted finding unused-local"),
     );
     expect(report).toContain("Unexpected Diagnostics:");
+  });
+
+  it("renders capability-first worklists beside the raw benchmark worklist", () => {
+    const finding = createFinding("unused-local", "acceptedLocal", "src/index.ts");
+    const skip: AuditRecord = {
+      id: "skip-1",
+      kind: "object-key",
+      name: "value",
+      reason: "computed property access prevents exact path analysis",
+      category: "computed-property-access",
+      location: {
+        file: "src/example.ts",
+        line: 1,
+        column: 1,
+      },
+    };
+    const capabilityDiagnostic = createDiagnostic(
+      "project-warning",
+      "capability coverage gap (returned-contract-member): object-key hidden never resolved to finding, kept, skipped, or live",
+    );
+    const result = createAnalysisResult(
+      [finding],
+      [skip],
+      [createDiagnostic("project-warning", "diagnostic anchor"), capabilityDiagnostic],
+    );
+    const capabilityLedger = createEmptyAnalysisCapabilityLedger();
+    capabilityLedger.recordCapabilityById = new Map([
+      [finding.id, "finite-keyed-access"],
+      [skip.id, "finite-keyed-access"],
+      [createDiagnosticCapabilityRecordId(capabilityDiagnostic), "returned-structure-transport"],
+    ]);
+    attachAnalysisCapabilityLedger(result, capabilityLedger);
+
+    const target = createAnalyzedTarget(
+      "capability-priority-target",
+      "library-public-surface",
+      [finding],
+      [skip],
+      [createDiagnostic("project-warning", "diagnostic anchor"), capabilityDiagnostic],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [
+          {
+            label: "diagnostic anchor",
+            kind: "project-warning",
+            messageIncludes: "diagnostic anchor",
+          },
+        ],
+        mustNotDiagnose: [],
+        acceptedFindings: [
+          {
+            label: "accepted local debt",
+            kind: "unused-local",
+            file: "src/index.ts",
+            maxCount: 1,
+          },
+        ],
+        knownSkips: [
+          {
+            label: "accepted skip debt",
+            category: "computed-property-access",
+            file: "src/example.ts",
+            maxCount: 1,
+          },
+        ],
+      },
+      result,
+    );
+
+    const report = renderBenchmarkReport(createWorkspaceRun([target]));
+
+    expect(report).toContain("Prioritized Capability Worklist:");
+    expect(report).toContain("capability finite-keyed-access: 2 records across 1 target");
+    expect(report).toContain("capability returned-structure-transport: 1 record across 1 target");
+    expect(report).toContain("Current Capability Gap Signal:");
+    expect(report).toContain("finite-keyed-access: 2 (computed-property-access: 1, unused-local: 1)");
+    expect(report).toContain("Prioritized Engine Gap Worklist:");
   });
 });

@@ -178,12 +178,23 @@ export function finalizeObjectPathFindings(
       }
 
       if (isReturnedContractMember) {
-        registerCapabilityCandidate(state, "returned-contract-member", objectNode.entity);
+        registerCapabilityCandidate(
+          state,
+          "returned-contract-member",
+          objectNode.entity,
+          "returned-structure-transport",
+        );
       }
 
       if (shouldSuppressStructuralPath(tracked, objectNode.fullPath)) {
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(state, "returned-contract-member", objectNode.entity, "kept");
+          resolveCapabilityCandidate(
+            state,
+            "returned-contract-member",
+            objectNode.entity,
+            "kept",
+            "returned-structure-transport",
+          );
         }
         continue;
       }
@@ -192,7 +203,13 @@ export function finalizeObjectPathFindings(
         || isCollectionPathInvalidated(tracked, objectNode.fullPath)
       ) {
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(state, "returned-contract-member", objectNode.entity, "skipped");
+          resolveCapabilityCandidate(
+            state,
+            "returned-contract-member",
+            objectNode.entity,
+            "skipped",
+            "returned-structure-transport",
+          );
         }
         continue;
       }
@@ -201,7 +218,13 @@ export function finalizeObjectPathFindings(
         ?? getEscapedReason(tracked, objectNode.fullPath);
       if (escapedReason) {
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(state, "returned-contract-member", objectNode.entity, "skipped");
+          resolveCapabilityCandidate(
+            state,
+            "returned-contract-member",
+            objectNode.entity,
+            "skipped",
+            "returned-structure-transport",
+          );
         }
         addSkipped(state, objectNode.entity, escapedReason.category, escapedReason.reason);
         continue;
@@ -210,7 +233,13 @@ export function finalizeObjectPathFindings(
       const suppression = getSuppressionAudit(project, suppressionContext, objectNode.entity);
       if (addAudit(state.kept, suppression)) {
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(state, "returned-contract-member", objectNode.entity, "kept");
+          resolveCapabilityCandidate(
+            state,
+            "returned-contract-member",
+            objectNode.entity,
+            "kept",
+            "returned-structure-transport",
+          );
         }
         continue;
       }
@@ -234,13 +263,25 @@ export function finalizeObjectPathFindings(
             : `Unused object path ${renderPathWithRoot(tracked.rootName, objectNode.fullPath)}`,
         );
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(state, "returned-contract-member", objectNode.entity, "finding");
+          resolveCapabilityCandidate(
+            state,
+            "returned-contract-member",
+            objectNode.entity,
+            "finding",
+            "returned-structure-transport",
+          );
         }
         continue;
       }
 
       if (isReturnedContractMember) {
-        resolveCapabilityCandidate(state, "returned-contract-member", objectNode.entity, "live");
+        resolveCapabilityCandidate(
+          state,
+          "returned-contract-member",
+          objectNode.entity,
+          "live",
+          "returned-structure-transport",
+        );
       }
     }
   }

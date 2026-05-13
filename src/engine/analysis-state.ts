@@ -6,6 +6,8 @@ import type {
   FindingRecord,
   SkipCategory,
 } from "../types.js";
+import type { AnalysisCapabilityId } from "./capabilities/types.js";
+import { createCapabilityCandidateRecordId } from "./capabilities/types.js";
 
 /**
  * Mutable accumulators shared across analysis stages during a single run.
@@ -25,15 +27,9 @@ type CapabilityCandidateOutcome = "finding" | "kept" | "skipped" | "live";
 interface CapabilityCandidateRecord {
   id: string;
   family: CapabilityCandidateFamily;
+  capabilityId?: AnalysisCapabilityId;
   entity: EntityRecord;
   outcome?: CapabilityCandidateOutcome;
-}
-
-function createCapabilityCandidateId(
-  family: CapabilityCandidateFamily,
-  entity: EntityRecord,
-): string {
-  return `${family}:${entity.id}`;
 }
 
 /**
@@ -56,8 +52,9 @@ export function registerCapabilityCandidate(
   state: AnalysisState,
   family: CapabilityCandidateFamily,
   entity: EntityRecord,
+  capabilityId?: AnalysisCapabilityId,
 ): void {
-  const id = createCapabilityCandidateId(family, entity);
+  const id = createCapabilityCandidateRecordId(family, entity, capabilityId);
   if (state.capabilityCandidates.has(id)) {
     return;
   }
@@ -65,6 +62,7 @@ export function registerCapabilityCandidate(
   state.capabilityCandidates.set(id, {
     id,
     family,
+    capabilityId,
     entity,
   });
 }
@@ -77,8 +75,9 @@ export function resolveCapabilityCandidate(
   family: CapabilityCandidateFamily,
   entity: EntityRecord,
   outcome: CapabilityCandidateOutcome,
+  capabilityId?: AnalysisCapabilityId,
 ): void {
-  const id = createCapabilityCandidateId(family, entity);
+  const id = createCapabilityCandidateRecordId(family, entity, capabilityId);
   const existing = state.capabilityCandidates.get(id);
   if (!existing) {
     return;
@@ -90,10 +89,16 @@ export function resolveCapabilityCandidate(
 /**
  * Returns registered capability candidates that never resolved to finding, kept, skipped, or live.
  */
+export function getCapabilityCandidates(
+  state: AnalysisState,
+): readonly CapabilityCandidateRecord[] {
+  return [...state.capabilityCandidates.values()];
+}
+
 function getUnresolvedCapabilityCandidates(
   state: AnalysisState,
 ): CapabilityCandidateRecord[] {
-  return [...state.capabilityCandidates.values()].filter((candidate) => !candidate.outcome);
+  return getCapabilityCandidates(state).filter((candidate) => !candidate.outcome);
 }
 
 /**

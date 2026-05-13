@@ -9,6 +9,7 @@ import type {
   RogueLintConfig,
   SkipCategory,
 } from "../types.js";
+import type { AnalysisCapabilityId } from "../engine/capabilities/types.js";
 
 interface BenchmarkRepositoryRef {
   url: string;
@@ -131,6 +132,17 @@ export interface BenchmarkGapPriorityEntry {
   count: number;
 }
 
+export interface BenchmarkCapabilityPriorityDetail {
+  label: string;
+  count: number;
+}
+
+export interface BenchmarkCapabilityPriorityEntry {
+  capabilityId: AnalysisCapabilityId;
+  count: number;
+  details: BenchmarkCapabilityPriorityDetail[];
+}
+
 export interface BenchmarkEvaluation {
   contract: {
     requiredAnchorTotal: number;
@@ -158,6 +170,7 @@ export interface BenchmarkEvaluation {
     skipsByCategory: Array<[SkipCategory, number]>;
   };
   gapPriority: BenchmarkGapPriorityEntry[];
+  capabilityPriority: BenchmarkCapabilityPriorityEntry[];
   failed: boolean;
 }
 

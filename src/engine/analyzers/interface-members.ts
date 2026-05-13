@@ -57,18 +57,35 @@ export function analyzeInterfaceMembers(
           );
 
           if (isExported) {
-            registerCapabilityCandidate(state, "internal-exported-interface-member", entity);
+            registerCapabilityCandidate(
+              state,
+              "internal-exported-interface-member",
+              entity,
+              "library-public-surface-aliasing",
+            );
           }
 
           if (isPublicSurface) {
             addAudit(state.kept, buildPublicSurfaceAudit(entity));
-            resolveCapabilityCandidate(state, "internal-exported-interface-member", entity, "kept");
+            resolveCapabilityCandidate(
+              state,
+              "internal-exported-interface-member",
+              entity,
+              "kept",
+              "library-public-surface-aliasing",
+            );
             continue;
           }
 
           const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
           if (addAudit(state.kept, suppression)) {
-            resolveCapabilityCandidate(state, "internal-exported-interface-member", entity, "kept");
+            resolveCapabilityCandidate(
+              state,
+              "internal-exported-interface-member",
+              entity,
+              "kept",
+              "library-public-surface-aliasing",
+            );
             continue;
           }
 
@@ -90,7 +107,13 @@ export function analyzeInterfaceMembers(
             : referenceSummary.references > 0;
 
           if (hasLiveReferences) {
-            resolveCapabilityCandidate(state, "internal-exported-interface-member", entity, "live");
+            resolveCapabilityCandidate(
+              state,
+              "internal-exported-interface-member",
+              entity,
+              "live",
+              "library-public-surface-aliasing",
+            );
             continue;
           }
 
@@ -105,7 +128,13 @@ export function analyzeInterfaceMembers(
                 : "eligible interface member has no non-declaration references",
             `Unused interface member ${node.name.text}.${memberName}`,
           );
-          resolveCapabilityCandidate(state, "internal-exported-interface-member", entity, "finding");
+          resolveCapabilityCandidate(
+            state,
+            "internal-exported-interface-member",
+            entity,
+            "finding",
+            "library-public-surface-aliasing",
+          );
         }
       }
 
