@@ -37,7 +37,7 @@ export function assembleProviderBackedReportSurface(
 
   const providerOwnedDiagnosticIds = new Set(
     capabilityLedger.boundaries
-      .filter((boundary) => boundary.source === "candidate" || boundary.source === "diagnostic")
+      .filter((boundary) => boundary.source === "obligation" || boundary.source === "diagnostic")
       .map((boundary) => boundary.recordId),
   );
 

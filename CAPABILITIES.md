@@ -250,6 +250,7 @@ Important nuances:
 
 - internally, returned values are summarized as `value`, `structured`, `returned-alias`, or `opaque`; that summary drives cross-file and helper precision
 - statically resolved property-style callees and namespace-like helper access participate in the same helper-summary and return-summary model; unresolved dispatch still stays conservative
+- provider-owned capability evidence now sits above those tracking summaries through `src/engine/capabilities/summary-models.ts` and `src/engine/capabilities/providers.ts`, so benchmark capability priority is derived from provider provenance rather than only from raw finding or skip buckets
 - conditional and nullish return expressions stay exact only when both branches collapse to the same tracked binding or to compatible pure-value summaries; that is code-backed in `src/engine/tracking/graph.ts`
 - helper storage by reference and nested helper closure capture remain explicit conservative boundaries rather than speculative exactness
 

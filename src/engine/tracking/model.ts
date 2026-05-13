@@ -153,6 +153,7 @@ export const STRUCTURAL_RECORD_FIELD_NAMES = new Set([
 export const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
   ...STRUCTURAL_RECORD_FIELD_NAMES,
   "acceptedFindings",
+  "capabilityObligations",
   "callablePurity",
   "candidates",
   "cleanup",
@@ -222,6 +223,7 @@ export const STRUCTURAL_STATE_FIELD_NAMES = new Set([
   "aliases",
   "bindings",
   "boundaries",
+  "capabilityObligations",
   "capabilityCandidates",
   "diagnostics",
   "findings",

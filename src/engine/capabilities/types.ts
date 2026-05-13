@@ -6,18 +6,37 @@ export type AnalysisCapabilityId =
   | "helper-transport"
   | "library-public-surface-aliasing";
 
-type CapabilityRecordSource = "finding" | "kept" | "skipped" | "diagnostic" | "candidate";
+export type AnalysisCapabilityObligationFamily =
+  | "internal-exported-interface-member"
+  | "returned-contract-member";
+
+export type AnalysisCapabilityOutcome = "finding" | "kept" | "skipped" | "live" | "boundary";
+
+export interface AnalysisCapabilityObligationRecord {
+  id: string;
+  family: AnalysisCapabilityObligationFamily;
+  capabilityId?: AnalysisCapabilityId;
+  entity: EntityRecord;
+  outcome?: AnalysisCapabilityOutcome;
+  detailHint?: string;
+}
+
+type CapabilityEvidenceSource = "finding" | "kept" | "skipped" | "diagnostic" | "obligation";
+
+type CapabilityBoundarySource = "skipped" | "diagnostic" | "obligation" | "boundary";
+
+type CapabilityAttributionSource = "finding" | "kept" | "skipped";
 
 interface CapabilityEvidenceRecord {
   capabilityId: AnalysisCapabilityId;
-  source: CapabilityRecordSource;
+  source: CapabilityEvidenceSource;
   recordId: string;
   label: string;
 }
 
 interface CapabilityBoundaryRecord {
   capabilityId: AnalysisCapabilityId;
-  source: Extract<CapabilityRecordSource, "skipped" | "diagnostic" | "candidate">;
+  source: CapabilityBoundarySource;
   recordId: string;
   label: string;
   category?: SkipCategory;
@@ -26,19 +45,21 @@ interface CapabilityBoundaryRecord {
 interface CapabilityAttributionRecord {
   capabilityId: AnalysisCapabilityId;
   recordId: string;
-  source: Exclude<CapabilityRecordSource, "candidate">;
+  source: CapabilityAttributionSource;
 }
 
 export interface AnalysisCapabilityLedger {
+  obligations: AnalysisCapabilityObligationRecord[];
   attributions: CapabilityAttributionRecord[];
   boundaries: CapabilityBoundaryRecord[];
   evidences: CapabilityEvidenceRecord[];
   recordCapabilityById: ReadonlyMap<string, AnalysisCapabilityId>;
+  recordDetailById: ReadonlyMap<string, string>;
 }
 
 export function createCapabilityEvidenceRecord(
   capabilityId: AnalysisCapabilityId,
-  source: CapabilityRecordSource,
+  source: CapabilityEvidenceSource,
   recordId: string,
   label: string,
 ): CapabilityEvidenceRecord {
@@ -52,7 +73,7 @@ export function createCapabilityEvidenceRecord(
 
 export function createCapabilityBoundaryRecord(
   capabilityId: AnalysisCapabilityId,
-  source: Extract<CapabilityRecordSource, "skipped" | "diagnostic" | "candidate">,
+  source: CapabilityBoundarySource,
   recordId: string,
   label: string,
   category?: SkipCategory,
@@ -68,7 +89,7 @@ export function createCapabilityBoundaryRecord(
 
 export function createCapabilityAttributionRecord(
   capabilityId: AnalysisCapabilityId,
-  source: Exclude<CapabilityRecordSource, "candidate">,
+  source: CapabilityAttributionSource,
   recordId: string,
 ): CapabilityAttributionRecord {
   return {
@@ -80,10 +101,12 @@ export function createCapabilityAttributionRecord(
 
 export function createEmptyAnalysisCapabilityLedger(): AnalysisCapabilityLedger {
   return {
+    obligations: [],
     attributions: [],
     boundaries: [],
     evidences: [],
     recordCapabilityById: new Map<string, AnalysisCapabilityId>(),
+    recordDetailById: new Map<string, string>(),
   };
 }
 
@@ -91,8 +114,14 @@ export function createDiagnosticCapabilityRecordId(diagnostic: DiagnosticRecord)
   return `${diagnostic.kind}:${diagnostic.file ?? ""}:${diagnostic.message}`;
 }
 
-export function createCapabilityCandidateRecordId(
-  family: string,
+export function createCapabilityObligationGapMessage(
+  obligation: Pick<AnalysisCapabilityObligationRecord, "family" | "entity">,
+): string {
+  return `capability coverage gap (${obligation.family}): ${obligation.entity.kind} ${obligation.entity.name} never resolved to finding, kept, skipped, or live`;
+}
+
+export function createProviderObligationRecordId(
+  family: AnalysisCapabilityObligationFamily,
   entity: Pick<EntityRecord, "id">,
   capabilityId?: AnalysisCapabilityId,
 ): string {

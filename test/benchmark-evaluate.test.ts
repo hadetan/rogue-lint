@@ -299,6 +299,41 @@ describe("benchmark expectation evaluation", () => {
     expect(evaluation.failed).toBe(false);
   });
 
+  it("prefers provider-owned record detail labels over raw skip categories in capability priority", () => {
+    const skip = createSkip();
+    const result = createAnalysisResult([], [skip], []);
+    const capabilityLedger = createEmptyAnalysisCapabilityLedger();
+    capabilityLedger.recordCapabilityById = new Map([
+      [skip.id, "finite-keyed-access"],
+    ]);
+    capabilityLedger.recordDetailById = new Map([
+      [skip.id, "dynamic index boundary"],
+    ]);
+    attachAnalysisCapabilityLedger(result, capabilityLedger);
+
+    const evaluation = evaluateBenchmarkExpectations(
+      result,
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    expect(evaluation.capabilityPriority).toEqual([
+      {
+        capabilityId: "finite-keyed-access",
+        count: 1,
+        details: [{ label: "dynamic index boundary", count: 1 }],
+      },
+    ]);
+  });
+
   it("promotes unexpected capability coverage diagnostics into the benchmark gap worklist", () => {
     const evaluation = evaluateBenchmarkExpectations(
       createAnalysisResult(

@@ -6,10 +6,10 @@ import { analyzeProject } from "../src/index.js";
 import type { AnalysisArtifacts } from "../src/engine/analysis-artifacts.js";
 import {
   addFinding,
-  appendCapabilityCoverageDiagnostics,
+  appendProviderObligationDiagnostics,
   createAnalysisState,
-  registerCapabilityCandidate,
-  resolveCapabilityCandidate,
+  registerCapabilityObligation,
+  resolveCapabilityObligation,
 } from "../src/engine/analysis-state.js";
 import {
   collectAnalysisCapabilityLedger,
@@ -41,13 +41,13 @@ describe("analysis capability providers", () => {
   it("deduplicates provider-backed unresolved coverage diagnostics during report assembly", () => {
     const state = createAnalysisState();
 
-    registerCapabilityCandidate(
+    registerCapabilityObligation(
       state,
       "returned-contract-member",
       createCandidateEntity("hidden"),
       "returned-structure-transport",
     );
-    appendCapabilityCoverageDiagnostics(state);
+    appendProviderObligationDiagnostics(state);
     state.diagnostics.push({ ...state.diagnostics[0]! });
 
     const ledger = collectAnalysisCapabilityLedger(
@@ -67,7 +67,7 @@ describe("analysis capability providers", () => {
     const state = createAnalysisState();
     const entity = createCandidateEntity("hidden");
 
-    registerCapabilityCandidate(
+    registerCapabilityObligation(
       state,
       "returned-contract-member",
       entity,
@@ -80,7 +80,7 @@ describe("analysis capability providers", () => {
       "eligible object path is declared or written but never read",
       "Unused object path publicCarrier().hidden",
     );
-    resolveCapabilityCandidate(
+    resolveCapabilityObligation(
       state,
       "returned-contract-member",
       entity,
@@ -101,6 +101,63 @@ describe("analysis capability providers", () => {
         source: "finding",
         recordId: entity.id,
       }),
+    );
+  });
+
+  it("prefers summary-backed detail labels for provider-owned skipped boundaries", async () => {
+    const arrayResult = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("array-basic"),
+      format: "json",
+    });
+    const arrayLedger = getAnalysisCapabilityLedger(arrayResult);
+    const finiteKeyedSkip = arrayResult.skipped.find((entry) => entry.category === "dynamic-array-index");
+
+    expect(finiteKeyedSkip).toBeDefined();
+    expect(arrayLedger?.recordDetailById.get(finiteKeyedSkip!.id)).toBe("dynamic index boundary");
+
+    const helperResult = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("collection-state-basic"),
+      format: "json",
+    });
+    const helperLedger = getAnalysisCapabilityLedger(helperResult);
+    const helperSkip = helperResult.skipped.find((entry) => entry.category === "array-opaque-mutation");
+
+    expect(helperSkip).toBeDefined();
+    expect(helperLedger?.recordDetailById.get(helperSkip!.id)).toBe("opaque helper mutation boundary");
+  });
+
+  it("emits fallback boundary detail labels when no summary model matches", () => {
+    const state = createAnalysisState();
+
+    registerCapabilityObligation(
+      state,
+      "returned-contract-member",
+      createCandidateEntity("hidden"),
+      "returned-structure-transport",
+    );
+    appendProviderObligationDiagnostics(state);
+
+    const ledger = collectAnalysisCapabilityLedger(
+      {} as ProjectContext,
+      state,
+      {
+        getTrackingStageArtifacts: () => ({
+          stage: "value-liveness",
+          returnSummaries: { owner: "return-summary-convergence", byCallableId: new Map() },
+          runtimeSummary: {
+            seed: { reachableFileCount: 0, reachableSourceFileCount: 0 },
+            convergence: { passes: 0, warningPassThreshold: 0, maxPasses: 0, warned: false },
+            totals: { trackedBindings: 0, returnSummaries: 0, trackedObjects: 0 },
+            stageRequests: { "value-liveness": 0, "object-paths": 0 },
+          },
+        }),
+      } as AnalysisArtifacts,
+    );
+
+    expect(ledger.recordDetailById.get(createDiagnosticCapabilityRecordId(state.diagnostics[0]!))).toBe(
+      "returned transport summary fallback",
     );
   });
 

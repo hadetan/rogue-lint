@@ -6,8 +6,16 @@ import type {
   FindingRecord,
   SkipCategory,
 } from "../types.js";
-import type { AnalysisCapabilityId } from "./capabilities/types.js";
-import { createCapabilityCandidateRecordId } from "./capabilities/types.js";
+import type {
+  AnalysisCapabilityId,
+  AnalysisCapabilityObligationFamily,
+  AnalysisCapabilityObligationRecord,
+  AnalysisCapabilityOutcome,
+} from "./capabilities/types.js";
+import {
+  createCapabilityObligationGapMessage,
+  createProviderObligationRecordId,
+} from "./capabilities/types.js";
 
 /**
  * Mutable accumulators shared across analysis stages during a single run.
@@ -17,19 +25,7 @@ export interface AnalysisState {
   kept: AuditRecord[];
   skipped: AuditRecord[];
   diagnostics: DiagnosticRecord[];
-  capabilityCandidates: Map<string, CapabilityCandidateRecord>;
-}
-
-type CapabilityCandidateFamily = "internal-exported-interface-member" | "returned-contract-member";
-
-type CapabilityCandidateOutcome = "finding" | "kept" | "skipped" | "live";
-
-interface CapabilityCandidateRecord {
-  id: string;
-  family: CapabilityCandidateFamily;
-  capabilityId?: AnalysisCapabilityId;
-  entity: EntityRecord;
-  outcome?: CapabilityCandidateOutcome;
+  capabilityObligations: Map<string, AnalysisCapabilityObligationRecord>;
 }
 
 /**
@@ -41,44 +37,46 @@ export function createAnalysisState(): AnalysisState {
     kept: [],
     skipped: [],
     diagnostics: [],
-    capabilityCandidates: new Map(),
+    capabilityObligations: new Map(),
   };
 }
 
 /**
- * Registers a capability candidate that must resolve to an explicit outcome by the end of analysis.
+ * Registers a provider-owned capability obligation that must resolve to an explicit outcome by the end of analysis.
  */
-export function registerCapabilityCandidate(
+export function registerCapabilityObligation(
   state: AnalysisState,
-  family: CapabilityCandidateFamily,
+  family: AnalysisCapabilityObligationFamily,
   entity: EntityRecord,
   capabilityId?: AnalysisCapabilityId,
+  detailHint?: string,
 ): void {
-  const id = createCapabilityCandidateRecordId(family, entity, capabilityId);
-  if (state.capabilityCandidates.has(id)) {
+  const id = createProviderObligationRecordId(family, entity, capabilityId);
+  if (state.capabilityObligations.has(id)) {
     return;
   }
 
-  state.capabilityCandidates.set(id, {
+  state.capabilityObligations.set(id, {
     id,
     family,
     capabilityId,
     entity,
+    detailHint,
   });
 }
 
 /**
- * Resolves a previously registered capability candidate to an explicit analysis outcome.
+ * Resolves a previously registered provider-owned obligation to an explicit analysis outcome.
  */
-export function resolveCapabilityCandidate(
+export function resolveCapabilityObligation(
   state: AnalysisState,
-  family: CapabilityCandidateFamily,
+  family: AnalysisCapabilityObligationFamily,
   entity: EntityRecord,
-  outcome: CapabilityCandidateOutcome,
+  outcome: AnalysisCapabilityOutcome,
   capabilityId?: AnalysisCapabilityId,
 ): void {
-  const id = createCapabilityCandidateRecordId(family, entity, capabilityId);
-  const existing = state.capabilityCandidates.get(id);
+  const id = createProviderObligationRecordId(family, entity, capabilityId);
+  const existing = state.capabilityObligations.get(id);
   if (!existing) {
     return;
   }
@@ -87,29 +85,29 @@ export function resolveCapabilityCandidate(
 }
 
 /**
- * Returns registered capability candidates that never resolved to finding, kept, skipped, or live.
+ * Returns registered provider-owned capability obligations.
  */
-export function getCapabilityCandidates(
+export function getCapabilityObligations(
   state: AnalysisState,
-): readonly CapabilityCandidateRecord[] {
-  return [...state.capabilityCandidates.values()];
+): readonly AnalysisCapabilityObligationRecord[] {
+  return [...state.capabilityObligations.values()];
 }
 
-function getUnresolvedCapabilityCandidates(
+function getUnresolvedCapabilityObligations(
   state: AnalysisState,
-): CapabilityCandidateRecord[] {
-  return getCapabilityCandidates(state).filter((candidate) => !candidate.outcome);
+): AnalysisCapabilityObligationRecord[] {
+  return getCapabilityObligations(state).filter((obligation) => !obligation.outcome);
 }
 
 /**
- * Converts unresolved capability-accounting gaps into diagnostics so validation can fail explicitly.
+ * Converts unresolved provider-owned obligations into diagnostics so validation can fail explicitly.
  */
-export function appendCapabilityCoverageDiagnostics(state: AnalysisState): void {
-  for (const candidate of getUnresolvedCapabilityCandidates(state)) {
+export function appendProviderObligationDiagnostics(state: AnalysisState): void {
+  for (const obligation of getUnresolvedCapabilityObligations(state)) {
     state.diagnostics.push({
       kind: "project-warning",
-      file: candidate.entity.location.file,
-      message: `capability coverage gap (${candidate.family}): ${candidate.entity.kind} ${candidate.entity.name} never resolved to finding, kept, skipped, or live`,
+      file: obligation.entity.location.file,
+      message: createCapabilityObligationGapMessage(obligation),
     });
   }
 }

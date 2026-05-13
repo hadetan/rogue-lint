@@ -12,8 +12,8 @@ import {
   addAudit,
   addFinding,
   addSkipped,
-  registerCapabilityCandidate,
-  resolveCapabilityCandidate,
+  registerCapabilityObligation,
+  resolveCapabilityObligation,
   type AnalysisState,
 } from "../../analysis-state.js";
 import {
@@ -178,17 +178,18 @@ export function finalizeObjectPathFindings(
       }
 
       if (isReturnedContractMember) {
-        registerCapabilityCandidate(
+        registerCapabilityObligation(
           state,
           "returned-contract-member",
           objectNode.entity,
           "returned-structure-transport",
+          tracked.rootName,
         );
       }
 
       if (shouldSuppressStructuralPath(tracked, objectNode.fullPath)) {
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(
+          resolveCapabilityObligation(
             state,
             "returned-contract-member",
             objectNode.entity,
@@ -203,7 +204,7 @@ export function finalizeObjectPathFindings(
         || isCollectionPathInvalidated(tracked, objectNode.fullPath)
       ) {
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(
+          resolveCapabilityObligation(
             state,
             "returned-contract-member",
             objectNode.entity,
@@ -218,7 +219,7 @@ export function finalizeObjectPathFindings(
         ?? getEscapedReason(tracked, objectNode.fullPath);
       if (escapedReason) {
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(
+          resolveCapabilityObligation(
             state,
             "returned-contract-member",
             objectNode.entity,
@@ -233,7 +234,7 @@ export function finalizeObjectPathFindings(
       const suppression = getSuppressionAudit(project, suppressionContext, objectNode.entity);
       if (addAudit(state.kept, suppression)) {
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(
+          resolveCapabilityObligation(
             state,
             "returned-contract-member",
             objectNode.entity,
@@ -263,7 +264,7 @@ export function finalizeObjectPathFindings(
             : `Unused object path ${renderPathWithRoot(tracked.rootName, objectNode.fullPath)}`,
         );
         if (isReturnedContractMember) {
-          resolveCapabilityCandidate(
+          resolveCapabilityObligation(
             state,
             "returned-contract-member",
             objectNode.entity,
@@ -275,7 +276,7 @@ export function finalizeObjectPathFindings(
       }
 
       if (isReturnedContractMember) {
-        resolveCapabilityCandidate(
+        resolveCapabilityObligation(
           state,
           "returned-contract-member",
           objectNode.entity,

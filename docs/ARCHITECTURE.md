@@ -48,6 +48,7 @@ This module is responsible for:
 - creating shared per-run analysis artifacts, caches, and mutable state
 - executing analyzer stages in order
 - adapting internal tracking diagnostics into the normal analysis diagnostics surface
+- executing provider-owned capability analysis over shared tracking facts
 - assembling the final `AnalysisResult`
 
 Do not move stage-specific semantics back into this file.
@@ -73,6 +74,24 @@ Owns stage entrypoints.
 - `value-liveness.ts` and `object-paths.ts` stay thin and delegate to stable tracking stage exports behind `src/engine/tracking/core.ts`, sharing the same tracked-graph artifacts per run
 
 Add a new module here when a concern can be executed as one stage in the orchestration pipeline.
+
+### `src/engine/capabilities/`
+
+Owns the provider-owned evidence kernel that sits between tracking facts and public report projection.
+
+- `types.ts`: capability ids, provider-owned obligation records, evidence and boundary records, and ledger indexes consumed by benchmark evaluation
+- `providers.ts`: provider execution context, provider registry, obligation-backed and boundary-backed capability providers, and the result-attached capability ledger
+- `summary-models.ts`: declarative summary-model registry for same-project return summaries and modeled library transport or barrier surfaces
+- `report-assembly.ts`: projection adapter that keeps the public `findings`, `kept`, `skipped`, and `diagnostics` result categories stable while provider provenance stays internal
+
+Start here when a change affects:
+
+- capability-owned obligation seeding or resolution
+- capability evidence or conservative-boundary provenance
+- summary-model registration for helper or library transport
+- capability-first benchmark prioritization details
+
+Keep provider-owned provenance here. Analyzer and tracking stages may seed obligations or emit public records, but the capability modules own how those surfaces are attributed, labeled, and projected downstream.
 
 ### `src/engine/tracking/`
 
@@ -104,6 +123,8 @@ Start in the owning module here when a change affects:
 - object-path stage traversal or reporting behavior
 
 If a change widens the supported exact subset, add or update fixture coverage first and document the new boundary.
+
+The tracking layer remains the shared fact source. The capability layer above it owns provider-facing summary models and provenance; do not duplicate that attribution logic back into generic tracking helpers.
 
 ### `src/engine/internal-types.ts`
 

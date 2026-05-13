@@ -270,17 +270,24 @@ function groupCapabilityPriority(
   };
 
   for (const record of findings) {
-    addRecord(capabilityLedger.recordCapabilityById.get(record.id), record.kind);
+    addRecord(
+      capabilityLedger.recordCapabilityById.get(record.id),
+      capabilityLedger.recordDetailById.get(record.id) ?? record.kind,
+    );
   }
 
   for (const record of skips) {
-    addRecord(capabilityLedger.recordCapabilityById.get(record.id), record.category ?? record.kind);
+    addRecord(
+      capabilityLedger.recordCapabilityById.get(record.id),
+      capabilityLedger.recordDetailById.get(record.id) ?? record.category ?? record.kind,
+    );
   }
 
   for (const record of diagnostics) {
+    const diagnosticRecordId = createDiagnosticCapabilityRecordId(record);
     addRecord(
-      capabilityLedger.recordCapabilityById.get(createDiagnosticCapabilityRecordId(record)),
-      getDiagnosticPriorityLabel(record),
+      capabilityLedger.recordCapabilityById.get(diagnosticRecordId),
+      capabilityLedger.recordDetailById.get(diagnosticRecordId) ?? getDiagnosticPriorityLabel(record),
     );
   }
 

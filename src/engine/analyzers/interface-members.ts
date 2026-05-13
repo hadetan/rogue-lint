@@ -8,8 +8,8 @@ import { makeEntity } from "../../shared/entity-utils.js";
 import {
   addAudit,
   addFinding,
-  registerCapabilityCandidate,
-  resolveCapabilityCandidate,
+  registerCapabilityObligation,
+  resolveCapabilityObligation,
   type AnalysisState,
 } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
@@ -57,7 +57,7 @@ export function analyzeInterfaceMembers(
           );
 
           if (isExported) {
-            registerCapabilityCandidate(
+            registerCapabilityObligation(
               state,
               "internal-exported-interface-member",
               entity,
@@ -67,7 +67,7 @@ export function analyzeInterfaceMembers(
 
           if (isPublicSurface) {
             addAudit(state.kept, buildPublicSurfaceAudit(entity));
-            resolveCapabilityCandidate(
+            resolveCapabilityObligation(
               state,
               "internal-exported-interface-member",
               entity,
@@ -79,7 +79,7 @@ export function analyzeInterfaceMembers(
 
           const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
           if (addAudit(state.kept, suppression)) {
-            resolveCapabilityCandidate(
+            resolveCapabilityObligation(
               state,
               "internal-exported-interface-member",
               entity,
@@ -107,7 +107,7 @@ export function analyzeInterfaceMembers(
             : referenceSummary.references > 0;
 
           if (hasLiveReferences) {
-            resolveCapabilityCandidate(
+            resolveCapabilityObligation(
               state,
               "internal-exported-interface-member",
               entity,
@@ -128,7 +128,7 @@ export function analyzeInterfaceMembers(
                 : "eligible interface member has no non-declaration references",
             `Unused interface member ${node.name.text}.${memberName}`,
           );
-          resolveCapabilityCandidate(
+          resolveCapabilityObligation(
             state,
             "internal-exported-interface-member",
             entity,
