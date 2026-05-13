@@ -12,17 +12,21 @@ import {
   getCollectionInfo,
   getConcreteProjectionPaths,
   hasTrackedChildren,
-  markProjectionChildReads,
-  markProjectionReads,
-  markProjectionWrites,
 } from "../state.js";
 import { maybeInvalidateReplacedTrackedPath, recordArrayBoundary } from "./effects.js";
+import {
+  markObjectPathProjectionChildReads as markProjectionChildReads,
+  markObjectPathProjectionReads as markProjectionReads,
+  markObjectPathProjectionWrites as markProjectionWrites,
+  type ObjectPathOverlayState,
+} from "./overlay.js";
 
 export function visitProjectedArrayUsage(
   project: ProjectContext,
   node: ts.Node,
   context: ProjectedArrayUsageContext,
   trackedObjectsById: Map<string, TrackedObject>,
+  overlayState: ObjectPathOverlayState,
 ): void {
   const visit = (current: ts.Node): void => {
     if (ts.isFunctionLike(current) && current !== node) {
@@ -35,6 +39,7 @@ export function visitProjectedArrayUsage(
         if (projected.dynamic) {
           recordArrayBoundary(
             project,
+            overlayState,
             projected.projection.trackedObject,
             current.getSourceFile(),
             current.expression,
@@ -45,7 +50,7 @@ export function visitProjectedArrayUsage(
             true,
           );
         } else {
-          markProjectionReads(projected.projection, trackedObjectsById, projected.suffix, true);
+          markProjectionReads(overlayState, projected.projection, trackedObjectsById, projected.suffix, true);
         }
       }
     }
@@ -60,6 +65,7 @@ export function visitProjectedArrayUsage(
         if (projected.dynamic) {
           recordArrayBoundary(
             project,
+            overlayState,
             projected.projection.trackedObject,
             current.getSourceFile(),
             argument,
@@ -77,7 +83,7 @@ export function visitProjectedArrayUsage(
           argumentIndex,
         );
         if (supportedArgumentUse?.kind === "observe-subtree") {
-          markProjectionReads(projected.projection, trackedObjectsById, projected.suffix, true);
+          markProjectionReads(overlayState, projected.projection, trackedObjectsById, projected.suffix, true);
           continue;
         }
 
@@ -85,7 +91,7 @@ export function visitProjectedArrayUsage(
           supportedArgumentUse?.kind === "observe-keys"
           || supportedArgumentUse?.kind === "observe-values"
         ) {
-          markProjectionChildReads(projected.projection, trackedObjectsById, projected.suffix);
+          markProjectionChildReads(overlayState, projected.projection, trackedObjectsById, projected.suffix);
           continue;
         }
 
@@ -96,6 +102,7 @@ export function visitProjectedArrayUsage(
         if (shouldEscape) {
           recordArrayBoundary(
             project,
+            overlayState,
             projected.projection.trackedObject,
             current.getSourceFile(),
             argument,
@@ -106,7 +113,7 @@ export function visitProjectedArrayUsage(
             true,
           );
         } else {
-          markProjectionReads(projected.projection, trackedObjectsById, projected.suffix);
+          markProjectionReads(overlayState, projected.projection, trackedObjectsById, projected.suffix);
         }
       }
     }
@@ -120,7 +127,7 @@ export function visitProjectedArrayUsage(
         && !ts.isPropertyAccessExpression(current.parent)
         && !ts.isElementAccessExpression(current.parent)
       ) {
-        markProjectionReads(projected.projection, trackedObjectsById, [], true);
+        markProjectionReads(overlayState, projected.projection, trackedObjectsById, [], true);
       }
     }
 
@@ -130,6 +137,7 @@ export function visitProjectedArrayUsage(
         if (projected.dynamic) {
           recordArrayBoundary(
             project,
+            overlayState,
             projected.projection.trackedObject,
             current.getSourceFile(),
             current,
@@ -141,14 +149,21 @@ export function visitProjectedArrayUsage(
           );
         } else if (isAssignmentLeft(current)) {
           if (projected.suffix.length > 1) {
-            markProjectionReads(projected.projection, trackedObjectsById, projected.suffix.slice(0, -1));
+            markProjectionReads(overlayState, projected.projection, trackedObjectsById, projected.suffix.slice(0, -1));
           }
           for (const fullPath of getConcreteProjectionPaths(projected.projection, projected.suffix)) {
-            maybeInvalidateReplacedTrackedPath(project, projected.projection.trackedObject, current.getSourceFile(), current, fullPath);
+            maybeInvalidateReplacedTrackedPath(
+              project,
+              overlayState,
+              projected.projection.trackedObject,
+              current.getSourceFile(),
+              current,
+              fullPath,
+            );
           }
-          markProjectionWrites(projected.projection, trackedObjectsById, projected.suffix);
+          markProjectionWrites(overlayState, projected.projection, trackedObjectsById, projected.suffix);
         } else {
-          markProjectionReads(projected.projection, trackedObjectsById, projected.suffix);
+          markProjectionReads(overlayState, projected.projection, trackedObjectsById, projected.suffix);
         }
       }
     }

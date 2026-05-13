@@ -1,7 +1,6 @@
 import type ts from "typescript";
 
 import type {
-  CollectionBoundaryRecord,
   EscapedPathRecord,
   EntityRecord,
   InvalidatedPathRecord,
@@ -25,11 +24,9 @@ import {
   CollectionInfoRecord,
   CollectionState,
 } from "./model.js";
-import { extendTrackedBinding } from "./bindings.js";
 import type {
   ArrayProjectionBinding,
   ExactAppendSlotPlan,
-  ResolvedTrackedObjectAccess,
   TrackedObjectBinding,
   TrackedValueFate,
 } from "./model.js";
@@ -165,24 +162,6 @@ export function resolveExactPathAlias(
     viaAliasObjectId: binding.trackedObject.id,
     viaAliasPath: fullPath,
   };
-}
-
-export function markAliasObserved(
-  resolved: ResolvedTrackedObjectAccess,
-  trackedObjectsById: Map<string, TrackedObject>,
-): void {
-  if (!resolved.viaAliasObjectId || !resolved.viaAliasPath) {
-    return;
-  }
-
-  const receiver = trackedObjectsById.get(resolved.viaAliasObjectId);
-  const alias = receiver?.exactPathAliases.get(serializePath(resolved.viaAliasPath));
-  if (alias) {
-    alias.observed = true;
-  }
-  if (receiver) {
-    markRead(receiver, resolved.viaAliasPath);
-  }
 }
 
 export function buildCollectionBoundaryEntity(
@@ -323,20 +302,6 @@ function setPlaceState(
   trackedObject.placeStates.set(serializePath(segments), placeState);
 }
 
-export function getInvalidatedPathRecord(
-  trackedObject: TrackedObject,
-  segments: PathSegment[],
-): InvalidatedPathRecord | undefined {
-  for (let index = segments.length; index >= 0; index -= 1) {
-    const invalidated = trackedObject.invalidatedPaths.get(serializePath(segments.slice(0, index)));
-    if (invalidated) {
-      return invalidated;
-    }
-  }
-
-  return undefined;
-}
-
 export function createInvalidatedPathRecord(
   category: SkipCategory,
   reason: string,
@@ -357,58 +322,6 @@ export function createInvalidatedPathRecord(
       return {
         reason,
       };
-  }
-}
-
-function bumpCollectionEpoch(trackedObject: TrackedObject, segments: PathSegment[]): void {
-  ensureCollectionState(trackedObject, segments).epoch += 1;
-}
-
-/**
- * Records a conservative collection boundary and invalidates exact child paths when needed.
- */
-export function recordCollectionBoundary(
-  trackedObject: TrackedObject,
-  collectionPath: PathSegment[],
-  record: CollectionBoundaryRecord,
-  invalidatePath?: PathSegment[],
-  invalidatedRecord?: InvalidatedPathRecord,
-): void {
-  bumpCollectionEpoch(trackedObject, collectionPath);
-  trackedObject.collectionBoundaries.set(record.entity.id, record);
-  addValueFate(trackedObject, "escaped-opaquely", record.path, record.reason);
-  clearExactAliasesWithin(trackedObject, record.path);
-  if (invalidatePath) {
-    const joinedPath = serializePath(invalidatePath);
-    trackedObject.invalidatedCollectionPaths.add(joinedPath);
-    setPlaceState(trackedObject, invalidatePath, "invalidated");
-    addValueFate(trackedObject, "invalidated", invalidatePath, record.reason);
-    clearExactAliasesWithin(trackedObject, invalidatePath);
-    if (invalidatedRecord) {
-      trackedObject.invalidatedPaths.set(joinedPath, invalidatedRecord);
-    }
-  }
-}
-
-export function invalidateCollectionPath(
-  trackedObject: TrackedObject,
-  collectionPath: PathSegment[],
-  affectedPath: PathSegment[],
-  invalidatedRecord?: InvalidatedPathRecord,
-): void {
-  bumpCollectionEpoch(trackedObject, collectionPath);
-  const joinedPath = serializePath(affectedPath);
-  trackedObject.invalidatedCollectionPaths.add(joinedPath);
-  setPlaceState(trackedObject, affectedPath, "invalidated");
-  addValueFate(
-    trackedObject,
-    "invalidated",
-    affectedPath,
-    invalidatedRecord?.reason ?? "collection mutation invalidated the previously tracked path",
-  );
-  clearExactAliasesWithin(trackedObject, affectedPath);
-  if (invalidatedRecord) {
-    trackedObject.invalidatedPaths.set(joinedPath, invalidatedRecord);
   }
 }
 
@@ -493,274 +406,13 @@ export function getConcreteProjectionPaths(
   return concretePaths;
 }
 
-interface ProjectionAliasHop {
-  receiverTrackedObject: TrackedObject;
-  receiverPath: PathSegment[];
-}
-
-interface ResolvedProjectionTarget {
-  binding: TrackedObjectBinding;
-  aliasHops: ProjectionAliasHop[];
-}
-
-function hasConcreteTrackedPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
-  if (segments.length === 0) {
-    return true;
-  }
-
-  const serializedPath = serializePath(segments);
-  return (
-    trackedObject.nodes.has(serializedPath)
-    || trackedObject.collections.has(serializedPath)
-    || trackedObject.exactPathAliases.has(serializedPath)
-    || hasTrackedChildren(trackedObject, segments)
-  );
-}
-
-function resolveProjectionTargets(
-  projection: ArrayProjectionBinding,
-  trackedObjectsById: Map<string, TrackedObject>,
-  suffix: PathSegment[] = [],
-): ResolvedProjectionTarget[] {
-  const targets: ResolvedProjectionTarget[] = [];
-
-  for (const elementPath of projection.elementPaths) {
-    let currentBinding: TrackedObjectBinding = {
-      trackedObject: projection.trackedObject,
-      prefix: elementPath,
-    };
-    const aliasHops: ProjectionAliasHop[] = [];
-
-    const rootAlias = resolveExactPathAlias(currentBinding, [], trackedObjectsById);
-    if (rootAlias.viaAliasObjectId && rootAlias.viaAliasPath) {
-      const receiverTrackedObject = trackedObjectsById.get(rootAlias.viaAliasObjectId);
-      if (receiverTrackedObject) {
-        aliasHops.push({
-          receiverTrackedObject,
-          receiverPath: rootAlias.viaAliasPath,
-        });
-      }
-      currentBinding = rootAlias.binding;
-    }
-
-    for (const segment of suffix) {
-      const aliased = resolveExactPathAlias(currentBinding, [segment], trackedObjectsById);
-      if (aliased.viaAliasObjectId && aliased.viaAliasPath) {
-        const receiverTrackedObject = trackedObjectsById.get(aliased.viaAliasObjectId);
-        if (receiverTrackedObject) {
-          aliasHops.push({
-            receiverTrackedObject,
-            receiverPath: aliased.viaAliasPath,
-          });
-        }
-        currentBinding = aliased.binding;
-        continue;
-      }
-
-      currentBinding = extendTrackedBinding(currentBinding, [segment]);
-    }
-
-    if (hasConcreteTrackedPath(currentBinding.trackedObject, currentBinding.prefix)) {
-      targets.push({
-        binding: currentBinding,
-        aliasHops,
-      });
-    }
-  }
-
-  return targets;
-}
-
-function markProjectionAliasHopObserved(hop: ProjectionAliasHop): void {
-  const alias = hop.receiverTrackedObject.exactPathAliases.get(serializePath(hop.receiverPath));
-  if (alias) {
-    alias.observed = true;
-  }
-  markRead(hop.receiverTrackedObject, hop.receiverPath);
-}
-
-function markResolvedProjectionTargetRead(
-  target: ResolvedProjectionTarget,
-  trackedObjectsById: Map<string, TrackedObject>,
-  mode: "self" | "subtree" | "children",
-): void {
-  for (const aliasHop of target.aliasHops) {
-    markProjectionAliasHopObserved(aliasHop);
-  }
-
-  if (mode === "subtree") {
-    markObservedSubtree(target.binding.trackedObject, target.binding.prefix, trackedObjectsById);
-    return;
-  }
-
-  if (mode === "children") {
-    markObservedChildPaths(target.binding.trackedObject, target.binding.prefix, trackedObjectsById);
-    return;
-  }
-
-  markRead(target.binding.trackedObject, target.binding.prefix);
-}
-
-export function markProjectionReads(
-  projection: ArrayProjectionBinding,
-  trackedObjectsById: Map<string, TrackedObject>,
-  suffix: PathSegment[] = [],
-  observeSubtree = false,
-): void {
-  const mode = observeSubtree ? "subtree" : "self";
-  for (const target of resolveProjectionTargets(projection, trackedObjectsById, suffix)) {
-    markResolvedProjectionTargetRead(target, trackedObjectsById, mode);
-  }
-}
-
-export function markProjectionChildReads(
-  projection: ArrayProjectionBinding,
-  trackedObjectsById: Map<string, TrackedObject>,
-  suffix: PathSegment[] = [],
-): void {
-  for (const target of resolveProjectionTargets(projection, trackedObjectsById, suffix)) {
-    markResolvedProjectionTargetRead(target, trackedObjectsById, "children");
-  }
-}
-
-export function markProjectionWrites(
-  projection: ArrayProjectionBinding,
-  trackedObjectsById: Map<string, TrackedObject>,
-  suffix: PathSegment[],
-): void {
-  for (const target of resolveProjectionTargets(projection, trackedObjectsById, suffix)) {
-    markWrite(target.binding.trackedObject, target.binding.prefix);
-  }
-}
-
-export function markProjectionElementRead(
-  projection: ArrayProjectionBinding,
-  trackedObjectsById: Map<string, TrackedObject>,
-  index: number,
-  observeSubtree = false,
-): void {
-  const elementPath = projection.elementPaths[index];
-  if (!elementPath) {
-    return;
-  }
-
-  for (const target of resolveProjectionTargets({
-    trackedObject: projection.trackedObject,
-    sourcePath: projection.sourcePath,
-    elementPaths: [elementPath],
-  }, trackedObjectsById)) {
-    markResolvedProjectionTargetRead(target, trackedObjectsById, observeSubtree ? "subtree" : "self");
-  }
-}
-
-function markObservedAliasRead(
-  receiverTrackedObject: TrackedObject,
-  receiverPath: PathSegment[],
-  sourceTrackedObject: TrackedObject,
-  sourcePath: PathSegment[],
-  alias: { observed: boolean },
-  trackedObjectsById?: Map<string, TrackedObject>,
-  observeSubtree = false,
-): void {
-  alias.observed = true;
-
-  if (observeSubtree && trackedObjectsById) {
-    markObservedSubtree(receiverTrackedObject, receiverPath, trackedObjectsById);
-    markObservedSubtree(sourceTrackedObject, sourcePath, trackedObjectsById);
-    return;
-  }
-
-  markRead(receiverTrackedObject, receiverPath);
-  markRead(sourceTrackedObject, sourcePath);
-}
-
-function markObservedPath(
-  trackedObject: TrackedObject,
-  segments: PathSegment[],
-  trackedObjectsById?: Map<string, TrackedObject>,
-): void {
-  const alias = trackedObject.exactPathAliases.get(serializePath(segments));
-  if (alias) {
-    const sourceTrackedObject = trackedObjectsById?.get(alias.sourceObjectId);
-    if (sourceTrackedObject) {
-      markObservedAliasRead(
-        trackedObject,
-        segments,
-        sourceTrackedObject,
-        alias.sourcePath,
-        alias,
-      );
-      return;
-    }
-  }
-
-  markRead(trackedObject, segments);
-}
-
-export function markObservedChildPaths(
-  trackedObject: TrackedObject,
-  segments: PathSegment[],
-  trackedObjectsById?: Map<string, TrackedObject>,
-): void {
-  const collection = getCollectionInfo(trackedObject, segments);
-  if (!collection || collection.childPaths.length === 0) {
-    markObservedPath(trackedObject, segments, trackedObjectsById);
-    return;
-  }
-
-  for (const childPath of collection.childPaths) {
-    markObservedPath(trackedObject, childPath, trackedObjectsById);
-  }
-}
-
-export function markRead(trackedObject: TrackedObject, segments: PathSegment[]): void {
+function markRead(trackedObject: TrackedObject, segments: PathSegment[]): void {
   for (let index = 1; index <= segments.length; index += 1) {
     trackedObject.reads.add(serializePath(segments.slice(0, index)));
   }
 }
 
-export function markObservedSubtree(
-  trackedObject: TrackedObject,
-  segments: PathSegment[],
-  trackedObjectsById?: Map<string, TrackedObject>,
-  visited = new Set<string>(),
-): void {
-  const joinedPrefix = serializePath(segments);
-  const visitKey = `${trackedObject.id}:${joinedPrefix}`;
-  if (visited.has(visitKey)) {
-    return;
-  }
-  visited.add(visitKey);
-
-  trackedObject.observedSubtrees.add(joinedPrefix);
-  trackedObject.reads.add(joinedPrefix);
-
-  const descendantKeys = trackedObject.descendantNodeKeys.get(joinedPrefix);
-  if (descendantKeys) {
-    for (const joinedPath of descendantKeys) {
-      if (isSerializedPathWithin(joinedPath, joinedPrefix)) {
-        trackedObject.reads.add(joinedPath);
-      }
-    }
-  }
-
-  if (!trackedObjectsById || trackedObject.exactPathAliases.size === 0) {
-    return;
-  }
-
-  for (const [aliasPath, alias] of trackedObject.exactPathAliases.entries()) {
-    if (!isSerializedPathWithin(aliasPath, joinedPrefix)) {
-      continue;
-    }
-    alias.observed = true;
-    const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
-    if (sourceTrackedObject) {
-      markObservedSubtree(sourceTrackedObject, alias.sourcePath, trackedObjectsById, visited);
-    }
-  }
-}
-
-export function markWrite(trackedObject: TrackedObject, segments: PathSegment[]): void {
+function markWrite(trackedObject: TrackedObject, segments: PathSegment[]): void {
   trackedObject.writes.add(serializePath(segments));
   setPlaceState(trackedObject, segments, "initialized");
 }

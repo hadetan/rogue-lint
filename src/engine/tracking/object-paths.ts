@@ -42,6 +42,7 @@ export function analyzeObjectPaths(
     project,
     state,
     suppressionContext,
-    stageContext.boundaryTrackedObjectsById.values(),
+    stageContext.trackedObjectRegistry.values(),
+    stageContext.overlayState,
   );
 }

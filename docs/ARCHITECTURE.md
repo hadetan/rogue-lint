@@ -58,7 +58,7 @@ Owns shared per-run evidence.
 
 - compiler-diagnostic access used by low-coupling analyzers
 - lazy tracking-artifact construction shared by the exactness-sensitive tracking stages
-- the run-scoped tracking contract exposed through `getTrackingRunArtifacts()` and stage-scoped views exposed through `getTrackingStageArtifacts(...)`
+- the run-scoped tracking diagnostics surface exposed through `getTrackingRunArtifacts()`, plus stage-scoped accessors exposed through `getTrackingStageArtifacts(...)`
 - internal test seams for tracking convergence validation without widening the public analysis API
 
 Put reusable per-run analysis evidence here when more than one stage needs the same derived view.
@@ -79,7 +79,7 @@ Add a new module here when a concern can be executed as one stage in the orchest
 Owns the exactness-sensitive tracking subsystem used by the value-liveness and object-path stages.
 
 - `core.ts`: stable internal facade that re-exports tracking stage entrypoints for analyzer wrappers
-- `contracts.ts`: explicit run-scoped tracking contract, ownership surfaces, runtime summaries, and internal diagnostics for stage consumers
+- `contracts.ts`: explicit run-scoped and stage-scoped tracking artifact contracts, readonly ownership surfaces, runtime summaries, and internal diagnostics for stage consumers
 - `convergence.ts`: bounded convergence driver and guard policy for tracked bindings and callable return summaries
 - `diagnostics.ts`: adapter that turns tracking warnings and contract diagnostics into the normal analysis diagnostics flow
 - `value-liveness.ts`: exactness-gated local value-fate stage implementation
@@ -91,7 +91,7 @@ Owns the exactness-sensitive tracking subsystem used by the value-liveness and o
 - `model.ts`, `syntax.ts`, `bindings.ts`: shared tracking vocabulary, structural helpers, and binding identity rules
 - `state.ts`, `access.ts`, `callables.ts`, `graph.ts`, `semantics.ts`: shared mutation, resolution, callable, graph, and helper-summary primitives
 
-`graph.ts` owns tracked-object seeding and the shared fact store, while `convergence.ts` owns pass-budget enforcement and churn signaling. Stage modules should consume those facts through the contract surfaces, keep source-file-local mutation inside their stage contexts, and route source-shaped bounded recovery through dedicated policy helpers instead of embedding those heuristics in generic traversal. Tracking warnings and contract violations should surface through `tracking/diagnostics.ts`, while richer runtime summaries stay available through the run-scoped tracking artifacts for focused validation.
+`graph.ts` owns tracked-object seeding and snapshot construction, while `convergence.ts` owns pass-budget enforcement and churn signaling. Stage modules should consume those facts through readonly snapshot surfaces, keep source-file-local mutation inside their stage contexts, and route source-shaped bounded recovery through dedicated policy helpers instead of embedding those heuristics in generic traversal. The object-path stage currently seeds its writable binding and tracked-object registries from the snapshot so call-site specialization stays stage-local instead of reusing kernel-owned maps as the contract. Tracking warnings and contract violations should surface through `tracking/diagnostics.ts`, while richer runtime summaries stay available through the run-scoped tracking artifacts for focused validation.
 
 Start in the owning module here when a change affects:
 

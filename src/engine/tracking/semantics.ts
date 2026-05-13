@@ -379,7 +379,7 @@ function isExplicitlyPureIgnoredResultCall(expression: ts.CallExpression): boole
 export function getIgnoredResultReason(
   project: ProjectContext,
   expression: ts.Expression,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   caches: ValueAnalysisCaches,
 ): string | undefined {
   const node = unwrapExpression(expression);

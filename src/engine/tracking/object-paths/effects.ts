@@ -36,20 +36,24 @@ import {
   ensureCollectionChildPath,
   getCollectionInfo,
   getEscapedReason,
-  getInvalidatedPathRecord,
   getNearestArrayCollectionPath,
   getTrackedArrayLength,
   hasTrackedChildren,
-  invalidateCollectionPath,
-  markEscaped,
-  markObservedSubtree,
-  markRead,
   materializeExactAppendSlot,
-  recordCollectionBoundary,
   setTrackedArrayLength,
 } from "../state.js";
 import { materializeTrackedLiteralAtPath } from "../graph.js";
 import { unwrapExpression } from "../syntax.js";
+import {
+  getObjectPathOverlayEscapedReason,
+  getObjectPathOverlayInvalidatedPathRecord,
+  invalidateObjectPathCollectionPath,
+  markObjectPathEscaped,
+  markObjectPathObservedSubtree,
+  markObjectPathRead,
+  recordObjectPathCollectionBoundary,
+  type ObjectPathOverlayState,
+} from "./overlay.js";
 
 function isNestedTrackedAccess(node: ts.Node): boolean {
   return (
@@ -78,18 +82,19 @@ function buildReadExpressionEntity(
 
 export function recordArrayBoundary(
   project: ProjectContext,
+  overlayState: ObjectPathOverlayState,
   trackedObject: TrackedObject,
   sourceFile: ts.SourceFile,
   node: ts.Node,
-  collectionPath: PathSegment[],
+  _collectionPath: PathSegment[],
   affectedPath: PathSegment[],
   category: SkipCategory,
   reason: string,
   invalidate = false,
 ): void {
-  recordCollectionBoundary(
+  recordObjectPathCollectionBoundary(
+    overlayState,
     trackedObject,
-    collectionPath,
     {
       entity: buildCollectionBoundaryEntity(project, trackedObject, sourceFile, node, affectedPath),
       path: affectedPath,
@@ -106,6 +111,7 @@ export function maybeReportInvalidatedRead(
   sourceFile: ts.SourceFile,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
+  overlayState: ObjectPathOverlayState,
   trackedObject: TrackedObject,
   node: ts.Node,
   fullPath: PathSegment[],
@@ -114,12 +120,12 @@ export function maybeReportInvalidatedRead(
     return;
   }
 
-  const invalidated = getInvalidatedPathRecord(trackedObject, fullPath);
+  const invalidated = getObjectPathOverlayInvalidatedPathRecord(overlayState, trackedObject.id, fullPath);
   if (!invalidated?.findingKind) {
     return;
   }
 
-  if (getEscapedReason(trackedObject, fullPath)) {
+  if (getObjectPathOverlayEscapedReason(overlayState, trackedObject.id, fullPath) ?? getEscapedReason(trackedObject, fullPath)) {
     return;
   }
 
@@ -144,6 +150,7 @@ export function maybeReportInvalidatedRead(
 
 export function handleTrackedArrayMutation(
   project: ProjectContext,
+  overlayState: ObjectPathOverlayState,
   trackedObject: TrackedObject,
   sourceFile: ts.SourceFile,
   node: ts.CallExpression,
@@ -158,6 +165,7 @@ export function handleTrackedArrayMutation(
     }
     recordArrayBoundary(
       project,
+      overlayState,
       trackedObject,
       sourceFile,
       node.expression,
@@ -172,10 +180,10 @@ export function handleTrackedArrayMutation(
   if (ARRAY_TRUNCATE_METHODS.has(methodName)) {
     if (arrayLength !== undefined && arrayLength > 0) {
       const removedPath = [...collectionPath, indexSegment(arrayLength - 1)];
-      markRead(trackedObject, removedPath);
-      invalidateCollectionPath(
+      markObjectPathRead(overlayState, trackedObject, removedPath);
+      invalidateObjectPathCollectionPath(
+        overlayState,
         trackedObject,
-        collectionPath,
         removedPath,
         createInvalidatedPathRecord("array-truncate-mutation", `${methodName} removes previously tracked elements`),
       );
@@ -185,6 +193,7 @@ export function handleTrackedArrayMutation(
 
     recordArrayBoundary(
       project,
+      overlayState,
       trackedObject,
       sourceFile,
       node.expression,
@@ -200,6 +209,7 @@ export function handleTrackedArrayMutation(
   if (ARRAY_REPLACEMENT_METHODS.has(methodName)) {
     recordArrayBoundary(
       project,
+      overlayState,
       trackedObject,
       sourceFile,
       node.expression,
@@ -215,10 +225,10 @@ export function handleTrackedArrayMutation(
   if (ARRAY_REORDER_METHODS.has(methodName)) {
     if (methodName === "shift" && arrayLength === 1) {
       const removedPath = [...collectionPath, indexSegment(0)];
-      markRead(trackedObject, removedPath);
-      invalidateCollectionPath(
+      markObjectPathRead(overlayState, trackedObject, removedPath);
+      invalidateObjectPathCollectionPath(
+        overlayState,
         trackedObject,
-        collectionPath,
         removedPath,
         createInvalidatedPathRecord("array-truncate-mutation", "shift consumes the only tracked element"),
       );
@@ -228,6 +238,7 @@ export function handleTrackedArrayMutation(
 
     recordArrayBoundary(
       project,
+      overlayState,
       trackedObject,
       sourceFile,
       node.expression,
@@ -261,7 +272,7 @@ export function tryRegisterExactArrayInsertion(
   methodName: string,
   slotPlans: ExactAppendSlotPlan[],
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): boolean {
   const arrayLength = getTrackedArrayLength(trackedObject, collectionPath);
@@ -305,10 +316,11 @@ export function tryRegisterExactArrayInsertion(
 
 export function handleSupportedValueFateCall(
   project: ProjectContext,
+  overlayState: ObjectPathOverlayState,
   sourceFile: ts.SourceFile,
   node: ts.CallExpression,
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
   handledSpreadAppendStarts: Set<number>,
 ): Set<number> {
@@ -331,7 +343,7 @@ export function handleSupportedValueFateCall(
     : undefined;
 
   if (trackedReceiver && receiverPath && receiverCollection?.kind === "array" && methodName === "slice") {
-    markObservedSubtree(trackedReceiver.trackedObject, receiverPath, trackedObjectsById);
+    markObjectPathObservedSubtree(overlayState, trackedReceiver.trackedObject, receiverPath, trackedObjectsById);
     addValueFate(
       trackedReceiver.trackedObject,
       "shallow-cloned",
@@ -341,7 +353,7 @@ export function handleSupportedValueFateCall(
   }
 
   if (trackedReceiver && receiverPath && receiverCollection?.kind === "array" && methodName === "concat") {
-    markObservedSubtree(trackedReceiver.trackedObject, receiverPath, trackedObjectsById);
+    markObjectPathObservedSubtree(overlayState, trackedReceiver.trackedObject, receiverPath, trackedObjectsById);
     addValueFate(
       trackedReceiver.trackedObject,
       "shallow-cloned",
@@ -361,7 +373,7 @@ export function handleSupportedValueFateCall(
       }
 
       const fullPath = [...resolved.binding.prefix, ...resolved.segments];
-      markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
+      markObjectPathObservedSubtree(overlayState, resolved.binding.trackedObject, fullPath, trackedObjectsById);
       addValueFate(
         resolved.binding.trackedObject,
         "shallow-cloned",
@@ -386,7 +398,7 @@ export function handleSupportedValueFateCall(
       const fullPath = [...resolved.binding.prefix, ...resolved.segments];
       const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
       if (collectionInfo?.kind === "array") {
-        markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
+        markObjectPathObservedSubtree(overlayState, resolved.binding.trackedObject, fullPath, trackedObjectsById);
         handledIndices.add(0);
       }
     }
@@ -502,6 +514,7 @@ export function handleSupportedValueFateCall(
         if (sawSpreadArgument) {
           recordArrayBoundary(
             project,
+            overlayState,
             trackedReceiver.trackedObject,
             sourceFile,
             node.expression,
@@ -524,6 +537,7 @@ export function handleSupportedValueFateCall(
       if (sawSpreadArgument) {
         recordArrayBoundary(
           project,
+          overlayState,
           trackedReceiver.trackedObject,
           sourceFile,
           node.expression,
@@ -554,7 +568,7 @@ export function handleSupportedValueFateCall(
     );
     if (resolved && !resolved.dynamic) {
       const fullPath = [...resolved.binding.prefix, ...resolved.segments];
-      markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
+      markObjectPathObservedSubtree(overlayState, resolved.binding.trackedObject, fullPath, trackedObjectsById);
       addValueFate(
         resolved.binding.trackedObject,
         "deep-cloned",
@@ -575,7 +589,8 @@ export function handleSupportedValueFateCall(
     );
     if (target && !target.dynamic) {
       const targetPath = [...target.binding.prefix, ...target.segments];
-      markEscaped(
+      markObjectPathEscaped(
+        overlayState,
         target.binding.trackedObject,
         targetPath,
         "object-spread",
@@ -597,7 +612,7 @@ export function handleSupportedValueFateCall(
       }
 
       const fullPath = [...resolved.binding.prefix, ...resolved.segments];
-      markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
+      markObjectPathObservedSubtree(overlayState, resolved.binding.trackedObject, fullPath, trackedObjectsById);
       addValueFate(
         resolved.binding.trackedObject,
         "shallow-cloned",
@@ -613,6 +628,7 @@ export function handleSupportedValueFateCall(
 
 export function maybeInvalidateReplacedTrackedPath(
   project: ProjectContext,
+  overlayState: ObjectPathOverlayState,
   trackedObject: TrackedObject,
   sourceFile: ts.SourceFile,
   node: ts.Node,
@@ -629,6 +645,7 @@ export function maybeInvalidateReplacedTrackedPath(
 
   recordArrayBoundary(
     project,
+    overlayState,
     trackedObject,
     sourceFile,
     node,

@@ -2,6 +2,7 @@ import ts from "typescript";
 
 import type {
   PathSegment,
+  SkipCategory,
   TrackedObject,
 } from "../../../types.js";
 import { getSymbolKey, isReadLikeUse } from "../../../compiler/ast-utils.js";
@@ -37,6 +38,7 @@ import {
 import type {
   ArrayProjectionBinding,
   ExactAppendSlotPlan,
+  ResolvedTrackedObjectAccess,
   TrackedObjectBinding,
 } from "../model.js";
 import {
@@ -55,26 +57,28 @@ import {
   getCollectionInfo,
   getProjectionBinding,
   hasTrackedChildren,
-  markAliasObserved,
-  markObservedChildPaths,
-  markEscaped,
-  markObservedSubtree,
-  markProjectionChildReads,
-  markProjectionElementRead,
-  markProjectionReads,
-  markProjectionWrites,
-  markRead,
   resolveExactPathAlias,
-  markWrite,
 } from "../state.js";
 import {
-  handleSupportedValueFateCall,
-  handleTrackedArrayMutation,
-  maybeInvalidateReplacedTrackedPath,
-  maybeReportInvalidatedRead,
-  recordArrayBoundary,
+  handleSupportedValueFateCall as handleSupportedValueFateCallEffect,
+  handleTrackedArrayMutation as handleTrackedArrayMutationEffect,
+  maybeInvalidateReplacedTrackedPath as maybeInvalidateReplacedTrackedPathEffect,
+  maybeReportInvalidatedRead as maybeReportInvalidatedReadEffect,
+  recordArrayBoundary as recordArrayBoundaryEffect,
   tryRegisterExactArrayInsertion,
 } from "./effects.js";
+import {
+  markObjectPathAliasObserved,
+  markObjectPathEscaped,
+  markObjectPathObservedChildPaths,
+  markObjectPathObservedSubtree,
+  markObjectPathProjectionChildReads,
+  markObjectPathProjectionElementRead,
+  markObjectPathProjectionReads,
+  markObjectPathProjectionWrites,
+  markObjectPathRead,
+  markObjectPathWrite,
+} from "./overlay.js";
 import type {
   FiniteLookupCandidate,
   HelperExactAppendPlan,
@@ -83,7 +87,7 @@ import type {
   ObjectPathStageContext,
 } from "./context.js";
 import { extractFinitePropertyUnionSegments } from "./policy.js";
-import { isAssignmentLeft, visitProjectedArrayUsage } from "./projections.js";
+import { isAssignmentLeft, visitProjectedArrayUsage as visitProjectedArrayUsageEffect } from "./projections.js";
 
 export function visitObjectPathSourceFile(
   stageContext: ObjectPathStageContext,
@@ -92,9 +96,10 @@ export function visitObjectPathSourceFile(
   const {
     project,
     publicCallableIds,
-    trackedBySymbolId,
+    overlayState,
+    trackedBindingRegistry: trackedBySymbolId,
     functionReturnSummaries,
-    trackedObjectsById,
+    trackedObjectRegistry: trackedObjectsById,
     state,
     suppressionContext,
   } = stageContext;
@@ -117,6 +122,178 @@ export function visitObjectPathSourceFile(
     elementBindings: projectionBindings,
     receiverBindings: projectionReceiverBindings,
     indexBindings: projectionIndexBindings,
+  };
+
+  const markAliasObserved = (
+    resolved: ResolvedTrackedObjectAccess,
+    aliasTrackedObjectsById: Map<string, TrackedObject>,
+  ): void => {
+    markObjectPathAliasObserved(overlayState, resolved, aliasTrackedObjectsById);
+  };
+
+  const markObservedChildPaths = (
+    trackedObject: TrackedObject,
+    segments: PathSegment[],
+    aliasTrackedObjectsById?: Map<string, TrackedObject>,
+  ): void => {
+    markObjectPathObservedChildPaths(overlayState, trackedObject, segments, aliasTrackedObjectsById);
+  };
+
+  const markEscaped = (
+    trackedObject: TrackedObject,
+    segments: PathSegment[],
+    category: SkipCategory,
+    reason: string,
+  ): void => {
+    markObjectPathEscaped(overlayState, trackedObject, segments, category, reason);
+  };
+
+  const markObservedSubtree = (
+    trackedObject: TrackedObject,
+    segments: PathSegment[],
+    aliasTrackedObjectsById?: Map<string, TrackedObject>,
+    visited = new Set<string>(),
+  ): void => {
+    markObjectPathObservedSubtree(overlayState, trackedObject, segments, aliasTrackedObjectsById, visited);
+  };
+
+  const markProjectionChildReads = (
+    projection: ArrayProjectionBinding,
+    projectionTrackedObjectsById: Map<string, TrackedObject>,
+    suffix: PathSegment[] = [],
+  ): void => {
+    markObjectPathProjectionChildReads(overlayState, projection, projectionTrackedObjectsById, suffix);
+  };
+
+  const markProjectionElementRead = (
+    projection: ArrayProjectionBinding,
+    projectionTrackedObjectsById: Map<string, TrackedObject>,
+    index: number,
+    observeSubtree = false,
+  ): void => {
+    markObjectPathProjectionElementRead(overlayState, projection, projectionTrackedObjectsById, index, observeSubtree);
+  };
+
+  const markProjectionReads = (
+    projection: ArrayProjectionBinding,
+    projectionTrackedObjectsById: Map<string, TrackedObject>,
+    suffix: PathSegment[] = [],
+    observeSubtree = false,
+  ): void => {
+    markObjectPathProjectionReads(overlayState, projection, projectionTrackedObjectsById, suffix, observeSubtree);
+  };
+
+  const markProjectionWrites = (
+    projection: ArrayProjectionBinding,
+    projectionTrackedObjectsById: Map<string, TrackedObject>,
+    suffix: PathSegment[],
+  ): void => {
+    markObjectPathProjectionWrites(overlayState, projection, projectionTrackedObjectsById, suffix);
+  };
+
+  const markRead = (trackedObject: TrackedObject, segments: PathSegment[]): void => {
+    markObjectPathRead(overlayState, trackedObject, segments);
+  };
+
+  const markWrite = (trackedObject: TrackedObject, segments: PathSegment[]): void => {
+    markObjectPathWrite(overlayState, trackedObject, segments);
+  };
+
+  const recordArrayBoundary = (
+    _project: typeof project,
+    trackedObject: TrackedObject,
+    boundarySourceFile: ts.SourceFile,
+    node: ts.Node,
+    collectionPath: PathSegment[],
+    affectedPath: PathSegment[],
+    category: SkipCategory,
+    reason: string,
+    invalidate = false,
+  ): void => {
+    recordArrayBoundaryEffect(
+      project,
+      overlayState,
+      trackedObject,
+      boundarySourceFile,
+      node,
+      collectionPath,
+      affectedPath,
+      category,
+      reason,
+      invalidate,
+    );
+  };
+
+  const maybeReportInvalidatedRead = (
+    _project: typeof project,
+    readSourceFile: ts.SourceFile,
+    currentState: typeof state,
+    currentSuppressionContext: typeof suppressionContext,
+    trackedObject: TrackedObject,
+    node: ts.Node,
+    fullPath: PathSegment[],
+  ): void => {
+    maybeReportInvalidatedReadEffect(
+      project,
+      readSourceFile,
+      currentState,
+      currentSuppressionContext,
+      overlayState,
+      trackedObject,
+      node,
+      fullPath,
+    );
+  };
+
+  const handleTrackedArrayMutation = (
+    _project: typeof project,
+    trackedObject: TrackedObject,
+    mutationSourceFile: ts.SourceFile,
+    node: ts.CallExpression,
+    collectionPath: PathSegment[],
+    methodName: string,
+  ): void => {
+    handleTrackedArrayMutationEffect(project, overlayState, trackedObject, mutationSourceFile, node, collectionPath, methodName);
+  };
+
+  const handleSupportedValueFateCall = (
+    _project: typeof project,
+    valueSourceFile: ts.SourceFile,
+    node: ts.CallExpression,
+    valueTrackedBySymbolId: typeof trackedBySymbolId,
+    valueReturnSummaries: typeof functionReturnSummaries,
+    valueTrackedObjectsById: typeof trackedObjectsById,
+    spreadAppendStarts: typeof handledSpreadAppendStarts,
+  ): Set<number> => {
+    return handleSupportedValueFateCallEffect(
+      project,
+      overlayState,
+      valueSourceFile,
+      node,
+      valueTrackedBySymbolId,
+      valueReturnSummaries,
+      valueTrackedObjectsById,
+      spreadAppendStarts,
+    );
+  };
+
+  const maybeInvalidateReplacedTrackedPath = (
+    _project: typeof project,
+    trackedObject: TrackedObject,
+    replacementSourceFile: ts.SourceFile,
+    node: ts.Node,
+    fullPath: PathSegment[],
+  ): void => {
+    maybeInvalidateReplacedTrackedPathEffect(project, overlayState, trackedObject, replacementSourceFile, node, fullPath);
+  };
+
+  const visitProjectedArrayUsage = (
+    _project: typeof project,
+    node: ts.Node,
+    context: typeof projectionContext,
+    projectionTrackedObjectsById: Map<string, TrackedObject>,
+  ): void => {
+    visitProjectedArrayUsageEffect(project, node, context, projectionTrackedObjectsById, overlayState);
   };
 
   const getProjectedNestedArrayBinding = (

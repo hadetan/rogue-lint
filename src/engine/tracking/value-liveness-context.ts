@@ -16,7 +16,7 @@ interface ValueLivenessSourceFileContext {
 
 interface ValueLivenessStageContext {
   reachableFiles: Set<string>;
-  functionReturnSummaries: Map<string, CallableReturnSummary>;
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>;
   createSourceFileContext(sourceFile: ts.SourceFile): ValueLivenessSourceFileContext;
 }
 

@@ -41,6 +41,8 @@ import {
   getCallableReturnBinding,
 } from "./callables.js";
 import type {
+  MutableTrackingRuntimeSummary,
+  MutableTrackingSnapshot,
   TrackingContractDiagnostic,
   TrackingRunArtifacts,
   TrackingStage,
@@ -396,7 +398,7 @@ function resolveTrackedSpreadSource(
   project: ProjectContext,
   expression: ts.Expression,
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ) {
   const unwrapped = unwrapExpression(expression);
@@ -576,7 +578,7 @@ function registerTrackedLiteralAliases(
   segments: PathSegment[],
   maxDepth: number,
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): void {
   if (segments.length > maxDepth) {
@@ -726,7 +728,7 @@ export function materializeTrackedLiteralAtPath(
   owner: string,
   segments: PathSegment[],
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): void {
   if (segments.length === 1 && segments[0]?.kind === "index") {
@@ -1427,7 +1429,7 @@ export function buildTrackedObjects(
     options,
   );
 
-  const runtimeSummary = {
+  const runtimeSummary: MutableTrackingRuntimeSummary = {
     seed: {
       reachableFileCount: reachableFiles.size,
       reachableSourceFileCount,
@@ -1449,7 +1451,11 @@ export function buildTrackedObjects(
     },
   };
 
-  const facts = {
+  const diagnostics: TrackingContractDiagnostic[] = [
+    ...convergenceResult.diagnostics,
+  ];
+
+  const snapshot: MutableTrackingSnapshot = {
     bindings: {
       owner: "binding-convergence" as const,
       bySymbolId: trackedBySymbolId,
@@ -1466,21 +1472,19 @@ export function buildTrackedObjects(
       owner: "boundary-state" as const,
       trackedObjectsById,
     },
+    runtimeSummary,
+    diagnostics,
   };
 
-  const diagnostics: TrackingContractDiagnostic[] = [
-    ...convergenceResult.diagnostics,
-  ];
-
   const runArtifacts: TrackingRunArtifacts = {
-    diagnostics,
+    diagnostics: snapshot.diagnostics,
     getStageArtifacts<TStage extends TrackingStage>(stage: TStage): Extract<TrackingStageArtifacts, { stage: TStage }> {
       if (stage === "value-liveness") {
         runtimeSummary.stageRequests["value-liveness"] += 1;
         return {
           stage,
-          returnSummaries: facts.returnSummaries,
-          runtimeSummary,
+          returnSummaries: snapshot.returnSummaries,
+          runtimeSummary: snapshot.runtimeSummary,
         } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
       }
 
@@ -1488,11 +1492,11 @@ export function buildTrackedObjects(
         runtimeSummary.stageRequests["object-paths"] += 1;
         return {
           stage,
-          bindings: facts.bindings,
-          returnSummaries: facts.returnSummaries,
-          aliases: facts.aliases,
-          boundaries: facts.boundaries,
-          runtimeSummary,
+          bindings: snapshot.bindings,
+          returnSummaries: snapshot.returnSummaries,
+          aliases: snapshot.aliases,
+          boundaries: snapshot.boundaries,
+          runtimeSummary: snapshot.runtimeSummary,
         } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
       }
 
@@ -1500,7 +1504,7 @@ export function buildTrackedObjects(
         code: "contract-violation",
         message: `tracking stage '${stage}' is outside the declared tracking-kernel contract`,
       };
-      diagnostics.push(diagnostic);
+      snapshot.diagnostics.push(diagnostic);
       throw new Error(diagnostic.message);
     },
   };

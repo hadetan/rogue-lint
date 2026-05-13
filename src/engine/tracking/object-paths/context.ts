@@ -14,6 +14,114 @@ import type {
   HelperParameterSummary,
   TrackedObjectBinding,
 } from "../model.js";
+import type { ObjectPathOverlayState } from "./overlay.js";
+
+function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObject {
+  return {
+    ...base,
+    nodes: new Map([...base.nodes.entries()].map(([joinedPath, node]) => [
+      joinedPath,
+      {
+        entity: node.entity,
+        fullPath: [...node.fullPath],
+      },
+    ])),
+    callablePaths: new Map([...base.callablePaths.entries()].map(([joinedPath, callable]) => [
+      joinedPath,
+      {
+        symbolKey: callable.symbolKey,
+        declaration: callable.declaration,
+      },
+    ])),
+    descendantNodeKeys: new Map([...base.descendantNodeKeys.entries()].map(([joinedPath, descendantKeys]) => [
+      joinedPath,
+      [...descendantKeys],
+    ])),
+    collections: new Map([...base.collections.entries()].map(([joinedPath, collection]) => [
+      joinedPath,
+      {
+        kind: collection.kind,
+        path: [...collection.path],
+        childPaths: collection.childPaths.map((childPath) => [...childPath]),
+        arrayLength: collection.arrayLength,
+      },
+    ])),
+    collectionStates: new Map([...base.collectionStates.entries()].map(([joinedPath, state]) => [
+      joinedPath,
+      {
+        path: [...state.path],
+        epoch: state.epoch,
+        arrayLength: state.arrayLength,
+      },
+    ])),
+    collectionBoundaries: new Map([...base.collectionBoundaries.entries()].map(([id, boundary]) => [
+      id,
+      {
+        entity: boundary.entity,
+        path: [...boundary.path],
+        category: boundary.category,
+        reason: boundary.reason,
+      },
+    ])),
+    invalidatedCollectionPaths: new Set(base.invalidatedCollectionPaths),
+    invalidatedPaths: new Map([...base.invalidatedPaths.entries()].map(([joinedPath, invalidated]) => [
+      joinedPath,
+      {
+        reason: invalidated.reason,
+        findingKind: invalidated.findingKind,
+      },
+    ])),
+    placeStates: new Map(base.placeStates),
+    observedSubtrees: new Set(base.observedSubtrees),
+    escapedPaths: new Map([...base.escapedPaths.entries()].map(([joinedPath, escaped]) => [
+      joinedPath,
+      {
+        category: escaped.category,
+        reason: escaped.reason,
+      },
+    ])),
+    exactPathAliases: new Map([...base.exactPathAliases.entries()].map(([joinedPath, alias]) => [
+      joinedPath,
+      {
+        fate: alias.fate,
+        sourceObjectId: alias.sourceObjectId,
+        sourcePath: [...alias.sourcePath],
+        observed: alias.observed,
+      },
+    ])),
+    valueFates: base.valueFates.map((valueFate) => ({
+      ...valueFate,
+      path: [...valueFate.path],
+      relatedPath: valueFate.relatedPath ? [...valueFate.relatedPath] : undefined,
+    })),
+    reads: new Set(base.reads),
+    writes: new Set(base.writes),
+  };
+}
+
+function cloneTrackedObjectBindingForObjectPathStage(
+  binding: TrackedObjectBinding,
+  trackedObjectsById: ReadonlyMap<string, TrackedObject>,
+): TrackedObjectBinding {
+  return {
+    trackedObject: trackedObjectsById.get(binding.trackedObject.id) ?? binding.trackedObject,
+    prefix: [...binding.prefix],
+  };
+}
+
+function cloneCallableReturnSummaryForObjectPathStage(
+  summary: CallableReturnSummary,
+  trackedObjectsById: ReadonlyMap<string, TrackedObject>,
+): CallableReturnSummary {
+  if (summary.kind === "structured" || summary.kind === "returned-alias") {
+    return {
+      kind: summary.kind,
+      binding: cloneTrackedObjectBindingForObjectPathStage(summary.binding, trackedObjectsById),
+    };
+  }
+
+  return summary;
+}
 
 export interface FiniteLookupCandidate {
   binding: TrackedObjectBinding;
@@ -56,10 +164,10 @@ export interface ObjectPathStageContext {
   publicCallableIds: Set<string>;
   state: AnalysisState;
   suppressionContext: SuppressionContext;
-  trackedBySymbolId: Map<string, TrackedObjectBinding>;
-  functionReturnSummaries: Map<string, CallableReturnSummary>;
-  trackedObjectsById: Map<string, TrackedObject>;
-  boundaryTrackedObjectsById: Map<string, TrackedObject>;
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>;
+  overlayState: ObjectPathOverlayState;
+  trackedBindingRegistry: Map<string, TrackedObjectBinding>;
+  trackedObjectRegistry: Map<string, TrackedObject>;
   createSourceFileContext(sourceFile: ts.SourceFile): ObjectPathSourceFileContext;
 }
 
@@ -71,6 +179,33 @@ export function createObjectPathStageContext(
   artifacts: AnalysisArtifacts,
 ): ObjectPathStageContext {
   const trackingStageArtifacts = artifacts.getTrackingStageArtifacts("object-paths");
+  const overlayState: ObjectPathOverlayState = {
+    readsByObjectId: new Map(),
+    writesByObjectId: new Map(),
+    observedSubtreesByObjectId: new Map(),
+    observedAliasesByObjectId: new Map(),
+    invalidatedCollectionsByObjectId: new Map(),
+    escapedPathsByObjectId: new Map(),
+    boundaryRecordsByObjectId: new Map(),
+  };
+  const trackedObjectRegistry = new Map(
+    [...trackingStageArtifacts.aliases.trackedObjectsById.entries()].map(([id, trackedObject]) => [
+      id,
+      cloneTrackedObjectForObjectPathStage(trackedObject),
+    ]),
+  );
+  const trackedBindingRegistry = new Map(
+    [...trackingStageArtifacts.bindings.bySymbolId.entries()].map(([symbolId, binding]) => [
+      symbolId,
+      cloneTrackedObjectBindingForObjectPathStage(binding, trackedObjectRegistry),
+    ]),
+  );
+  const functionReturnSummaries = new Map(
+    [...trackingStageArtifacts.returnSummaries.byCallableId.entries()].map(([callableId, summary]) => [
+      callableId,
+      cloneCallableReturnSummaryForObjectPathStage(summary, trackedObjectRegistry),
+    ]),
+  );
 
   return {
     project,
@@ -78,10 +213,10 @@ export function createObjectPathStageContext(
     publicCallableIds: artifacts.publicCallableIds,
     state,
     suppressionContext,
-    trackedBySymbolId: trackingStageArtifacts.bindings.bySymbolId,
-    functionReturnSummaries: trackingStageArtifacts.returnSummaries.byCallableId,
-    trackedObjectsById: trackingStageArtifacts.aliases.trackedObjectsById,
-    boundaryTrackedObjectsById: trackingStageArtifacts.boundaries.trackedObjectsById,
+    functionReturnSummaries,
+    overlayState,
+    trackedBindingRegistry,
+    trackedObjectRegistry,
     createSourceFileContext(sourceFile: ts.SourceFile): ObjectPathSourceFileContext {
       const projectionBindings = new Map<string, ArrayProjectionBinding>();
 

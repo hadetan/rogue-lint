@@ -15,32 +15,71 @@ export type TrackingContractDiagnostic = {
 };
 
 type TrackingSeedPhaseArtifacts = {
-  reachableFileCount: number;
-  reachableSourceFileCount: number;
+  readonly reachableFileCount: number;
+  readonly reachableSourceFileCount: number;
 };
 
 type TrackingBindingsSurface = {
+  readonly owner: "binding-convergence";
+  readonly bySymbolId: ReadonlyMap<string, TrackedObjectBinding>;
+};
+
+type MutableTrackingBindingsSurface = {
   readonly owner: "binding-convergence";
   readonly bySymbolId: Map<string, TrackedObjectBinding>;
 };
 
 type TrackingReturnSummarySurface = {
   readonly owner: "return-summary-convergence";
+  readonly byCallableId: ReadonlyMap<string, CallableReturnSummary>;
+};
+
+type MutableTrackingReturnSummarySurface = {
+  readonly owner: "return-summary-convergence";
   readonly byCallableId: Map<string, CallableReturnSummary>;
 };
 
 type TrackingAliasSurface = {
+  readonly owner: "alias-state";
+  readonly trackedObjectsById: ReadonlyMap<string, TrackedObject>;
+};
+
+type MutableTrackingAliasSurface = {
   readonly owner: "alias-state";
   readonly trackedObjectsById: Map<string, TrackedObject>;
 };
 
 type TrackingBoundarySurface = {
   readonly owner: "boundary-state";
+  readonly trackedObjectsById: ReadonlyMap<string, TrackedObject>;
+};
+
+type MutableTrackingBoundarySurface = {
+  readonly owner: "boundary-state";
   readonly trackedObjectsById: Map<string, TrackedObject>;
 };
 
 type TrackingRuntimeSummary = {
-  seed: TrackingSeedPhaseArtifacts;
+  readonly seed: TrackingSeedPhaseArtifacts;
+  readonly convergence: {
+    readonly passes: number;
+    readonly warningPassThreshold: number;
+    readonly maxPasses: number;
+    readonly warned: boolean;
+  };
+  readonly totals: {
+    readonly trackedBindings: number;
+    readonly returnSummaries: number;
+    readonly trackedObjects: number;
+  };
+  readonly stageRequests: Readonly<Record<TrackingStage, number>>;
+};
+
+export type MutableTrackingRuntimeSummary = {
+  seed: {
+    reachableFileCount: number;
+    reachableSourceFileCount: number;
+  };
   convergence: {
     passes: number;
     warningPassThreshold: number;
@@ -53,6 +92,15 @@ type TrackingRuntimeSummary = {
     trackedObjects: number;
   };
   stageRequests: Record<TrackingStage, number>;
+};
+
+export type MutableTrackingSnapshot = {
+  bindings: MutableTrackingBindingsSurface;
+  returnSummaries: MutableTrackingReturnSummarySurface;
+  aliases: MutableTrackingAliasSurface;
+  boundaries: MutableTrackingBoundarySurface;
+  runtimeSummary: MutableTrackingRuntimeSummary;
+  diagnostics: TrackingContractDiagnostic[];
 };
 
 type ValueLivenessTrackingStageArtifacts = {
@@ -73,7 +121,7 @@ type ObjectPathTrackingStageArtifacts = {
 export type TrackingStageArtifacts = ValueLivenessTrackingStageArtifacts | ObjectPathTrackingStageArtifacts;
 
 export type TrackingRunArtifacts = {
-  diagnostics: readonly TrackingContractDiagnostic[];
+  readonly diagnostics: readonly TrackingContractDiagnostic[];
   getStageArtifacts<TStage extends TrackingStage>(stage: TStage): Extract<TrackingStageArtifacts, { stage: TStage }>;
 };
 

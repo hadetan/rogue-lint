@@ -11,8 +11,9 @@ import { toRelative } from "./shared/path-utils.js";
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 
 function walkSourceFiles(rootPath: string): string[] {
-  const result: string[] = [];
-  const queue = [rootPath];
+  const result = new Set<string>();
+  const queue: string[] = [];
+  queue.push(rootPath);
 
   while (queue.length > 0) {
     const current = queue.pop();
@@ -37,12 +38,12 @@ function walkSourceFiles(rootPath: string): string[] {
       }
 
       if (SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
-        result.push(fullPath);
+        result.add(fullPath);
       }
     }
   }
 
-  return result;
+  return [...result];
 }
 
 function findTsconfig(rootPath: string, explicit?: string): string | undefined {

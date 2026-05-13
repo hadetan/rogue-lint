@@ -7,14 +7,21 @@ import { createAnalysisArtifacts } from "../src/engine/analysis-artifacts.js";
 import { createAnalysisState } from "../src/engine/analysis-state.js";
 import { collectPublicSurface } from "../src/engine/analyzers/support.js";
 import { createObjectPathStageContext } from "../src/engine/tracking/object-paths/context.js";
+import {
+  getObjectPathOverlayBoundaryRecords,
+  getObjectPathOverlayObservedAliases,
+  getObjectPathOverlayReads,
+  isObjectPathOverlayCollectionPathInvalidated,
+} from "../src/engine/tracking/object-paths/overlay.js";
 import { extractFinitePropertyUnionSegments } from "../src/engine/tracking/object-paths/policy.js";
+import { visitObjectPathSourceFile } from "../src/engine/tracking/object-paths/visitor.js";
 import { createValueLivenessStageContext } from "../src/engine/tracking/value-liveness-context.js";
 import { buildTrackedObjects } from "../src/engine/tracking/graph.js";
 import type { TrackingStage } from "../src/engine/tracking/contracts.js";
 import { appendTrackingAnalysisDiagnostics } from "../src/engine/tracking/diagnostics.js";
 import { buildModuleGraph, computeReachableFiles, discoverEntrypoints } from "../src/module-graph.js";
 import { loadProject } from "../src/project.js";
-import { propertySegment } from "../src/shared/path-utils.js";
+import { indexSegment, propertySegment, serializePath } from "../src/shared/path-utils.js";
 import { buildSuppressionContext } from "../src/suppressions.js";
 
 function fixturePath(name: string): string {
@@ -77,6 +84,65 @@ function findElementAccessExpression(
   return match;
 }
 
+function runObjectPathStage(name: string) {
+  const { project, reachableFiles, publicSurfaceIds, publicCallableIds } = createProjectContext(name);
+  const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, publicCallableIds);
+  const state = createAnalysisState();
+  const suppressionContext = buildSuppressionContext(project);
+  const objectPathStage = createObjectPathStageContext(
+    project,
+    reachableFiles,
+    state,
+    suppressionContext,
+    artifacts,
+  );
+
+  for (const sourceFile of project.sourceFiles) {
+    if (!reachableFiles.has(sourceFile.fileName)) {
+      continue;
+    }
+
+    visitObjectPathSourceFile(objectPathStage, objectPathStage.createSourceFileContext(sourceFile));
+  }
+
+  return {
+    artifacts,
+    objectPathStage,
+  };
+}
+
+function getTrackedObjectByRootName(
+  trackedObjects: Iterable<import("../src/types.js").TrackedObject>,
+  rootName: string,
+) {
+  const trackedObject = [...trackedObjects].find((candidate) => candidate.rootName === rootName);
+  if (!trackedObject) {
+    throw new Error(`missing tracked object ${rootName}`);
+  }
+
+  return trackedObject;
+}
+
+function getFirstTrackedObjectPair(
+  stageTrackedObjects: ReadonlyMap<string, import("../src/types.js").TrackedObject>,
+  snapshotTrackedObjects: ReadonlyMap<string, import("../src/types.js").TrackedObject>,
+) {
+  const [trackedObjectId, snapshotTrackedObject] = snapshotTrackedObjects.entries().next().value as [
+    string,
+    import("../src/types.js").TrackedObject,
+  ];
+  const stageTrackedObject = stageTrackedObjects.get(trackedObjectId);
+
+  if (!stageTrackedObject) {
+    throw new Error(`missing stage tracked object ${trackedObjectId}`);
+  }
+
+  return {
+    stageTrackedObject,
+    snapshotTrackedObject,
+  };
+}
+
 describe("tracking kernel contract", () => {
   it("exposes run-scoped and stage-scoped tracking artifacts", () => {
     const { project, reachableFiles, publicSurfaceIds, publicCallableIds } = createProjectContext("app-basic");
@@ -89,11 +155,15 @@ describe("tracking kernel contract", () => {
 
     const valueStage = artifacts.getTrackingStageArtifacts("value-liveness");
     expect(valueStage.returnSummaries.owner).toBe("return-summary-convergence");
+    expect(valueStage.returnSummaries).toBe(initialValueStage.returnSummaries);
     expect("bindings" in valueStage).toBe(false);
+    expect(valueStage.runtimeSummary).toBe(initialValueStage.runtimeSummary);
     expect(valueStage.runtimeSummary.stageRequests["value-liveness"]).toBe(2);
     expect(valueStage.runtimeSummary.stageRequests["object-paths"]).toBe(0);
 
     const objectPathStage = artifacts.getTrackingStageArtifacts("object-paths");
+    expect(objectPathStage.returnSummaries).toBe(initialValueStage.returnSummaries);
+    expect(objectPathStage.runtimeSummary).toBe(initialValueStage.runtimeSummary);
     expect(objectPathStage.bindings.owner).toBe("binding-convergence");
     expect(objectPathStage.aliases.owner).toBe("alias-state");
     expect(objectPathStage.boundaries.owner).toBe("boundary-state");
@@ -164,7 +234,30 @@ describe("tracking kernel contract", () => {
     expect(objectFileB.retainedContainerConflicts.size).toBe(0);
     expect(objectFileA.parameterMeaningfulUse).not.toBe(objectFileB.parameterMeaningfulUse);
     expect(objectFileB.parameterMeaningfulUse.size).toBe(0);
-    expect(objectPathStage.trackedBySymbolId).toBe(artifacts.getTrackingStageArtifacts("object-paths").bindings.bySymbolId);
+    const objectPathArtifacts = artifacts.getTrackingStageArtifacts("object-paths");
+    expect(objectPathStage.trackedBindingRegistry).not.toBe(objectPathArtifacts.bindings.bySymbolId);
+    expect(objectPathStage.trackedBindingRegistry.size).toBe(objectPathArtifacts.bindings.bySymbolId.size);
+    expect(objectPathStage.trackedObjectRegistry).not.toBe(objectPathArtifacts.aliases.trackedObjectsById);
+    expect(objectPathStage.trackedObjectRegistry.size).toBe(objectPathArtifacts.aliases.trackedObjectsById.size);
+    const { stageTrackedObject, snapshotTrackedObject } = getFirstTrackedObjectPair(
+      objectPathStage.trackedObjectRegistry,
+      objectPathArtifacts.aliases.trackedObjectsById,
+    );
+    expect(stageTrackedObject).not.toBe(snapshotTrackedObject);
+    expect(
+      [...objectPathStage.trackedBindingRegistry.values()].some((binding) => binding.trackedObject === stageTrackedObject),
+    ).toBe(true);
+    expect(
+      [...objectPathStage.trackedBindingRegistry.values()].some((binding) => binding.trackedObject === snapshotTrackedObject),
+    ).toBe(false);
+    stageTrackedObject.exactPathAliases.set("__probe__", {
+      fate: "inserted-by-reference",
+      sourceObjectId: stageTrackedObject.id,
+      sourcePath: [],
+      observed: false,
+    });
+    expect(snapshotTrackedObject.exactPathAliases.has("__probe__")).toBe(false);
+    expect(objectPathArtifacts.boundaries.trackedObjectsById).toBe(objectPathArtifacts.aliases.trackedObjectsById);
 
     const valueLivenessStage = createValueLivenessStageContext(
       reachableFiles,
@@ -236,5 +329,68 @@ describe("tracking kernel contract", () => {
       message: expect.stringContaining("tracking warning:"),
     }));
     expect(artifacts.getTrackingStageArtifacts("value-liveness").runtimeSummary.convergence.warned).toBe(true);
+  });
+
+  it("records append/readback observations in the overlay without mutating snapshot-owned reads", () => {
+    const { artifacts, objectPathStage } = runObjectPathStage("helper-mutation-basic");
+    const stageItems = getTrackedObjectByRootName(objectPathStage.trackedObjectRegistry.values(), "items");
+    const snapshotItems = getTrackedObjectByRootName(
+      artifacts.getTrackingStageArtifacts("object-paths").aliases.trackedObjectsById.values(),
+      "items",
+    );
+
+    expect(getObjectPathOverlayReads(objectPathStage.overlayState, stageItems.id)).toContain(
+      serializePath([indexSegment(0)]),
+    );
+    expect(snapshotItems.reads.size).toBe(0);
+  });
+
+  it("tracks returned-object readback on derived call-site objects through overlay reads", () => {
+    const { objectPathStage } = runObjectPathStage("returned-object-basic");
+    const returnedClone = [...objectPathStage.trackedObjectRegistry.values()].find((trackedObject) => {
+      const reads = getObjectPathOverlayReads(objectPathStage.overlayState, trackedObject.id);
+
+      return reads?.has(serializePath([propertySegment("live")]))
+        && reads.has(serializePath([propertySegment("nested"), propertySegment("read")]))
+        && trackedObject.rootName.length > 0;
+    });
+
+    expect(returnedClone).toBeDefined();
+  });
+
+  it("tracks alias-backed helper readback through overlay observed alias paths", () => {
+    const { objectPathStage } = runObjectPathStage("helper-return-alias-projection-basic");
+    const aliasObservedObject = [...objectPathStage.trackedObjectRegistry.values()].find((trackedObject) =>
+      getObjectPathOverlayObservedAliases(objectPathStage.overlayState, trackedObject.id)?.has(serializePath([indexSegment(0)])));
+
+    expect(aliasObservedObject).toBeDefined();
+  });
+
+  it("tracks collection invalidation and boundary state in the overlay", () => {
+    const { objectPathStage } = runObjectPathStage("helper-queue-basic");
+    const queue = getTrackedObjectByRootName(objectPathStage.trackedObjectRegistry.values(), "queue");
+    const boundaries = getObjectPathOverlayBoundaryRecords(objectPathStage.overlayState, queue.id);
+
+    expect(boundaries).toBeDefined();
+    expect([...boundaries!.values()].some((boundary) => boundary.category === "array-reorder-mutation")).toBe(true);
+    expect(isObjectPathOverlayCollectionPathInvalidated(objectPathStage.overlayState, queue.id, [])).toBe(true);
+  });
+
+  it("keeps fresh call-site clones from leaking collection metadata back into the source return object", () => {
+    const { objectPathStage } = runObjectPathStage("returned-object-array-mutation-basic");
+    const baseReturnObject = [...objectPathStage.trackedObjectRegistry.values()].find((trackedObject) =>
+      trackedObject.rootName === "buildContainer()" && !trackedObject.id.includes(":call:"));
+
+    if (!baseReturnObject) {
+      throw new Error("missing base return object");
+    }
+
+    const itemsPath = serializePath([propertySegment("items")]);
+    const itemsCollection = baseReturnObject.collections.get(itemsPath);
+    const itemsState = baseReturnObject.collectionStates.get(itemsPath);
+
+    expect(itemsCollection?.arrayLength).toBe(0);
+    expect(itemsCollection?.childPaths).toEqual([]);
+    expect(itemsState?.arrayLength).toBe(0);
   });
 });
