@@ -15,6 +15,25 @@ export interface AnalysisState {
   kept: AuditRecord[];
   skipped: AuditRecord[];
   diagnostics: DiagnosticRecord[];
+  capabilityCandidates: Map<string, CapabilityCandidateRecord>;
+}
+
+type CapabilityCandidateFamily = "internal-exported-interface-member" | "returned-contract-member";
+
+type CapabilityCandidateOutcome = "finding" | "kept" | "skipped" | "live";
+
+interface CapabilityCandidateRecord {
+  id: string;
+  family: CapabilityCandidateFamily;
+  entity: EntityRecord;
+  outcome?: CapabilityCandidateOutcome;
+}
+
+function createCapabilityCandidateId(
+  family: CapabilityCandidateFamily,
+  entity: EntityRecord,
+): string {
+  return `${family}:${entity.id}`;
 }
 
 /**
@@ -26,7 +45,68 @@ export function createAnalysisState(): AnalysisState {
     kept: [],
     skipped: [],
     diagnostics: [],
+    capabilityCandidates: new Map(),
   };
+}
+
+/**
+ * Registers a capability candidate that must resolve to an explicit outcome by the end of analysis.
+ */
+export function registerCapabilityCandidate(
+  state: AnalysisState,
+  family: CapabilityCandidateFamily,
+  entity: EntityRecord,
+): void {
+  const id = createCapabilityCandidateId(family, entity);
+  if (state.capabilityCandidates.has(id)) {
+    return;
+  }
+
+  state.capabilityCandidates.set(id, {
+    id,
+    family,
+    entity,
+  });
+}
+
+/**
+ * Resolves a previously registered capability candidate to an explicit analysis outcome.
+ */
+export function resolveCapabilityCandidate(
+  state: AnalysisState,
+  family: CapabilityCandidateFamily,
+  entity: EntityRecord,
+  outcome: CapabilityCandidateOutcome,
+): void {
+  const id = createCapabilityCandidateId(family, entity);
+  const existing = state.capabilityCandidates.get(id);
+  if (!existing) {
+    return;
+  }
+
+  existing.outcome = outcome;
+}
+
+/**
+ * Returns registered capability candidates that never resolved to finding, kept, skipped, or live.
+ */
+function getUnresolvedCapabilityCandidates(
+  state: AnalysisState,
+): CapabilityCandidateRecord[] {
+  return [...state.capabilityCandidates.values()].filter((candidate) => !candidate.outcome);
+}
+
+/**
+ * Converts unresolved capability-accounting gaps into diagnostics so validation can fail explicitly.
+ */
+export function appendCapabilityCoverageDiagnostics(state: AnalysisState): void {
+  for (const candidate of getUnresolvedCapabilityCandidates(state)) {
+    state.diagnostics.push({
+      kind: "project-warning",
+      file: candidate.entity.location.file,
+      message: `capability coverage gap (${candidate.family}): ${candidate.entity.kind} ${candidate.entity.name} never resolved to finding, kept, skipped, or live`,
+    });
+  }
 }
 
 /**

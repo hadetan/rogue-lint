@@ -122,6 +122,7 @@ export type BenchmarkGapPriorityScope =
   | "known-skip"
   | "known-skip-growth"
   | "unexpected-finding"
+  | "unexpected-diagnostic"
   | "unexpected-skip";
 
 export interface BenchmarkGapPriorityEntry {

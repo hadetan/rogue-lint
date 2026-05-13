@@ -293,4 +293,51 @@ describe("benchmark reporting", () => {
     expect(report).toContain("Must-Not-Skip Violations:");
     expect(report).toContain("forbidden computed-property skip");
   });
+
+  it("surfaces unexpected capability coverage diagnostics in the workspace gap worklist", () => {
+    const target = createAnalyzedTarget(
+      "diagnostic-priority-target",
+      "library-public-surface",
+      [createFinding("unused-local", "acceptedLocal", "src/index.ts")],
+      [],
+      [
+        createDiagnostic("project-warning", "diagnostic anchor"),
+        createDiagnostic(
+          "project-warning",
+          "capability coverage gap (returned-contract-member): object-key hidden never resolved to finding, kept, skipped, or live",
+        ),
+      ],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [
+          {
+            label: "diagnostic anchor",
+            kind: "project-warning",
+            messageIncludes: "diagnostic anchor",
+          },
+        ],
+        mustNotDiagnose: [],
+        acceptedFindings: [
+          {
+            label: "accepted local debt",
+            kind: "unused-local",
+            file: "src/index.ts",
+            maxCount: 1,
+          },
+        ],
+        knownSkips: [],
+      },
+    );
+
+    const report = renderBenchmarkReport(createWorkspaceRun([target]));
+
+    expect(report).toContain("unexpected diagnostic capability coverage gap (returned-contract-member)");
+    expect(report.indexOf("unexpected diagnostic capability coverage gap (returned-contract-member)")).toBeLessThan(
+      report.indexOf("accepted finding unused-local"),
+    );
+    expect(report).toContain("Unexpected Diagnostics:");
+  });
 });

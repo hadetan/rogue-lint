@@ -470,10 +470,39 @@ function addTrackedObjectNode(
         const propertyName = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
           ? property.name.text
           : undefined;
+        if (!propertyName) {
+          markEscaped(
+            trackedObject,
+            segments,
+            "computed-property-name",
+            "computed property names are not eligible for exact analysis",
+          );
+          continue;
+        }
+
         const callable = propertyName ? getAnalyzableCallableBindingFromDeclaration(project, property) : undefined;
         if (propertyName && callable) {
           trackedObject.callablePaths.set(serializePath([...segments, propertySegment(propertyName)]), callable);
         }
+
+        const fullPath = [...segments, propertySegment(propertyName)];
+        const joinedPath = serializePath(fullPath);
+        ensureCollectionChildPath(trackedObject, segments, fullPath);
+        const entity = makeEntity(
+          project.rootPath,
+          fullPath.length === 1 ? "object-key" : "nested-path",
+          sourceFile,
+          property.name,
+          fullPath.length === 1 ? propertyName : renderPath(fullPath),
+          owner,
+        );
+        trackedObject.nodes.set(joinedPath, {
+          entity,
+          fullPath,
+          origin: "method",
+        });
+        trackedObject.placeStates.set(joinedPath, "initialized");
+        indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
         continue;
       }
 
@@ -518,7 +547,11 @@ function addTrackedObjectNode(
         fullPath.length === 1 ? propertyName : renderPath(fullPath),
         owner,
       );
-      trackedObject.nodes.set(joinedPath, { entity, fullPath });
+      trackedObject.nodes.set(joinedPath, {
+        entity,
+        fullPath,
+        origin: "property",
+      });
       trackedObject.placeStates.set(joinedPath, "initialized");
       indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
 
@@ -557,7 +590,11 @@ function addTrackedObjectNode(
         renderPath(fullPath),
         owner,
       );
-      trackedObject.nodes.set(joinedPath, { entity, fullPath });
+      trackedObject.nodes.set(joinedPath, {
+        entity,
+        fullPath,
+        origin: "array-element",
+      });
       trackedObject.placeStates.set(joinedPath, "initialized");
       indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
 

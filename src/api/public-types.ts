@@ -120,6 +120,7 @@ export interface AnalysisOptions {
  */
 export interface CliOptions extends AnalysisOptions {
   format: ReportFormat;
+  showKept?: boolean;
 }
 
 /**
@@ -188,7 +189,7 @@ interface SummaryRecord {
 }
 
 /**
- * Complete machine-readable result returned by the API and rendered by the CLI.
+ * Complete machine-readable result returned by the API and consumed by CLI renderers.
  */
 export interface AnalysisResult {
   tool: "rogue-lint";

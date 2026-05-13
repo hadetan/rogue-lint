@@ -60,6 +60,7 @@ export interface ProjectContext {
 interface ObjectNode {
   entity: EntityRecord;
   fullPath: PathSegment[];
+  origin: "property" | "method" | "array-element";
 }
 
 export interface EscapedPathRecord {

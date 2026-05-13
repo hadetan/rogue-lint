@@ -287,7 +287,11 @@ function ensureTrackedArraySlotNode(
       renderPath(fullPath),
       trackedObject.rootName,
     );
-    trackedObject.nodes.set(joinedPath, { entity, fullPath });
+    trackedObject.nodes.set(joinedPath, {
+      entity,
+      fullPath,
+      origin: "array-element",
+    });
     indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
   }
 

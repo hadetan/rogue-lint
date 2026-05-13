@@ -34,6 +34,7 @@ export function analyzeUnusedExports(
           sourceFile,
           candidate.node,
           project.analyzableFiles,
+          project.rootPath,
         );
         artifacts.referenceCaches.exportReferences.set(cacheKey, referenceSummary);
       }

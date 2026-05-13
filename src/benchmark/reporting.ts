@@ -132,6 +132,7 @@ function gapPriorityRank(scope: BenchmarkGapPriorityScope): number {
     case "known-skip-growth":
       return 0;
     case "unexpected-finding":
+    case "unexpected-diagnostic":
     case "unexpected-skip":
       return 1;
     case "accepted-finding":
@@ -154,6 +155,8 @@ function formatGapPriorityScope(scope: BenchmarkGapPriorityScope): string {
       return "known skip growth";
     case "unexpected-finding":
       return "unexpected finding";
+    case "unexpected-diagnostic":
+      return "unexpected diagnostic";
     case "unexpected-skip":
       return "unexpected skip";
     default:

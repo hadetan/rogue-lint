@@ -30,7 +30,7 @@ Use it when you want:
 - symbol-liveness analysis across imports, exports, locals, and members
 - export and type-surface analysis that understands application mode versus library mode
 - exact object and array path cleanup in the supported subset
-- explicit `findings`, `kept`, and `skipped` buckets so trust is inspectable
+- explicit `findings`, `skipped`, and `diagnostics` by default, with `kept` available when you ask for it
 - output that humans can read and agents can automate against
 
 ## Quick Start
@@ -48,6 +48,7 @@ Run it:
 ```bash
 npx rogue-lint .
 npx rogue-lint . --json
+npx rogue-lint . --kept
 npx rogue-lint . --mode library
 npx rogue-lint . --kinds unused-export,unused-file,use-before-init
 npx rogue-lint . --config rogue-lint.config.json
@@ -79,7 +80,6 @@ Mode: application
 Files analyzed: 4
 Reachable files: 3
 Findings: 9
-Kept: 1
 Skipped: 2
 
 Findings:
@@ -90,22 +90,19 @@ unused-file
   src/unused.ts
     unused-file                  src/unused.ts:1:1 unused.ts - file is unreachable from configured entrypoints
 
-Kept:
-local
-  src/index.ts
-    local                        src/index.ts:9:7 ignoredLocal - suppressed by rogue-lint-ignore-next
-
 Skipped:
 object-key
   src/index.ts
     object-key                   src/index.ts:24:3 maybe - computed property access prevents exact path analysis
 ```
 
+Pass `--kept` when you want preserved public-surface and suppression audits in either text or CLI JSON output.
+
 That structure is the trust model in practice:
 
 - `findings`: stale code or suspicious flows the analyzer can justify
-- `kept`: otherwise-dead entities intentionally preserved by public-surface rules, suppressions, or keep rules
 - `skipped`: explicit conservative boundaries where exact reasoning stopped
+- `kept`: otherwise-dead entities intentionally preserved by public-surface rules, suppressions, or keep rules, available via `--kept` or the library API
 
 ## What It Can Catch
 

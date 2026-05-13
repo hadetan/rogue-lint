@@ -1,4 +1,17 @@
+import path from "node:path";
+
 import ts from "typescript";
+
+type ReferenceConsumerRole = "trusted-runtime" | "non-runtime-test" | "non-runtime-support";
+
+export interface NonDeclarationReferenceSummary {
+  references: number;
+  sameFileReferences: number;
+  crossFileReferences: number;
+  trustedRuntimeReferences: number;
+  nonRuntimeTestReferences: number;
+  nonRuntimeSupportReferences: number;
+}
 
 export function findNodeAtPosition(sourceFile: ts.SourceFile, position: number): ts.Node | undefined {
   const visit = (node: ts.Node): ts.Node | undefined => {
@@ -20,21 +33,38 @@ function isAllowedReference(reference: ts.ReferenceEntry, allowedFiles?: Set<str
   return !allowedFiles || allowedFiles.has(reference.fileName);
 }
 
+function classifyReferenceConsumerRole(fileName: string, rootPath?: string): ReferenceConsumerRole {
+  const normalized = (rootPath ? path.relative(rootPath, fileName) : fileName).replace(/\\/g, "/");
+
+  if (
+    /(^|\/)(__tests__|tests?|__mocks__)(\/|$)/.test(normalized)
+    || /\.(test|spec)\.[cm]?[jt]sx?$/i.test(normalized)
+  ) {
+    return "non-runtime-test";
+  }
+
+  if (/(^|\/)fixtures(\/|$)/.test(normalized)) {
+    return "non-runtime-support";
+  }
+
+  return "trusted-runtime";
+}
+
 export function summarizeNonDeclarationReferences(
   languageService: ts.LanguageService,
   sourceFile: ts.SourceFile,
   node: ts.Node,
   allowedFiles?: Set<string>,
-): {
-  references: number;
-  sameFileReferences: number;
-  crossFileReferences: number;
-} {
+  rootPath?: string,
+): NonDeclarationReferenceSummary {
   const references = languageService.findReferences(sourceFile.fileName, node.getStart(sourceFile)) ?? [];
-  const summary = {
+  const summary: NonDeclarationReferenceSummary = {
     references: 0,
     sameFileReferences: 0,
     crossFileReferences: 0,
+    trustedRuntimeReferences: 0,
+    nonRuntimeTestReferences: 0,
+    nonRuntimeSupportReferences: 0,
   };
 
   for (const group of references) {
@@ -47,6 +77,15 @@ export function summarizeNonDeclarationReferences(
       }
 
       summary.references += 1;
+      const role = classifyReferenceConsumerRole(reference.fileName, rootPath);
+      if (role === "trusted-runtime") {
+        summary.trustedRuntimeReferences += 1;
+      } else if (role === "non-runtime-test") {
+        summary.nonRuntimeTestReferences += 1;
+      } else {
+        summary.nonRuntimeSupportReferences += 1;
+      }
+
       if (reference.fileName === sourceFile.fileName) {
         summary.sameFileReferences += 1;
       } else {
@@ -56,15 +95,6 @@ export function summarizeNonDeclarationReferences(
   }
 
   return summary;
-}
-
-export function hasNonDeclarationReferences(
-  languageService: ts.LanguageService,
-  sourceFile: ts.SourceFile,
-  node: ts.Node,
-  allowedFiles?: Set<string>,
-): boolean {
-  return summarizeNonDeclarationReferences(languageService, sourceFile, node, allowedFiles).references > 0;
 }
 
 interface ReferenceUsageSummary {

@@ -24,6 +24,7 @@ function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObjec
       {
         entity: node.entity,
         fullPath: [...node.fullPath],
+        origin: node.origin,
       },
     ])),
     callablePaths: new Map([...base.callablePaths.entries()].map(([joinedPath, callable]) => [

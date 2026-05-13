@@ -30,6 +30,7 @@ export function createAnalysisArtifacts(
   const referenceCaches: ReferenceCaches = {
     hasReference: new Map(),
     exportReferences: new Map(),
+    referenceSummaries: new Map(),
     usage: new Map(),
   };
   let trackingArtifacts: TrackingRunArtifacts | undefined;

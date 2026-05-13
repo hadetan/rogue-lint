@@ -229,4 +229,43 @@ describe("benchmark expectation evaluation", () => {
     expect(evaluation.unexpected.skips).toHaveLength(0);
     expect(evaluation.failed).toBe(true);
   });
+
+  it("promotes unexpected capability coverage diagnostics into the benchmark gap worklist", () => {
+    const evaluation = evaluateBenchmarkExpectations(
+      [],
+      [],
+      [
+        createDiagnostic({ message: "diagnostic anchor" }),
+        createDiagnostic({
+          message: "capability coverage gap (returned-contract-member): object-key hidden never resolved to finding, kept, skipped, or live",
+          file: "src/example.ts",
+        }),
+      ],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [
+          {
+            label: "diagnostic anchor",
+            kind: "project-warning",
+            messageIncludes: "diagnostic anchor",
+          },
+        ],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    expect(evaluation.contract.incomplete).toBe(false);
+    expect(evaluation.unexpected.diagnostics).toHaveLength(1);
+    expect(evaluation.gapPriority).toContainEqual({
+      scope: "unexpected-diagnostic",
+      label: "capability coverage gap (returned-contract-member)",
+      count: 1,
+    });
+    expect(evaluation.failed).toBe(true);
+  });
 });

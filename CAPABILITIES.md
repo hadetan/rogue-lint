@@ -110,6 +110,29 @@ Important nuances:
 - when roots are inferred from `package.json`, `main` and `exports` count as public surface, while `bin` only makes those files reachable
 - if no configured or inferred roots exist, the analyzer falls back to conventional defaults and then to the first loaded source file; this last fallback is code-backed from `src/module-graph.ts`
 
+### Internal Contract-Surface Liveness And Consumer Evidence
+
+Test-backed fixtures:
+
+- `library-interface-consumer-tiers-basic`
+- `library-returned-method-surface-basic`
+- repository self-host run
+
+What the current implementation can prove:
+
+- exported interface members outside the proven package surface remain analyzable in `library` mode instead of being blanket-exempted
+- trusted runtime consumers keep internal exported contract members live
+- test-only consumers do not keep internal contract surface alive by themselves
+- production consumers under paths such as `src/support/**` still count as runtime evidence unless another test-only path rule matches first
+- exact returned method shorthand is materialized as reportable contract surface when the returned structure stays analyzable and outside the proven public callable surface
+- covered candidate families resolve to `finding`, `kept`, `skipped`, or proven `live`; unresolved candidates surface as diagnostics instead of disappearing silently
+
+Important nuances:
+
+- consumer evidence tiering is root-relative and path-based; `tests`, `__tests__`, `__mocks__`, `fixtures`, and `*.test.*` or `*.spec.*` files count as non-runtime evidence
+- proven package surface still stays preserved through `kept` records in `library` mode
+- capability coverage gaps surface as `project-warning` diagnostics and validated self-host or benchmark runs are expected to keep those diagnostics at zero unless a benchmark manifest anchors them explicitly
+
 ## 2. Exact Object And Array Path Tracking
 
 Test-backed fixtures:
@@ -466,6 +489,7 @@ If you want the closest thing to a ground-truth tour of the package, read these 
 - `app-basic`: baseline whole-project report plus computed-property boundaries
 - `library-basic`: library-mode preservation of public entrypoint exports
 - `library-referenced-basic`: cross-file referenced public exports stay used and do not appear in `kept`
+- `library-interface-consumer-tiers-basic`: internal exported interface members require trusted runtime consumers while public package contracts stay preserved
 - `export-scope-basic`: same-file-only export usage still reports unused export surface and honors ignore directives
 - `bulk-basic`: larger module graph traversal
 - `controls-basic`: include, exclude, hidden-roots, and configurable exit codes
@@ -484,6 +508,7 @@ If you want the closest thing to a ground-truth tour of the package, read these 
 - `returned-object-basic`: tracked object returns across same-project helpers
 - `returned-literal-basic`: direct returned literals for whole-result and nested structured usage
 - `cross-file-return-structure-basic`: structured return usage preserved across imports
+- `library-returned-method-surface-basic`: method-backed returned contract members stay analyzable without regressing public returned wrapper preservation
 - `helper-readonly-basic`: read-only helper observers preserve exact array reads
 - `helper-mutation-basic`: helper-local append mutations remain exact when later reads stay modeled
 - `helper-storage-basic`: helper storage by reference becomes a boundary instead of a false unused-slot report
@@ -511,4 +536,4 @@ If you want the closest thing to a ground-truth tour of the package, read these 
 - `identity-basic`: stable unique ids across similarly named findings
 - `self-host-trust-basic`: purity-gated ignored returns and structural dead-metadata suppression
 - `self-host-hardening-basic`: external imports treated as boundaries without false unresolved-module noise
-- repository self-host run: the repository itself is expected to analyze cleanly in `library` mode with `runCli` preserved in `kept`
+- repository self-host run: the repository itself is expected to analyze cleanly in `library` mode with zero findings, zero skips, and zero capability-coverage diagnostics while public package surface stays preserved in `kept`

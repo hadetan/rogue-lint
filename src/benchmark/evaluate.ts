@@ -165,6 +165,7 @@ function gapPriorityRank(scope: BenchmarkGapPriorityScope): number {
     case "known-skip-growth":
       return 0;
     case "unexpected-finding":
+    case "unexpected-diagnostic":
     case "unexpected-skip":
       return 1;
     case "accepted-finding":
@@ -191,6 +192,26 @@ function groupSkipPriority(
   scope: Extract<BenchmarkGapPriorityScope, "known-skip" | "known-skip-growth" | "unexpected-skip">,
 ): BenchmarkGapPriorityEntry[] {
   return countKinds(records.map((record) => record.category ?? record.kind)).map(([label, count]) => ({
+    scope,
+    label,
+    count,
+  }));
+}
+
+function getDiagnosticPriorityLabel(record: DiagnosticRecord): string {
+  const capabilityCoverageMatch = /^capability coverage gap \(([^)]+)\):/.exec(record.message);
+  if (capabilityCoverageMatch) {
+    return `capability coverage gap (${capabilityCoverageMatch[1]})`;
+  }
+
+  return record.kind;
+}
+
+function groupDiagnosticPriority(
+  records: DiagnosticRecord[],
+  scope: Extract<BenchmarkGapPriorityScope, "unexpected-diagnostic">,
+): BenchmarkGapPriorityEntry[] {
+  return countKinds(records.map(getDiagnosticPriorityLabel)).map(([label, count]) => ({
     scope,
     label,
     count,
@@ -288,6 +309,7 @@ export function evaluateBenchmarkExpectations(
 
   const gapPriority = sortGapPriority([
     ...groupFindingPriority(unexpectedFindings, "unexpected-finding"),
+    ...groupDiagnosticPriority(unexpectedDiagnostics, "unexpected-diagnostic"),
     ...groupSkipPriority(unexpectedSkips, "unexpected-skip"),
     ...groupFindingPriority(
       [

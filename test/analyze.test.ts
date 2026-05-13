@@ -19,6 +19,10 @@ function normalizeFinding(entry: { kind: string; entity: { name: string; locatio
   return `-:${entry.kind}:${entry.entity.location?.file ?? "-"}:${entry.entity.location?.line ?? 0}:${entry.entity.name}`;
 }
 
+function getCapabilityCoverageGapDiagnostics(result: { diagnostics: Array<{ message: string }> }): Array<{ message: string }> {
+  return result.diagnostics.filter((diagnostic) => diagnostic.message.includes("capability coverage gap"));
+}
+
 const EXPECTED_SELF_HOST_FINDINGS: string[] = [];
 
 const EXPECTED_SELF_HOST_SKIPS: string[] = [];
@@ -726,6 +730,57 @@ describe("rogue-lint analyzer", () => {
     expect(result.kept.length).toBeGreaterThan(0);
     expect(rendered).toContain(result.kept[0].reason);
     expect(rendered).toContain("Skipped: 0");
+  });
+
+  it("hides kept output in CLI text mode unless --kept is passed", async () => {
+    const fixture = fixturePath("app-basic");
+    const defaultStdout: string[] = [];
+    const keptStdout: string[] = [];
+
+    const defaultCode = await runCli([fixture], {
+      writeStdout: (value) => defaultStdout.push(value),
+      writeStderr: () => undefined,
+    });
+    const keptCode = await runCli([fixture, "--kept"], {
+      writeStdout: (value) => keptStdout.push(value),
+      writeStderr: () => undefined,
+    });
+
+    expect(defaultCode).toBe(1);
+    expect(keptCode).toBe(1);
+    expect(defaultStdout.join("")).not.toContain("Kept:");
+    expect(defaultStdout.join("")).not.toContain("suppressed by rogue-lint-ignore-next");
+    expect(keptStdout.join("")).toContain("Kept:");
+    expect(keptStdout.join("")).toContain("suppressed by rogue-lint-ignore-next");
+  });
+
+  it("omits kept from CLI json output unless --kept is passed", async () => {
+    const fixture = fixturePath("app-basic");
+    const defaultStdout: string[] = [];
+    const keptStdout: string[] = [];
+
+    const defaultCode = await runCli([fixture, "--json"], {
+      writeStdout: (value) => defaultStdout.push(value),
+      writeStderr: () => undefined,
+    });
+    const keptCode = await runCli([fixture, "--json", "--kept"], {
+      writeStdout: (value) => keptStdout.push(value),
+      writeStderr: () => undefined,
+    });
+
+    const defaultJson = JSON.parse(defaultStdout.join("")) as Record<string, unknown> & {
+      summary: Record<string, unknown>;
+    };
+    const keptJson = JSON.parse(keptStdout.join("")) as Record<string, unknown> & {
+      summary: Record<string, unknown>;
+    };
+
+    expect(defaultCode).toBe(1);
+    expect(keptCode).toBe(1);
+    expect(defaultJson).not.toHaveProperty("kept");
+    expect(defaultJson.summary).not.toHaveProperty("kept");
+    expect(keptJson).toHaveProperty("kept");
+    expect(keptJson.summary).toHaveProperty("kept");
   });
 
   it("treats supported call boundaries as meaningful value use", async () => {
@@ -1546,6 +1601,80 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped).toHaveLength(0);
   });
 
+  it("uses trusted runtime consumers for internal exported interface members while preserving public package contracts", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-interface-consumer-tiers-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-interface-member"
+      && finding.entity.owner === "InternalContract"
+      && finding.entity.name === "testOnly"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-interface-member"
+      && finding.entity.owner === "InternalContract"
+      && finding.entity.name === "stale"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-interface-member"
+      && finding.entity.owner === "InternalContract"
+      && finding.entity.name === "runtime"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-interface-member"
+      && finding.entity.owner === "InternalContract"
+      && finding.entity.name === "supportRuntime"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-interface-member"
+      && finding.entity.owner === "InternalContract"
+      && finding.entity.name === "mixed"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-interface-member"
+      && finding.entity.owner === "PublicContract"
+      && finding.entity.name === "preserved"
+    )).toBe(false);
+    expect(result.kept.some((entry) => entry.kind === "interface-member" && entry.name === "preserved")).toBe(true);
+    expect(getCapabilityCoverageGapDiagnostics(result)).toHaveLength(0);
+  });
+
+  it("reports unread returned method-backed members outside public callable surface while preserving public ones", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-returned-method-surface-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "internalCarrier()"
+      && finding.entity.name === "stale"
+    )).toBe(true);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "internalCarrier()"
+      && finding.entity.name === "live"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "publicCarrier()"
+      && finding.entity.name === "hidden"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "publicCarrier()"
+      && finding.entity.name === "visible"
+    )).toBe(false);
+    expect(result.skipped).toHaveLength(0);
+    expect(getCapabilityCoverageGapDiagnostics(result)).toHaveLength(0);
+  });
+
   it("tracks direct returned literals for whole-result and nested structured usage", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1651,6 +1780,7 @@ describe("rogue-lint analyzer", () => {
     });
 
     expect(result.diagnostics).toHaveLength(0);
+    expect(getCapabilityCoverageGapDiagnostics(result)).toHaveLength(0);
     expect(result.summary.findings).toBe(EXPECTED_SELF_HOST_FINDINGS.length);
     expect(result.summary.skipped).toBe(EXPECTED_SELF_HOST_SKIPS.length);
     expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);

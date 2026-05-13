@@ -3,7 +3,7 @@ import { loadProject } from "../project.js";
 import { buildSuppressionContext } from "../suppressions.js";
 import type { AnalysisOptions, AnalysisResult, FindingKind } from "../types.js";
 import { getVersion, uniqueById } from "../shared/general-utils.js";
-import { createAnalysisState } from "./analysis-state.js";
+import { appendCapabilityCoverageDiagnostics, createAnalysisState } from "./analysis-state.js";
 import { createAnalysisArtifacts } from "./analysis-artifacts.js";
 import { analyzeCompilerSafetyDiagnostics } from "./analyzers/compiler-safety.js";
 import { analyzeObjectPaths } from "./analyzers/object-paths.js";
@@ -70,6 +70,7 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
   }
 
   appendTrackingAnalysisDiagnostics(state, artifacts);
+  appendCapabilityCoverageDiagnostics(state);
 
   const includeKinds = project.config.value.includeKinds;
   const filteredFindings =

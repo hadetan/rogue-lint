@@ -27,7 +27,7 @@ export async function runCli(
   try {
     failureExitCode = resolveConfig(rootPath, cliOptions).value.failureExitCode;
     const result = await analyzeProject(cliOptions);
-    writeStdout(`${renderResult(result, cliOptions.format)}\n`);
+    writeStdout(`${renderResult(result, cliOptions.format, cliOptions.showKept)}\n`);
     return result.summary.findings > 0 ? result.exitCodes.findings : 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

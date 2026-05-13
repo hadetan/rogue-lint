@@ -1,7 +1,8 @@
 import ts from "typescript";
 
 import type { AuditRecord, EntityRecord, EntityKind, ProjectContext } from "../../types.js";
-import { summarizeNonDeclarationReferences, summarizeReferenceUsage } from "../../references.js";
+import type { NonDeclarationReferenceSummary } from "../../references.js";
+import { summarizeReferenceUsage } from "../../references.js";
 import { getDeclarationNameNode, getNodeName, getSymbolKey } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 
@@ -10,7 +11,8 @@ import { makeEntity } from "../../shared/entity-utils.js";
  */
 export interface ReferenceCaches {
   hasReference: Map<string, boolean>;
-  exportReferences: Map<string, ReturnType<typeof summarizeNonDeclarationReferences>>;
+  exportReferences: Map<string, NonDeclarationReferenceSummary>;
+  referenceSummaries: Map<string, NonDeclarationReferenceSummary>;
   usage: Map<string, ReturnType<typeof summarizeReferenceUsage>>;
 }
 

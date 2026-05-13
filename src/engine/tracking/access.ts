@@ -86,6 +86,7 @@ function cloneTrackedObjectForCallSite(base: TrackedObject, id: string): Tracked
     nodes: new Map([...base.nodes.entries()].map(([key, value]) => [key, {
       entity: value.entity,
       fullPath: [...value.fullPath],
+      origin: value.origin,
     }])),
     callablePaths: new Map([...base.callablePaths.entries()].map(([key, value]) => [key, {
       symbolKey: value.symbolKey,
@@ -138,6 +139,7 @@ function syncTrackedObjectForCallSite(target: TrackedObject, source: TrackedObje
   target.nodes = new Map([...source.nodes.entries()].map(([key, value]) => [key, {
     entity: value.entity,
     fullPath: [...value.fullPath],
+    origin: value.origin,
   }]));
   target.callablePaths = new Map([...source.callablePaths.entries()].map(([key, value]) => [key, {
     symbolKey: value.symbolKey,

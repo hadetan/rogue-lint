@@ -2,9 +2,11 @@
 
 This guide explains how to read the text and JSON output `rogue-lint` emits today, based on `src/output/render-result.ts`, `src/api/public-types.ts`, and the regression suite.
 
+The engine and library API always track `findings`, `kept`, `skipped`, and `diagnostics`. The CLI hides `kept` by default so routine output stays focused on actionable items. Pass `--kept` when you want preserved-surface and suppression audits in CLI text or CLI JSON output.
+
 ## The Four Top-Level Output Buckets
 
-Every run can produce four kinds of records:
+Every analysis run can produce four kinds of records:
 
 - `findings`: stale code or suspicious flows the analyzer can justify
 - `kept`: otherwise-dead entities intentionally preserved by public-surface rules, suppressions, or keep rules
@@ -24,7 +26,6 @@ Mode: application
 Files analyzed: 4
 Reachable files: 3
 Findings: 9
-Kept: 1
 Skipped: 2
 
 Findings:
@@ -35,11 +36,6 @@ unused-file
   src/unused.ts
     unused-file                  src/unused.ts:1:1 unused.ts - file is unreachable from configured entrypoints
 
-Kept:
-local
-  src/index.ts
-    local                        src/index.ts:9:7 ignoredLocal - suppressed by rogue-lint-ignore-next
-
 Skipped:
 object-key
   src/index.ts
@@ -49,9 +45,10 @@ object-key
 Current text rendering behavior:
 
 - summary lines appear first
-- `Findings`, `Kept`, and `Skipped` are grouped by kind and then by file
+- `Findings` and `Skipped` are grouped by kind and then by file
 - each line includes the reason string inline
 - `Diagnostics` appear at the end when present
+- `Kept` appears only when `--kept` is passed to the CLI
 
 ## JSON Output
 
@@ -78,7 +75,6 @@ Example shape:
     "filesAnalyzed": 4,
     "reachableFiles": 3,
     "findings": 9,
-    "kept": 1,
     "skipped": 2,
     "byKind": {
       "unused-file": 1,
@@ -86,11 +82,12 @@ Example shape:
     }
   },
   "findings": [],
-  "kept": [],
   "skipped": [],
   "diagnostics": []
 }
 ```
+
+Pass `--kept` when you want CLI JSON to include `summary.kept` and the top-level `kept` audit list. The library API continues to return the full `AnalysisResult`, including `kept`, regardless of CLI defaults.
 
 ## Findings
 
@@ -144,6 +141,8 @@ Current finding kinds:
 For what each finding kind actually means in supported code patterns, see [CAPABILITIES.md](../CAPABILITIES.md).
 
 ## Kept
+
+`kept` records are omitted from CLI text and CLI JSON output unless `--kept` is passed. They are still always present in the library API result.
 
 `kept` records use the audit shape:
 
@@ -234,6 +233,7 @@ The test suite verifies that:
 - builtin modules such as `node:path` do not produce false unresolved warnings
 - installed external packages such as `minimatch` do not produce false unresolved warnings
 - missing same-project imports still surface as diagnostics
+- capability accounting surfaces `project-warning` diagnostics such as `capability coverage gap (returned-contract-member): ...` when a covered candidate never resolves to `finding`, `kept`, `skipped`, or proven `live`
 
 ## Entity Kinds
 

@@ -222,6 +222,7 @@ export const STRUCTURAL_STATE_FIELD_NAMES = new Set([
   "aliases",
   "bindings",
   "boundaries",
+  "capabilityCandidates",
   "diagnostics",
   "findings",
   "kept",

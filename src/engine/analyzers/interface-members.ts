@@ -1,13 +1,19 @@
 import ts from "typescript";
 
 import type { ProjectContext, SuppressionContext } from "../../types.js";
-import { hasNonDeclarationReferences } from "../../references.js";
+import { summarizeNonDeclarationReferences } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName, hasModifier } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
+import {
+  addAudit,
+  addFinding,
+  registerCapabilityCandidate,
+  resolveCapabilityCandidate,
+  type AnalysisState,
+} from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import { createReferenceKey } from "./support.js";
+import { buildPublicSurfaceAudit, createReferenceKey } from "./support.js";
 
 /**
  * Reports internal interface members that have no proven non-declaration references.
@@ -27,9 +33,8 @@ export function analyzeInterfaceMembers(
     const visit = (node: ts.Node): void => {
       if (ts.isInterfaceDeclaration(node) && node.name) {
         const isExported = hasModifier(node, ts.SyntaxKind.ExportKeyword);
-        if (project.config.value.mode === "library" && isExported) {
-          return ts.forEachChild(node, visit);
-        }
+        const interfaceEntity = makeEntity(project.rootPath, "type", sourceFile, node.name, node.name.text);
+        const isPublicSurface = project.config.value.mode === "library" && artifacts.publicSurfaceIds.has(interfaceEntity.id);
 
         for (const member of node.members) {
           if (!ts.isPropertySignature(member) && !ts.isMethodSignature(member)) {
@@ -50,24 +55,42 @@ export function analyzeInterfaceMembers(
             memberName,
             node.name.text,
           );
+
+          if (isExported) {
+            registerCapabilityCandidate(state, "internal-exported-interface-member", entity);
+          }
+
+          if (isPublicSurface) {
+            addAudit(state.kept, buildPublicSurfaceAudit(entity));
+            resolveCapabilityCandidate(state, "internal-exported-interface-member", entity, "kept");
+            continue;
+          }
+
           const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
           if (addAudit(state.kept, suppression)) {
+            resolveCapabilityCandidate(state, "internal-exported-interface-member", entity, "kept");
             continue;
           }
 
           const cacheKey = createReferenceKey(sourceFile, memberNameNode);
-          let hasReferences = artifacts.referenceCaches.hasReference.get(cacheKey);
-          if (hasReferences === undefined) {
-            hasReferences = hasNonDeclarationReferences(
+          let referenceSummary = artifacts.referenceCaches.referenceSummaries.get(cacheKey);
+          if (!referenceSummary) {
+            referenceSummary = summarizeNonDeclarationReferences(
               project.languageService,
               sourceFile,
               memberNameNode,
               project.analyzableFiles,
+              project.rootPath,
             );
-            artifacts.referenceCaches.hasReference.set(cacheKey, hasReferences);
+            artifacts.referenceCaches.referenceSummaries.set(cacheKey, referenceSummary);
           }
 
-          if (hasReferences) {
+          const hasLiveReferences = isExported
+            ? referenceSummary.trustedRuntimeReferences > 0
+            : referenceSummary.references > 0;
+
+          if (hasLiveReferences) {
+            resolveCapabilityCandidate(state, "internal-exported-interface-member", entity, "live");
             continue;
           }
 
@@ -75,9 +98,14 @@ export function analyzeInterfaceMembers(
             state,
             entity,
             "unused-interface-member",
-            "eligible interface member has no non-declaration references",
+            isExported && referenceSummary.references > 0
+              ? "eligible exported interface member is only referenced by non-runtime consumers"
+              : isExported
+                ? "eligible exported interface member has no trusted runtime consumers"
+                : "eligible interface member has no non-declaration references",
             `Unused interface member ${node.name.text}.${memberName}`,
           );
+          resolveCapabilityCandidate(state, "internal-exported-interface-member", entity, "finding");
         }
       }
 

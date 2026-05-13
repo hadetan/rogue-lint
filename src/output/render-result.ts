@@ -59,12 +59,38 @@ function renderGroupedSection<T extends { kind: string; location?: { file: strin
   return lines;
 }
 
+function createCliVisibleJsonResult(result: AnalysisResult, showKept: boolean): object {
+  if (showKept) {
+    return result;
+  }
+
+  return {
+    tool: result.tool,
+    version: result.version,
+    target: result.target,
+    mode: result.mode,
+    exitCodes: result.exitCodes,
+    generatedAt: result.generatedAt,
+    summary: {
+      filesAnalyzed: result.summary.filesAnalyzed,
+      reachableFiles: result.summary.reachableFiles,
+      findings: result.summary.findings,
+      skipped: result.summary.skipped,
+      byKind: result.summary.byKind,
+    },
+    findings: result.findings,
+    skipped: result.skipped,
+    diagnostics: result.diagnostics,
+  };
+}
+
 /**
  * Renders an analysis result as either stable JSON or grouped human-readable text output.
  */
-export function renderResult(result: AnalysisResult, format: ReportFormat): string {
+export function renderResult(result: AnalysisResult, format: ReportFormat, showKept = true): string {
+
   if (format === "json") {
-    return JSON.stringify(result, null, 2);
+    return JSON.stringify(createCliVisibleJsonResult(result, showKept), null, 2);
   }
 
   const lines = [
@@ -74,12 +100,17 @@ export function renderResult(result: AnalysisResult, format: ReportFormat): stri
     `Files analyzed: ${result.summary.filesAnalyzed}`,
     `Reachable files: ${result.summary.reachableFiles}`,
     `Findings: ${result.summary.findings}`,
-    `Kept: ${result.summary.kept}`,
     `Skipped: ${result.summary.skipped}`,
   ];
 
+  if (showKept) {
+    lines.splice(6, 0, `Kept: ${result.summary.kept}`);
+  }
+
   lines.push(...renderGroupedSection("Findings", result.findings, formatFinding));
-  lines.push(...renderGroupedSection("Kept", result.kept, formatAudit));
+  if (showKept) {
+    lines.push(...renderGroupedSection("Kept", result.kept, formatAudit));
+  }
   lines.push(...renderGroupedSection("Skipped", result.skipped, formatAudit));
 
   if (result.diagnostics.length > 0) {
