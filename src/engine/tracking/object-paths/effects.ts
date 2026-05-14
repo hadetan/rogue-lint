@@ -42,7 +42,7 @@ import {
   materializeExactAppendSlot,
   setTrackedArrayLength,
 } from "../state.js";
-import { materializeTrackedLiteralAtPath } from "../graph.js";
+import { materializeTrackedLiteralAtPath } from "../literal-materialization.js";
 import { unwrapExpression } from "../syntax.js";
 import {
   getObjectPathOverlayEscapedReason,

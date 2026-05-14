@@ -1,6 +1,7 @@
 import type { ProjectContext, SkipCategory } from "../../types.js";
 
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { VALUE_LIVENESS_TRACKING_STAGE } from "../tracking/contracts.js";
 import type { CallableReturnSummary } from "../tracking/model.js";
 import type {
   AnalysisCapabilityFactRecord,
@@ -36,7 +37,7 @@ function hasSameProjectTransportSummary(artifacts: AnalysisArtifacts): boolean {
   let returnSummaries: ReadonlyMap<string, CallableReturnSummary>;
 
   try {
-    returnSummaries = artifacts.getTrackingStageArtifacts("value-liveness").returnSummaries.byCallableId;
+    returnSummaries = artifacts.getTrackingStageArtifacts(VALUE_LIVENESS_TRACKING_STAGE).returnSummaries.byCallableId;
   } catch {
     return false;
   }

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { createAnalysisArtifacts } from "../src/engine/analysis-artifacts.js";
 import { createAnalysisState } from "../src/engine/analysis-state.js";
 import { collectPublicSurface } from "../src/engine/analyzers/support.js";
-import { createObjectPathStageContext } from "../src/engine/tracking/object-paths/context.js";
+import { createObjectPathStageContext } from "../src/engine/tracking/object-paths/stage-context.js";
 import {
   getObjectPathOverlayBoundaryRecords,
   getObjectPathOverlayObservedAliases,

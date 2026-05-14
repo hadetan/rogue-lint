@@ -11,6 +11,50 @@ The package keeps two thin entrypoints:
 
 Everything else should depend inward from those surfaces.
 
+## Maintainability Standards
+
+This repository uses owner-based organization instead of generic utility buckets.
+
+- Put shared helpers, constant tables, and support logic in the domain that owns their behavior.
+- Move repeated contract-bearing vocabulary such as skip reasons, capability labels, output labels, and supported method sets into focused owner modules instead of a repo-wide catch-all constants file.
+- Keep one-off local literals local when they are only meaningful beside one implementation detail.
+- Move shared types and interfaces into the smallest stable owning module, such as a domain `model`, `context`, or `contracts` file.
+- Keep stage entry modules orchestration-only or orchestration-mostly; behavior-heavy rules should live in focused sibling modules.
+- Rename files and symbols when the rename clarifies ownership, but avoid repo-wide naming churn that is disconnected from a real module-boundary improvement.
+- Add JSDoc to exported surfaces, stage entrypoints, and invariant-carrying helpers. Do not add boilerplate JSDoc to trivial local helpers.
+- Validate each maintainability slice with the narrowest executable check that can prove behavior preservation for the touched surface.
+
+## Current Maintainability Hotspots
+
+The current refactor priorities are driven by mixed ownership, not by file size alone. These files are the first pressure points because they combine multiple concerns and create merge-conflict risk:
+
+- `src/engine/tracking/object-paths/visitor.ts`: traversal orchestration, finite keyed lookup planning, helper transport, returned-structure handling, projection logic, destructuring behavior, and collection mutation handling
+- `src/engine/tracking/access.ts`: access resolution, retained-binding support, projection access, spread handling, and callable-related helpers
+- `src/engine/tracking/graph.ts`: tracked-object seeding, literal materialization, graph building, callable return propagation, and helper metadata inference
+- `src/engine/tracking/semantics.ts`: semantic method classification plus repeated method-name sets and helper-boundary reason helpers
+- `src/output/render-result.ts`: currently coherent, but still a useful small surface for centralizing output-owned labels if they become shared
+
+The initial vocabulary and type clusters to normalize are:
+
+- repeated tracking reason strings and method-name sets currently spread across `tracking/semantics.ts`, `tracking/object-paths/visitor.ts`, and nearby helpers
+- output-facing labels and grouped-rendering strings owned by `src/output/`
+- shared tracking types currently split across `tracking/model.ts`, `tracking/contracts.ts`, `tracking/object-paths/types.ts`, and focused stage helpers that still carry bounded planning shapes
+
+## Stable Facades During Refactors
+
+The following surfaces should remain stable while hotspot logic moves behind them:
+
+- `src/index.ts`: package-facing public API export surface
+- `src/cli.ts`: executable entrypoint
+- `src/api/analyze-project.ts`: public API wrapper around the engine
+- `src/api/public-types.ts`: package-facing type contract
+- `src/engine/run-analysis.ts`: orchestration surface for stage registration and result assembly
+- `src/engine/analyzers/value-liveness.ts` and `src/engine/analyzers/object-paths.ts`: thin analyzer wrappers that should keep their role while tracking internals move
+- `src/engine/tracking/core.ts`: stable internal facade for tracking stage exports
+- `src/output/render-result.ts`: output entry surface even if labels or helpers move into focused siblings
+
+Refactors should prefer preserving these surfaces and moving behavior behind them unless the change is explicitly widening or renaming an intended API or architecture boundary.
+
 ## Module Groups
 
 ### `src/api/`
@@ -110,16 +154,19 @@ Owns the exactness-sensitive tracking subsystem used by the value-liveness and o
 - `contracts.ts`: explicit run-scoped and stage-scoped tracking artifact contracts, readonly ownership surfaces, runtime summaries, and internal diagnostics for stage consumers
 - `convergence.ts`: bounded convergence driver and guard policy for tracked bindings and callable return summaries
 - `diagnostics.ts`: adapter that turns tracking warnings and contract diagnostics into the normal analysis diagnostics flow
+- `retained-bindings.ts`, `projection-support.ts`, `spread-support.ts`: focused shared tracking helpers for retained storage identity, exact callback projection support, and spread-segment recovery
+- `trackable-structures.ts`, `literal-materialization.ts`, `return-summaries.ts`: focused graph-adjacent helpers for structural eligibility, literal seeding, and callable return propagation
 - `value-liveness.ts`: exactness-gated local value-fate stage implementation
 - `value-liveness-context.ts`: explicit stage and source-file context builders for value-liveness-owned mutable bookkeeping
 - `object-paths.ts`: object-path stage orchestrator
 - `object-paths/`: stage-private helpers for object-path effects, projections, traversal, policy, and reporting
-- `object-paths/context.ts`: explicit stage and source-file context builders for object-path-owned mutable bookkeeping
+- `object-paths/stage-context.ts`: explicit stage and source-file context builders for object-path-owned mutable bookkeeping
+- `object-paths/types.ts`: shared object-path planning, cache, and stage-context types reused across the stage helpers
 - `object-paths/policy.ts`: bounded source-shaped recovery helpers consumed by generic object-path traversal
 - `model.ts`, `syntax.ts`, `bindings.ts`: shared tracking vocabulary, structural helpers, and binding identity rules
 - `state.ts`, `access.ts`, `callables.ts`, `graph.ts`, `semantics.ts`: shared mutation, resolution, callable, graph, and helper-summary primitives
 
-`graph.ts` owns tracked-object seeding and snapshot construction, while `convergence.ts` owns pass-budget enforcement and churn signaling. Stage modules should consume those facts through readonly snapshot surfaces, keep source-file-local mutation inside their stage contexts, and route source-shaped bounded recovery through dedicated policy helpers instead of embedding those heuristics in generic traversal. The object-path stage currently seeds its writable binding and tracked-object registries from the snapshot so call-site specialization stays stage-local instead of reusing kernel-owned maps as the contract. Tracking warnings and contract violations should surface through `tracking/diagnostics.ts`, while richer runtime summaries stay available through the run-scoped tracking artifacts for focused validation.
+`graph.ts` owns tracked-object seeding and snapshot construction, while `convergence.ts` owns pass-budget enforcement and churn signaling. Stage modules should consume those facts through readonly snapshot surfaces, keep source-file-local mutation inside their stage contexts, and route source-shaped bounded recovery through dedicated policy helpers instead of embedding those heuristics in generic traversal. The object-path stage currently seeds its writable binding and tracked-object registries from the snapshot through `object-paths/stage-context.ts`, while shared planning and cache shapes live in `object-paths/types.ts` so the constructor module stays behavior-focused. Tracking warnings and contract violations should surface through `tracking/diagnostics.ts`, while richer runtime summaries stay available through the run-scoped tracking artifacts for focused validation.
 
 Start in the owning module here when a change affects:
 

@@ -8,6 +8,7 @@ import type {
 } from "../../../types.js";
 import type { AnalysisState } from "../../analysis-state.js";
 import type { AnalysisArtifacts } from "../../analysis-artifacts.js";
+import { OBJECT_PATHS_TRACKING_STAGE } from "../contracts.js";
 import type {
   ArrayProjectionBinding,
   CallableReturnSummary,
@@ -15,6 +16,14 @@ import type {
   TrackedObjectBinding,
 } from "../model.js";
 import type { ObjectPathOverlayState } from "./overlay.js";
+import type {
+  FiniteLookupCandidate,
+  HelperExactAppendPlan,
+  HelperProjectedUsagePlan,
+  HigherOrderCallableReturnSummary,
+  ObjectPathSourceFileContext,
+  ObjectPathStageContext,
+} from "./types.js";
 
 function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObject {
   return {
@@ -124,60 +133,9 @@ function cloneCallableReturnSummaryForObjectPathStage(
   return summary;
 }
 
-export interface FiniteLookupCandidate {
-  binding: TrackedObjectBinding;
-  segments: PathSegment[];
-}
-
-export interface HelperExactAppendPlan {
-  call: ts.CallExpression;
-  sourceFile: ts.SourceFile;
-  methodName: "push" | "unshift";
-  relativeCollectionPath: PathSegment[];
-  slotPlans: import("../model.js").ExactAppendSlotPlan[];
-}
-
-export interface HelperProjectedUsagePlan {
-  statement: ts.Statement;
-  relativeCollectionPath: PathSegment[];
-  elementSymbolKey: string;
-}
-
-export interface HigherOrderCallableReturnSummary {
-  exactReadPaths: PathSegment[][];
-  boundaryReason?: string;
-}
-
-export interface ObjectPathSourceFileContext {
-  sourceFile: ts.SourceFile;
-  projectionBindings: Map<string, ArrayProjectionBinding>;
-  projectionReceiverBindings: Map<string, ArrayProjectionBinding>;
-  projectionIndexBindings: Map<string, ArrayProjectionBinding>;
-  finiteLookupBindings: Map<string, FiniteLookupCandidate[]>;
-  helperFiniteReturnCache: Map<string, { candidates: FiniteLookupCandidate[]; suffix: PathSegment[] } | null>;
-  handledExactCallbackBodies: Set<ts.Node>;
-  retainedContainerConflicts: Set<string>;
-  handledSpreadAppendStarts: Set<number>;
-  parameterMeaningfulUse: Map<string, boolean | null>;
-  parameterSummaryCache: Map<string, HelperParameterSummary | null>;
-  helperExactAppendPlanCache: Map<string, HelperExactAppendPlan[] | null>;
-  helperProjectedUsagePlanCache: Map<string, HelperProjectedUsagePlan[] | null>;
-  higherOrderCallableReturnSummaryCache: Map<string, HigherOrderCallableReturnSummary | null>;
-}
-
-export interface ObjectPathStageContext {
-  project: ProjectContext;
-  reachableFiles: Set<string>;
-  publicCallableIds: Set<string>;
-  state: AnalysisState;
-  suppressionContext: SuppressionContext;
-  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>;
-  overlayState: ObjectPathOverlayState;
-  trackedBindingRegistry: Map<string, TrackedObjectBinding>;
-  trackedObjectRegistry: Map<string, TrackedObject>;
-  createSourceFileContext(sourceFile: ts.SourceFile): ObjectPathSourceFileContext;
-}
-
+/**
+ * Clones the shared tracking snapshot into the mutable state used by the object-path stage.
+ */
 export function createObjectPathStageContext(
   project: ProjectContext,
   reachableFiles: Set<string>,
@@ -185,7 +143,7 @@ export function createObjectPathStageContext(
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): ObjectPathStageContext {
-  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts("object-paths");
+  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts(OBJECT_PATHS_TRACKING_STAGE);
   const overlayState: ObjectPathOverlayState = {
     readsByObjectId: new Map(),
     writesByObjectId: new Map(),
