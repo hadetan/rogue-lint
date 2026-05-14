@@ -8,8 +8,6 @@ interface GroupedLeafPresentation {
   reason: string;
 }
 
-export const abc = '';
-
 interface TextRenderOptions {
   supportsTerminalLinks?: boolean;
 }
