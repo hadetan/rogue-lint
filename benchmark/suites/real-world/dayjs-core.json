@@ -85,6 +85,15 @@
         "maxCount": 2
       }
     ],
+    "mustNotSkip": [
+      {
+        "label": "bounded prettyUnit lookup in src/utils.js must not stay behind a computed-property skip",
+        "file": "src/utils.js",
+        "category": "computed-property-access",
+        "reasonIncludes": "computed property access prevents exact path analysis",
+        "maxCount": 0
+      }
+    ],
     "mustDiagnose": [],
     "mustNotDiagnose": [
       {

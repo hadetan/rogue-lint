@@ -22,6 +22,14 @@ export function getDeclarationNameNode(node: ts.Node): ts.Node | undefined {
     return ts.isIdentifier(node.name) ? node.name : undefined;
   }
 
+  if (ts.isImportClause(node)) {
+    return node.name;
+  }
+
+  if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isImportEqualsDeclaration(node)) {
+    return node.name;
+  }
+
   if (
     ts.isMethodDeclaration(node) ||
     ts.isPropertyDeclaration(node) ||

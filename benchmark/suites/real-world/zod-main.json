@@ -128,6 +128,30 @@
         "kind": "unused-type",
         "file": "src/v4/core/util.ts",
         "maxCount": 0
+      },
+      {
+        "label": "v4 ~standard validate wrapper must not leave returned issues dead",
+        "kind": "unused-object-key",
+        "file": "src/v4/core/schemas.ts",
+        "owner": "validate()",
+        "name": "issues",
+        "maxCount": 0
+      },
+      {
+        "label": "v4 unrecognized issue key arrays must not return a dead first element",
+        "kind": "unused-array-element",
+        "file": "src/v4/core/schemas.ts",
+        "owner": "unrecognized",
+        "name": "[0]",
+        "maxCount": 0
+      },
+      {
+        "label": "v3 strict-object issue data must not leave unrecognized keys dead",
+        "kind": "unused-object-key",
+        "file": "src/v3/types.ts",
+        "owner": "issueData",
+        "name": "keys",
+        "maxCount": 0
       }
     ],
     "mustSkip": [
@@ -138,6 +162,36 @@
         "file": "src/v4/core/json-schema-processors.ts",
         "minCount": 1,
         "maxCount": 1
+      }
+    ],
+    "mustNotSkip": [
+      {
+        "label": "v4 ~standard validate wrapper must not escape returned issue arrays as returned objects",
+        "category": "returned-object",
+        "file": "src/v4/core/schemas.ts",
+        "name": "issues",
+        "maxCount": 0
+      },
+      {
+        "label": "v3 async pair transport must not escape returned values",
+        "category": "returned-object",
+        "file": "src/v3/types.ts",
+        "name": "[0].value",
+        "maxCount": 0
+      },
+      {
+        "label": "v4 raw issue spread must not hide input behind object-spread conservatism",
+        "category": "object-spread",
+        "file": "src/v4/core/util.ts",
+        "name": "input",
+        "maxCount": 0
+      },
+      {
+        "label": "v4 raw issue spread must not hide inst behind object-spread conservatism",
+        "category": "object-spread",
+        "file": "src/v4/core/util.ts",
+        "name": "inst",
+        "maxCount": 0
       }
     ],
     "mustDiagnose": [],

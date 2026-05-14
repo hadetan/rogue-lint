@@ -5,10 +5,6 @@ import type {
   TrackedObject,
   TrackedObjectStructuralRole,
 } from "../../types.js";
-import {
-  STRUCTURAL_RECORD_FIELD_NAMES,
-  STRUCTURAL_STATE_FIELD_NAMES,
-} from "./model.js";
 
 /**
  * Syntax and control-flow helpers shared across the tracking kernel.
@@ -34,6 +30,129 @@ export const ASSIGNMENT_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.BarBarEqualsToken,
   ts.SyntaxKind.AmpersandAmpersandEqualsToken,
   ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
+
+const STRUCTURAL_RECORD_FIELD_NAMES = new Set([
+  "aliases",
+  "boundaries",
+  "bindings",
+  "byCallableId",
+  "bySymbolId",
+  "binding",
+  "crossFileReferences",
+  "dynamic",
+  "facts",
+  "findingKind",
+  "functionReturnSummaries",
+  "getStageArtifacts",
+  "kind",
+  "owner",
+  "reads",
+  "reason",
+  "references",
+  "root",
+  "sameFileReferences",
+  "segments",
+  "stage",
+  "trackedBySymbolId",
+  "trackedObjectsById",
+  "value",
+  "viaAliasObjectId",
+  "viaAliasPath",
+  "writes",
+]);
+
+const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
+  ...STRUCTURAL_RECORD_FIELD_NAMES,
+  "acceptedFindings",
+  "call",
+  "capabilityObligations",
+  "callablePurity",
+  "candidates",
+  "cleanup",
+  "code",
+  "convergence",
+  "directoryExists",
+  "elementBindings",
+  "elementPaths",
+  "elementSymbolKey",
+  "externalLines",
+  "file",
+  "fileExists",
+  "from",
+  "getCompilationSettings",
+  "getCurrentDirectory",
+  "getDefaultLibFileName",
+  "getScriptFileNames",
+  "getScriptSnapshot",
+  "getScriptVersion",
+  "id",
+  "ignoredLines",
+  "ignoredRanges",
+  "includeKinds",
+  "indexBindings",
+  "insertReason",
+  "keep",
+  "knownSkips",
+  "literal",
+  "location",
+  "maxCount",
+  "message",
+  "methodName",
+  "minCount",
+  "mode",
+  "mustDiagnose",
+  "mustFind",
+  "mustNotDiagnose",
+  "mustNotFind",
+  "mustNotSkip",
+  "mustSkip",
+  "passes",
+  "name",
+  "observeSourceAtInsert",
+  "objectAnalysis",
+  "parameterMeaningfulUse",
+  "prefix",
+  "readDirectory",
+  "readFile",
+  "relativeCollectionPath",
+  "receiverPath",
+  "receiverBindings",
+  "receiverTrackedObject",
+  "returnSummaries",
+  "runtimeSummary",
+  "seed",
+  "sourceObservationReason",
+  "sourceFile",
+  "sourcePath",
+  "specifier",
+  "statement",
+  "stageRequests",
+  "slotPlans",
+  "suffix",
+  "to",
+  "totals",
+  "trackedObject",
+  "warned",
+  "warningPassThreshold",
+  "maxPasses",
+]);
+
+const STRUCTURAL_STATE_FIELD_NAMES = new Set([
+  "aliases",
+  "bindings",
+  "boundaries",
+  "capabilityObligations",
+  "capabilityCandidates",
+  "diagnostics",
+  "findings",
+  "kept",
+  "outgoing",
+  "returnSummaries",
+  "runtimeSummary",
+  "stage",
+  "skipped",
+  "unresolved",
 ]);
 
 /**
@@ -78,7 +197,7 @@ export function isPureObjectConstructorExpression(expression: ts.Expression): bo
   return (node.arguments ?? []).every((argument) => isStructurallySimpleExpression(argument));
 }
 
-function isStructurallySimpleExpression(expression: ts.Expression): boolean {
+export function isStructurallySimpleExpression(expression: ts.Expression): boolean {
   const node = unwrapExpression(expression);
   if (
     ts.isIdentifier(node)
@@ -136,40 +255,63 @@ function isStructurallySimpleExpression(expression: ts.Expression): boolean {
 export function classifyTrackedObjectStructuralRole(
   node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
 ): TrackedObjectStructuralRole | undefined {
-  if (!ts.isObjectLiteralExpression(node)) {
+  const classifyObjectLiteralRole = (
+    objectLiteral: ts.ObjectLiteralExpression,
+  ): TrackedObjectStructuralRole | undefined => {
+    const fieldNames: string[] = [];
+    let allSimple = true;
+    for (const property of objectLiteral.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        allSimple = false;
+        continue;
+      }
+      const propertyName = getStaticObjectLiteralPropertyName(property);
+      if (!propertyName) {
+        return undefined;
+      }
+      fieldNames.push(propertyName);
+      if (ts.isPropertyAssignment(property) && !isStructurallySimpleExpression(property.initializer)) {
+        allSimple = false;
+      }
+    }
+
+    if (fieldNames.length === 0) {
+      return undefined;
+    }
+
+    if (fieldNames.some((fieldName) => STRUCTURAL_STATE_FIELD_NAMES.has(fieldName))) {
+      return "state-holder";
+    }
+
+    if (fieldNames.every((fieldName) => STRUCTURAL_HELPER_FIELD_NAMES.has(fieldName))) {
+      return "structural-record";
+    }
+
+    if (
+      fieldNames.includes("kind")
+      || fieldNames.includes("state")
+      || (fieldNames.length <= 4 && allSimple)
+    ) {
+      return "record";
+    }
+
+    return undefined;
+  };
+
+  if (ts.isObjectLiteralExpression(node)) {
+    return classifyObjectLiteralRole(node);
+  }
+
+  const concreteElements = node.elements.filter((element): element is ts.Expression => !ts.isSpreadElement(element));
+  if (concreteElements.length === 0) {
     return undefined;
   }
 
-  const fieldNames: string[] = [];
-  let allSimple = true;
-  for (const property of node.properties) {
-    if (ts.isSpreadAssignment(property)) {
-      return undefined;
-    }
-    const propertyName = getStaticObjectLiteralPropertyName(property);
-    if (!propertyName) {
-      return undefined;
-    }
-    fieldNames.push(propertyName);
-    if (ts.isPropertyAssignment(property) && !isStructurallySimpleExpression(property.initializer)) {
-      allSimple = false;
-    }
-  }
-
-  if (fieldNames.length === 0) {
-    return undefined;
-  }
-
-  if (fieldNames.some((fieldName) => STRUCTURAL_STATE_FIELD_NAMES.has(fieldName))) {
-    return "state-holder";
-  }
-
-  if (
-    fieldNames.includes("kind")
-    || fieldNames.includes("state")
-    || (fieldNames.length <= 4 && allSimple)
-  ) {
-    return "record";
+  const elementRoles = concreteElements.map((element) =>
+    ts.isObjectLiteralExpression(element) ? classifyObjectLiteralRole(element) : undefined,
+  );
+  if (elementRoles.every((role) => role === "structural-record" || role === "state-holder")) {
+    return "structural-record-array";
   }
 
   return undefined;
@@ -181,9 +323,17 @@ function getLeadingStructuralFieldName(segments: PathSegment[]): string | undefi
 }
 
 export function shouldSuppressStructuralPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
+  if (trackedObject.structuralRole === "structural-record-array") {
+    return segments[0]?.kind === "index";
+  }
+
   const fieldName = getLeadingStructuralFieldName(segments);
   if (!fieldName) {
     return false;
+  }
+
+  if (trackedObject.structuralRole === "structural-record") {
+    return STRUCTURAL_HELPER_FIELD_NAMES.has(fieldName);
   }
 
   if (trackedObject.structuralRole === "record") {
@@ -195,6 +345,12 @@ export function shouldSuppressStructuralPath(trackedObject: TrackedObject, segme
   }
 
   return false;
+}
+
+export function shouldSuppressStructuralRoot(trackedObject: TrackedObject): boolean {
+  return trackedObject.structuralRole === "structural-record"
+    || trackedObject.structuralRole === "structural-record-array"
+    || trackedObject.structuralRole === "state-holder";
 }
 
 export function getFunctionDepth(node: ts.Node): number {

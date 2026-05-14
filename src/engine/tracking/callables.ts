@@ -6,6 +6,7 @@ import {
   getCanonicalSymbolKey,
   sameTrackedBinding,
 } from "./bindings.js";
+import { unwrapExpression } from "./syntax.js";
 import type {
   AnalyzableCallableBinding,
   CallableReturnSummary,
@@ -63,23 +64,18 @@ export function sameCallableReturnSummaryMap(
   return true;
 }
 
-function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLikeDeclaration | undefined {
-  const declaration = symbol.declarations?.[0];
+function getFunctionLikeDeclarationFromDeclaration(declaration: ts.Declaration): ts.FunctionLikeDeclaration | undefined {
   if (
-    declaration
-    && (
-      ts.isFunctionDeclaration(declaration)
-      || ts.isFunctionExpression(declaration)
-      || ts.isArrowFunction(declaration)
-      || ts.isMethodDeclaration(declaration)
-    )
+    ts.isFunctionDeclaration(declaration)
+    || ts.isFunctionExpression(declaration)
+    || ts.isArrowFunction(declaration)
+    || ts.isMethodDeclaration(declaration)
   ) {
     return declaration;
   }
 
   if (
-    declaration
-    && ts.isVariableDeclaration(declaration)
+    ts.isVariableDeclaration(declaration)
     && declaration.initializer
     && (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
   ) {
@@ -87,8 +83,7 @@ function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLik
   }
 
   if (
-    declaration
-    && ts.isVariableDeclaration(declaration)
+    ts.isVariableDeclaration(declaration)
     && declaration.initializer
     && ts.isConditionalExpression(declaration.initializer)
     && (ts.isFunctionExpression(declaration.initializer.whenFalse) || ts.isArrowFunction(declaration.initializer.whenFalse))
@@ -97,11 +92,21 @@ function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLik
   }
 
   if (
-    declaration
-    && ts.isPropertyAssignment(declaration)
+    ts.isPropertyAssignment(declaration)
     && (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
   ) {
     return declaration.initializer;
+  }
+
+  return undefined;
+}
+
+function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLikeDeclaration | undefined {
+  for (const declaration of symbol.declarations ?? []) {
+    const callable = getFunctionLikeDeclarationFromDeclaration(declaration);
+    if (callable) {
+      return callable;
+    }
   }
 
   return undefined;
@@ -129,6 +134,131 @@ function getCallableSymbol(project: ProjectContext, expression: ts.LeftHandSideE
   }
 
   return undefined;
+}
+
+function getStaticPropertyName(name: ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+
+  return undefined;
+}
+
+function resolveStaticCallableFromSymbol(
+  project: ProjectContext,
+  symbol: ts.Symbol,
+  segments: string[],
+  visitedSymbols: Set<string>,
+): ts.FunctionLikeDeclaration | undefined {
+  const canonical = getCanonicalSymbol(project, symbol);
+  const symbolKey = getCanonicalSymbolKey(project, canonical);
+  if (visitedSymbols.has(symbolKey)) {
+    return undefined;
+  }
+  visitedSymbols.add(symbolKey);
+
+  for (const declaration of canonical.declarations ?? []) {
+    if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+      const callable = resolveStaticCallableFromExpression(project, declaration.initializer, segments, visitedSymbols);
+      if (callable) {
+        return callable;
+      }
+    }
+
+    if (ts.isPropertyAssignment(declaration)) {
+      const callable = resolveStaticCallableFromExpression(project, declaration.initializer, segments, visitedSymbols);
+      if (callable) {
+        return callable;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function resolveStaticCallableFromExpression(
+  project: ProjectContext,
+  expression: ts.Expression,
+  segments: string[],
+  visitedSymbols: Set<string>,
+): ts.FunctionLikeDeclaration | undefined {
+  const node = unwrapExpression(expression);
+
+  if (segments.length === 0) {
+    return (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) ? node : undefined;
+  }
+
+  if (ts.isIdentifier(node)) {
+    const symbol = project.checker.getSymbolAtLocation(node);
+    return symbol ? resolveStaticCallableFromSymbol(project, symbol, segments, visitedSymbols) : undefined;
+  }
+
+  if (!ts.isObjectLiteralExpression(node)) {
+    return undefined;
+  }
+
+  const [head, ...tail] = segments;
+  for (const property of node.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      continue;
+    }
+
+    const propertyName = getStaticPropertyName(property.name);
+    if (propertyName !== head) {
+      continue;
+    }
+
+    if (tail.length === 0) {
+      return getFunctionLikeDeclarationFromDeclaration(property);
+    }
+
+    if (ts.isPropertyAssignment(property)) {
+      return resolveStaticCallableFromExpression(project, property.initializer, tail, visitedSymbols);
+    }
+
+    if (ts.isShorthandPropertyAssignment(property)) {
+      const valueSymbol = project.checker.getShorthandAssignmentValueSymbol(property);
+      return valueSymbol ? resolveStaticCallableFromSymbol(project, valueSymbol, tail, visitedSymbols) : undefined;
+    }
+
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function resolveStaticCallableBinding(
+  project: ProjectContext,
+  expression: ts.LeftHandSideExpression,
+): AnalyzableCallableBinding | undefined {
+  const segments: string[] = [];
+  let current: ts.Expression = expression;
+
+  while (true) {
+    const node = unwrapExpression(current);
+    if (ts.isPropertyAccessExpression(node)) {
+      segments.unshift(node.name.text);
+      current = node.expression;
+      continue;
+    }
+
+    if (
+      ts.isElementAccessExpression(node)
+      && node.argumentExpression
+      && (
+        ts.isStringLiteral(node.argumentExpression)
+        || ts.isNoSubstitutionTemplateLiteral(node.argumentExpression)
+        || ts.isNumericLiteral(node.argumentExpression)
+      )
+    ) {
+      segments.unshift(node.argumentExpression.text);
+      current = node.expression;
+      continue;
+    }
+
+    const declaration = resolveStaticCallableFromExpression(project, node, segments, new Set<string>());
+    return declaration ? getAnalyzableCallableBindingFromDeclaration(project, declaration) : undefined;
+  }
 }
 
 export function getAnalyzableCallableName(callable: AnalyzableCallableBinding): string {
@@ -170,22 +300,20 @@ export function getAnalyzableCallableBinding(
   expression: ts.LeftHandSideExpression,
 ): AnalyzableCallableBinding | undefined {
   const calleeSymbol = getCallableSymbol(project, expression);
-  if (!calleeSymbol) {
-    return undefined;
+  if (calleeSymbol) {
+    const callable = getFunctionLikeDeclarationFromSymbol(getCanonicalSymbol(project, calleeSymbol));
+
+    if (callable?.body) {
+      return callable.getSourceFile().fileName.startsWith(project.rootPath)
+        ? {
+            declaration: callable,
+            symbolKey: getCanonicalSymbolKey(project, calleeSymbol),
+          }
+        : undefined;
+    }
   }
 
-  const callable = getFunctionLikeDeclarationFromSymbol(getCanonicalSymbol(project, calleeSymbol));
-
-  if (!callable?.body) {
-    return undefined;
-  }
-
-  return callable.getSourceFile().fileName.startsWith(project.rootPath)
-    ? {
-        declaration: callable,
-        symbolKey: getCanonicalSymbolKey(project, calleeSymbol),
-      }
-    : undefined;
+  return resolveStaticCallableBinding(project, expression);
 }
 
 export function getAnalyzableCallableBindingFromDeclaration(
@@ -215,6 +343,19 @@ export function getAnalyzableCallableBindingFromDeclaration(
           declaration,
           symbolKey: getCanonicalSymbolKey(project, symbol),
         };
+      }
+    }
+
+    if (ts.isPropertyAssignment(parent)) {
+      const propertyName = parent.name;
+      if (ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName) || ts.isNumericLiteral(propertyName)) {
+        const symbol = project.checker.getSymbolAtLocation(propertyName);
+        if (symbol) {
+          return {
+            declaration,
+            symbolKey: getCanonicalSymbolKey(project, symbol),
+          };
+        }
       }
     }
 

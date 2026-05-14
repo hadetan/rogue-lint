@@ -9,6 +9,7 @@ import type {
   RogueLintConfig,
   SkipCategory,
 } from "../types.js";
+import type { AnalysisCapabilityId } from "../engine/capabilities/types.js";
 
 interface BenchmarkRepositoryRef {
   url: string;
@@ -63,6 +64,7 @@ export interface BenchmarkExpectations {
   mustFind: BenchmarkFindingMatcher[];
   mustNotFind: BenchmarkFindingMatcher[];
   mustSkip: BenchmarkSkipMatcher[];
+  mustNotSkip: BenchmarkSkipMatcher[];
   mustDiagnose: BenchmarkDiagnosticMatcher[];
   mustNotDiagnose: BenchmarkDiagnosticMatcher[];
   acceptedFindings: BenchmarkFindingMatcher[];
@@ -121,12 +123,24 @@ export type BenchmarkGapPriorityScope =
   | "known-skip"
   | "known-skip-growth"
   | "unexpected-finding"
+  | "unexpected-diagnostic"
   | "unexpected-skip";
 
 export interface BenchmarkGapPriorityEntry {
   scope: BenchmarkGapPriorityScope;
   label: string;
   count: number;
+}
+
+export interface BenchmarkCapabilityPriorityDetail {
+  label: string;
+  count: number;
+}
+
+export interface BenchmarkCapabilityPriorityEntry {
+  capabilityId: AnalysisCapabilityId;
+  count: number;
+  details: BenchmarkCapabilityPriorityDetail[];
 }
 
 export interface BenchmarkEvaluation {
@@ -138,6 +152,7 @@ export interface BenchmarkEvaluation {
     mustFind: PositiveExpectationResult<BenchmarkFindingMatcher, FindingRecord>;
     mustNotFind: NegativeExpectationResult<BenchmarkFindingMatcher, FindingRecord>;
     mustSkip: PositiveExpectationResult<BenchmarkSkipMatcher, AuditRecord>;
+    mustNotSkip: NegativeExpectationResult<BenchmarkSkipMatcher, AuditRecord>;
     mustDiagnose: PositiveExpectationResult<BenchmarkDiagnosticMatcher, DiagnosticRecord>;
     mustNotDiagnose: NegativeExpectationResult<BenchmarkDiagnosticMatcher, DiagnosticRecord>;
   };
@@ -155,6 +170,7 @@ export interface BenchmarkEvaluation {
     skipsByCategory: Array<[SkipCategory, number]>;
   };
   gapPriority: BenchmarkGapPriorityEntry[];
+  capabilityPriority: BenchmarkCapabilityPriorityEntry[];
   failed: boolean;
 }
 
@@ -197,16 +213,6 @@ export interface BenchmarkWorkspaceRun {
 }
 
 export const BENCHMARK_DOC_PATH = "benchmark/README.md";
-
-export const EMPTY_BENCHMARK_EXPECTATIONS: BenchmarkExpectations = {
-  mustFind: [],
-  mustNotFind: [],
-  mustSkip: [],
-  mustDiagnose: [],
-  mustNotDiagnose: [],
-  acceptedFindings: [],
-  knownSkips: [],
-};
 
 export const EMPTY_BENCHMARK_CONFIG: BenchmarkTargetConfig = {};
 

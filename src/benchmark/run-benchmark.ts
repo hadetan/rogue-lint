@@ -101,7 +101,6 @@ async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManif
     const result = await analyzeProject({
       cwd: workspaceRoot,
       targetPath,
-      format: "json",
       configPath,
       mode: manifest.config.mode,
     });
@@ -118,12 +117,7 @@ async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManif
       return target;
     }
 
-    const evaluation = evaluateBenchmarkExpectations(
-      result.findings,
-      result.skipped,
-      result.diagnostics,
-      manifest.expectations,
-    );
+    const evaluation = evaluateBenchmarkExpectations(result, manifest.expectations);
 
     const target: BenchmarkTargetRun = {
       state: "analyzed",

@@ -1,13 +1,22 @@
 import type {
+  AnalysisResult,
   AuditRecord,
   DiagnosticRecord,
   FindingRecord,
   FindingKind,
   SkipCategory,
 } from "../types.js";
+import { getAnalysisCapabilityLedger } from "../engine/capabilities/providers.js";
+import {
+  createDiagnosticCapabilityRecordId,
+  type AnalysisCapabilityId,
+  type AnalysisCapabilityLedger,
+} from "../engine/capabilities/types.js";
 import { uniqueById } from "../shared/general-utils.js";
 import type {
   AcceptedDebtResult,
+  BenchmarkCapabilityPriorityDetail,
+  BenchmarkCapabilityPriorityEntry,
   BenchmarkDiagnosticMatcher,
   BenchmarkEvaluation,
   BenchmarkExpectations,
@@ -165,6 +174,7 @@ function gapPriorityRank(scope: BenchmarkGapPriorityScope): number {
     case "known-skip-growth":
       return 0;
     case "unexpected-finding":
+    case "unexpected-diagnostic":
     case "unexpected-skip":
       return 1;
     case "accepted-finding":
@@ -197,6 +207,26 @@ function groupSkipPriority(
   }));
 }
 
+function getDiagnosticPriorityLabel(record: DiagnosticRecord): string {
+  const capabilityCoverageMatch = /^capability coverage gap \(([^)]+)\):/.exec(record.message);
+  if (capabilityCoverageMatch) {
+    return `capability coverage gap (${capabilityCoverageMatch[1]})`;
+  }
+
+  return record.kind;
+}
+
+function groupDiagnosticPriority(
+  records: DiagnosticRecord[],
+  scope: Extract<BenchmarkGapPriorityScope, "unexpected-diagnostic">,
+): BenchmarkGapPriorityEntry[] {
+  return countKinds(records.map(getDiagnosticPriorityLabel)).map(([label, count]) => ({
+    scope,
+    label,
+    count,
+  }));
+}
+
 function sortGapPriority(entries: BenchmarkGapPriorityEntry[]): BenchmarkGapPriorityEntry[] {
   return [...entries].sort((left, right) => {
     const rankDelta = gapPriorityRank(left.scope) - gapPriorityRank(right.scope);
@@ -207,16 +237,85 @@ function sortGapPriority(entries: BenchmarkGapPriorityEntry[]): BenchmarkGapPrio
   });
 }
 
-export function evaluateBenchmarkExpectations(
+function sortCapabilityPriorityDetails(
+  details: BenchmarkCapabilityPriorityDetail[],
+): BenchmarkCapabilityPriorityDetail[] {
+  return [...details].sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
+}
+
+function groupCapabilityPriority(
   findings: FindingRecord[],
   skips: AuditRecord[],
   diagnostics: DiagnosticRecord[],
+  capabilityLedger: AnalysisCapabilityLedger | undefined,
+): BenchmarkCapabilityPriorityEntry[] {
+  if (!capabilityLedger) {
+    return [];
+  }
+
+  const grouped = new Map<
+    AnalysisCapabilityId,
+    { count: number; details: Map<string, number> }
+  >();
+
+  const addRecord = (capabilityId: AnalysisCapabilityId | undefined, label: string): void => {
+    if (!capabilityId) {
+      return;
+    }
+
+    const entry = grouped.get(capabilityId) ?? { count: 0, details: new Map<string, number>() };
+    entry.count += 1;
+    entry.details.set(label, (entry.details.get(label) ?? 0) + 1);
+    grouped.set(capabilityId, entry);
+  };
+
+  for (const record of findings) {
+    addRecord(
+      capabilityLedger.recordCapabilityById.get(record.id),
+      capabilityLedger.recordDetailById.get(record.id) ?? record.kind,
+    );
+  }
+
+  for (const record of skips) {
+    addRecord(
+      capabilityLedger.recordCapabilityById.get(record.id),
+      capabilityLedger.recordDetailById.get(record.id) ?? record.category ?? record.kind,
+    );
+  }
+
+  for (const record of diagnostics) {
+    const diagnosticRecordId = createDiagnosticCapabilityRecordId(record);
+    addRecord(
+      capabilityLedger.recordCapabilityById.get(diagnosticRecordId),
+      capabilityLedger.recordDetailById.get(diagnosticRecordId) ?? getDiagnosticPriorityLabel(record),
+    );
+  }
+
+  return [...grouped.entries()]
+    .map(([capabilityId, entry]) => ({
+      capabilityId,
+      count: entry.count,
+      details: sortCapabilityPriorityDetails(
+        [...entry.details.entries()].map(([label, count]) => ({ label, count })),
+      ),
+    }))
+    .sort((left, right) => right.count - left.count || left.capabilityId.localeCompare(right.capabilityId));
+}
+
+export function evaluateBenchmarkExpectations(
+  result: AnalysisResult,
   expectations: BenchmarkExpectations,
 ): BenchmarkEvaluation {
+  const findings = result.findings;
+  const skips = result.skipped;
+  const diagnostics = result.diagnostics;
+  const capabilityLedger = getAnalysisCapabilityLedger(result);
+
   const requiredAnchorTotal =
     expectations.mustFind.length
     + expectations.mustNotFind.length
     + expectations.mustSkip.length
+    + expectations.mustNotSkip.length
     + expectations.mustDiagnose.length
     + expectations.mustNotDiagnose.length;
   const incompleteContract = requiredAnchorTotal === 0;
@@ -226,6 +325,7 @@ export function evaluateBenchmarkExpectations(
   const acceptedFindings = evaluateAccepted(findings, expectations.acceptedFindings, matchesFinding);
 
   const mustSkip = evaluatePositive(skips, expectations.mustSkip, matchesSkip);
+  const mustNotSkip = evaluateNegative(skips, expectations.mustNotSkip, matchesSkip);
   const knownSkips = evaluateAccepted(skips, expectations.knownSkips, matchesSkip);
 
   const mustDiagnose = evaluatePositive(diagnostics, expectations.mustDiagnose, matchesDiagnostic);
@@ -238,6 +338,7 @@ export function evaluateBenchmarkExpectations(
   );
   const unexpectedSkips = skips.filter((record) =>
     !matchesAny(record, expectations.mustSkip, matchesSkip)
+    && !matchesAny(record, expectations.mustNotSkip, matchesSkip)
     && !matchesAny(record, expectations.knownSkips, matchesSkip),
   );
   const unexpectedDiagnostics = diagnostics.filter((record) =>
@@ -252,7 +353,6 @@ export function evaluateBenchmarkExpectations(
     ...unexpectedFindings,
   ]);
   const gapSkipRecords = uniqueById([
-    ...mustSkip.matched.flatMap((entry) => entry.records),
     ...knownSkips.present.flatMap((entry) => entry.records),
     ...knownSkips.reduced.flatMap((entry) => entry.records),
     ...knownSkips.regressions.flatMap((entry) => entry.records),
@@ -273,6 +373,7 @@ export function evaluateBenchmarkExpectations(
     || mustNotFind.violations.length > 0
     || mustSkip.missing.length > 0
     || mustSkip.overLimit.length > 0
+    || mustNotSkip.violations.length > 0
     || mustDiagnose.missing.length > 0
     || mustDiagnose.overLimit.length > 0
     || mustNotDiagnose.violations.length > 0
@@ -284,6 +385,7 @@ export function evaluateBenchmarkExpectations(
 
   const gapPriority = sortGapPriority([
     ...groupFindingPriority(unexpectedFindings, "unexpected-finding"),
+    ...groupDiagnosticPriority(unexpectedDiagnostics, "unexpected-diagnostic"),
     ...groupSkipPriority(unexpectedSkips, "unexpected-skip"),
     ...groupFindingPriority(
       [
@@ -308,6 +410,12 @@ export function evaluateBenchmarkExpectations(
       "known-skip-growth",
     ),
   ]);
+  const capabilityPriority = groupCapabilityPriority(
+    gapFindingRecords,
+    gapSkipRecords,
+    unexpectedDiagnostics,
+    capabilityLedger,
+  );
 
   return {
     contract: {
@@ -318,6 +426,7 @@ export function evaluateBenchmarkExpectations(
       mustFind,
       mustNotFind,
       mustSkip,
+      mustNotSkip,
       mustDiagnose,
       mustNotDiagnose,
     },
@@ -335,6 +444,7 @@ export function evaluateBenchmarkExpectations(
       skipsByCategory: skipsByCategory as Array<[SkipCategory, number]>,
     },
     gapPriority,
+    capabilityPriority,
     failed,
   };
 }

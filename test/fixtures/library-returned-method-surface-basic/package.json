@@ -1,0 +1,6 @@
+{
+  "name": "library-returned-method-surface-basic",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

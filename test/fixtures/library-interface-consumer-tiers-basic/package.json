@@ -1,0 +1,6 @@
+{
+  "name": "library-interface-consumer-tiers-basic",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

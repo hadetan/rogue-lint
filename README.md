@@ -2,7 +2,7 @@
 
 > The whole-project static analyzer that tracks what is truly live, what has gone rogue, and where JavaScript turns into fog.
 
-`rogue-lint` moves through a codebase like a careful rogue moving through a forest: it starts from entrypoints and public surface, follows only the paths it can actually prove, and keeps track of what is really consumed. It traces same-project reachability, exports, locals, object paths, array slots, returned structures, helper-carried values, callback correlation, retained bindings, discarded results, and selected safety failures. That lets it report the code and values that have gone rogue from real use. When the proof holds, it emits a real finding. When the path disappears into dynamic JavaScript, it emits an explicit conservative boundary instead of pretending it still knows the way.
+`rogue-lint` moves through a codebase like a careful rogue moving through a forest: it starts from entrypoints and public surface, follows only the paths it can actually prove, and keeps track of what is really consumed. It traces same-project reachability, imports, exports, locals, object paths, array slots, returned structures, helper-carried values, callback correlation, retained bindings, discarded results, and selected safety failures. That lets it report the code and values that have gone rogue from real use. When the proof holds, it emits a real finding. When the path disappears into dynamic JavaScript, it emits an explicit conservative boundary instead of pretending it still knows the way.
 
 ```text
 → starts from entrypoints and public surface
@@ -27,9 +27,10 @@ Most code analysis tools fail in one of two ways:
 Use it when you want:
 
 - whole-project reachability instead of isolated lint warnings
+- symbol-liveness analysis across imports, exports, locals, and members
 - export and type-surface analysis that understands application mode versus library mode
 - exact object and array path cleanup in the supported subset
-- explicit `findings`, `kept`, and `skipped` buckets so trust is inspectable
+- explicit `findings`, `skipped`, and `diagnostics` by default, with `kept` available when you ask for it
 - output that humans can read and agents can automate against
 
 ## Quick Start
@@ -47,6 +48,7 @@ Run it:
 ```bash
 npx rogue-lint .
 npx rogue-lint . --json
+npx rogue-lint . --kept
 npx rogue-lint . --mode library
 npx rogue-lint . --kinds unused-export,unused-file,use-before-init
 npx rogue-lint . --config rogue-lint.config.json
@@ -78,7 +80,6 @@ Mode: application
 Files analyzed: 4
 Reachable files: 3
 Findings: 9
-Kept: 1
 Skipped: 2
 
 Findings:
@@ -89,29 +90,26 @@ unused-file
   src/unused.ts
     unused-file                  src/unused.ts:1:1 unused.ts - file is unreachable from configured entrypoints
 
-Kept:
-local
-  src/index.ts
-    local                        src/index.ts:9:7 ignoredLocal - suppressed by rogue-lint-ignore-next
-
 Skipped:
 object-key
   src/index.ts
     object-key                   src/index.ts:24:3 maybe - computed property access prevents exact path analysis
 ```
 
+Pass `--kept` when you want preserved public-surface and suppression audits in either text or CLI JSON output.
+
 That structure is the trust model in practice:
 
 - `findings`: stale code or suspicious flows the analyzer can justify
-- `kept`: otherwise-dead entities intentionally preserved by public-surface rules, suppressions, or keep rules
 - `skipped`: explicit conservative boundaries where exact reasoning stopped
+- `kept`: otherwise-dead entities intentionally preserved by public-surface rules, suppressions, or keep rules, available via `--kept` or the library API
 
 ## What It Can Catch
 
 `rogue-lint` currently covers:
 
 - whole-project reachability and API surface: `unused-file`, `unused-export`, `unused-type`, `unused-enum-member`
-- local declarations and members: `unused-local`, `unused-class-member`, `unused-interface-member`
+- symbol-liveness across imports, local declarations, and members: `unused-import`, `unused-local`, `unused-class-member`, `unused-interface-member`
 - exact structural cleanup: `unused-array-element`, `unused-object-key`, `unused-nested-path`
 - value-flow and safety signals: `dead-store`, `unused-value`, `write-only-state`, `use-before-init`, `invalidated-read`, `stale-read-after-mutation`
 - same-project namespace or member helpers, callback correlation, awaited returns, and structured-return propagation in the supported exact subset

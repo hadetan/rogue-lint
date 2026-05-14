@@ -12,7 +12,6 @@ import type {
 import {
   BENCHMARK_DOC_PATH,
   EMPTY_BENCHMARK_CONFIG,
-  EMPTY_BENCHMARK_EXPECTATIONS,
   isAnalysisMode,
   isBenchmarkCoverageClass,
 } from "./types.js";
@@ -174,7 +173,16 @@ function applyAcceptedDebtFallback<Matcher extends { label: string; maxCount?: n
 
 function parseExpectations(value: unknown, location: string): BenchmarkExpectations {
   if (value === undefined) {
-    return { ...EMPTY_BENCHMARK_EXPECTATIONS };
+    return {
+      mustFind: [],
+      mustNotFind: [],
+      mustSkip: [],
+      mustNotSkip: [],
+      mustDiagnose: [],
+      mustNotDiagnose: [],
+      acceptedFindings: [],
+      knownSkips: [],
+    };
   }
 
   if (!isRecord(value)) {
@@ -192,6 +200,7 @@ function parseExpectations(value: unknown, location: string): BenchmarkExpectati
     mustFind: parseMatcherArray(value.mustFind, `${location}.mustFind`, parseFindingMatcher),
     mustNotFind: parseMatcherArray(value.mustNotFind, `${location}.mustNotFind`, parseFindingMatcher),
     mustSkip: parseMatcherArray(value.mustSkip, `${location}.mustSkip`, parseSkipMatcher),
+    mustNotSkip: parseMatcherArray(value.mustNotSkip, `${location}.mustNotSkip`, parseSkipMatcher),
     mustDiagnose: parseMatcherArray(value.mustDiagnose, `${location}.mustDiagnose`, parseDiagnosticMatcher),
     mustNotDiagnose: parseMatcherArray(value.mustNotDiagnose, `${location}.mustNotDiagnose`, parseDiagnosticMatcher),
     acceptedFindings: applyAcceptedDebtFallback(acceptedFindings, "findings"),

@@ -1,0 +1,8 @@
+{
+  "name": "package-subpath-surface-basic",
+  "private": true,
+  "exports": {
+    ".": "./dist/index.js",
+    "./core": "./dist/core/index.js"
+  }
+}

@@ -9,6 +9,7 @@ export type AnalysisMode = "application" | "library";
 export type FindingKind =
   | "unused-file"
   | "unused-export"
+  | "unused-import"
   | "unused-local"
   | "unused-type"
   | "unused-enum-member"
@@ -30,6 +31,7 @@ export type FindingKind =
 export type EntityKind =
   | "file"
   | "export"
+  | "import"
   | "local"
   | "type"
   | "enum-member"
@@ -103,15 +105,22 @@ export interface RogueLintConfig {
 }
 
 /**
- * Normalized options consumed by the CLI flow and top-level analysis API.
+ * Engine-facing analysis options consumed by the top-level analysis API.
  */
-export interface CliOptions {
+export interface AnalysisOptions {
   cwd: string;
-  format: ReportFormat;
   mode?: AnalysisMode;
   configPath?: string;
   targetPath?: string;
   includeKinds?: FindingKind[];
+}
+
+/**
+ * Normalized CLI options consumed by the shell-facing entrypoint.
+ */
+export interface CliOptions extends AnalysisOptions {
+  format: ReportFormat;
+  showKept?: boolean;
 }
 
 /**
@@ -180,7 +189,7 @@ interface SummaryRecord {
 }
 
 /**
- * Complete machine-readable result returned by the API and rendered by the CLI.
+ * Complete machine-readable result returned by the API and consumed by CLI renderers.
  */
 export interface AnalysisResult {
   tool: "rogue-lint";

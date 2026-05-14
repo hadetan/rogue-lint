@@ -3,7 +3,7 @@ import path from "node:path";
 
 import ts from "typescript";
 
-import type { CliOptions, ProjectContext } from "./types.js";
+import type { AnalysisOptions, ProjectContext } from "./types.js";
 import { loadPackageJson, resolveConfig } from "./config.js";
 import { matchesPatterns } from "./shared/general-utils.js";
 import { toRelative } from "./shared/path-utils.js";
@@ -11,8 +11,9 @@ import { toRelative } from "./shared/path-utils.js";
 const SOURCE_EXTENSIONS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
 
 function walkSourceFiles(rootPath: string): string[] {
-  const result: string[] = [];
-  const queue = [rootPath];
+  const result = new Set<string>();
+  const queue: string[] = [];
+  queue.push(rootPath);
 
   while (queue.length > 0) {
     const current = queue.pop();
@@ -37,12 +38,12 @@ function walkSourceFiles(rootPath: string): string[] {
       }
 
       if (SOURCE_EXTENSIONS.has(path.extname(entry.name))) {
-        result.push(fullPath);
+        result.add(fullPath);
       }
     }
   }
 
-  return result;
+  return [...result];
 }
 
 function findTsconfig(rootPath: string, explicit?: string): string | undefined {
@@ -83,9 +84,9 @@ function createLanguageService(
   return ts.createLanguageService(host, ts.createDocumentRegistry());
 }
 
-export function loadProject(cliOptions: CliOptions): ProjectContext {
-  const rootPath = path.resolve(cliOptions.targetPath ?? cliOptions.cwd);
-  const config = resolveConfig(rootPath, cliOptions);
+export function loadProject(options: AnalysisOptions): ProjectContext {
+  const rootPath = path.resolve(options.targetPath ?? options.cwd);
+  const config = resolveConfig(rootPath, options);
   const packageJson = loadPackageJson(rootPath);
   const configPath = findTsconfig(rootPath, config.value.tsconfig);
 
@@ -163,7 +164,6 @@ export function loadProject(cliOptions: CliOptions): ProjectContext {
 
   return {
     rootPath,
-    packageJsonPath: packageJson.path,
     packageJson: packageJson.value,
     config,
     analyzableFiles,

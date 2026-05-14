@@ -47,7 +47,6 @@ export interface SuppressionContext {
  */
 export interface ProjectContext {
   rootPath: string;
-  packageJsonPath?: string;
   packageJson: Record<string, unknown> | null;
   config: ResolvedConfig;
   analyzableFiles: Set<string>;
@@ -61,6 +60,7 @@ export interface ProjectContext {
 interface ObjectNode {
   entity: EntityRecord;
   fullPath: PathSegment[];
+  origin: "property" | "method" | "array-element";
 }
 
 export interface EscapedPathRecord {
@@ -99,19 +99,24 @@ export interface InvalidatedPathRecord {
   findingKind?: Extract<FindingKind, "invalidated-read" | "stale-read-after-mutation">;
 }
 
-export type TrackedObjectStructuralRole = "record" | "state-holder";
+export type TrackedObjectStructuralRole = "record" | "state-holder" | "structural-record" | "structural-record-array";
 
 /**
  * Canonical structured object tracked across exact path, collection, and value-fate analysis.
  */
 export interface TrackedObject {
   id: string;
+  reportingOwnerId?: string;
   canonicalSymbolKey: string;
   rootName: string;
   sourceFile: string;
   rootEntity: EntityRecord;
   structuralRole?: TrackedObjectStructuralRole;
   nodes: Map<string, ObjectNode>;
+  callablePaths: Map<string, {
+    symbolKey: string;
+    declaration: ts.FunctionLikeDeclaration;
+  }>;
   descendantNodeKeys: Map<string, string[]>;
   collections: Map<string, TrackedCollectionInfo>;
   collectionStates: Map<string, TrackedCollectionState>;

@@ -13,6 +13,7 @@ import {
   samePath,
 } from "../../shared/path-utils.js";
 import type {
+  AnalyzableCallableBinding,
   CallableReturnSummary,
   ForwardedParameterBinding,
   ProjectedArrayUsageContext,
@@ -20,17 +21,17 @@ import type {
   ResolvedTrackedObjectAccess,
   TrackedObjectBinding,
 } from "./model.js";
+import { TrackedObjectBindingRecord } from "./model.js";
 import {
   extendTrackedBinding,
   getBindingByNode,
-  getCanonicalSymbol,
-  getCanonicalSymbolKey,
   getGlobalThisBindingKey,
   isGlobalThisIdentifier,
   sameTrackedBinding,
 } from "./bindings.js";
 import {
   getAnalyzableCallableBinding,
+  getAnalyzableCallableBindingFromDeclaration,
   getCallableReturnBinding,
 } from "./callables.js";
 import {
@@ -38,8 +39,15 @@ import {
   getConcreteProjectionPaths,
   getTrackedArrayLength,
   hasTrackedChildren,
+  registerExactPathAlias,
   resolveExactPathAlias,
 } from "./state.js";
+import {
+  getObjectBackedRetainedBindingSlotKeyFromAccess,
+  getRetainedBindingContainerSlotKey,
+  isLocallyOwnedRetainedBindingContainer,
+} from "./retained-bindings.js";
+import { getResolvedSpreadPropertySegments } from "./spread-support.js";
 import { unwrapExpression } from "./syntax.js";
 
 /**
@@ -50,27 +58,601 @@ import { unwrapExpression } from "./syntax.js";
  * both heavy analyzer stages.
  */
 
-const EXACT_ARRAY_CALLBACK_METHODS = new Set([
-  "every",
-  "filter",
-  "find",
-  "findIndex",
-  "findLast",
-  "findLastIndex",
-  "flatMap",
-  "forEach",
-  "map",
-  "reduce",
-  "reduceRight",
-  "some",
-]);
-
 function hasExactTrackedPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
   const joinedPath = serializePath(segments);
   return trackedObject.nodes.has(joinedPath)
+    || trackedObject.callablePaths.has(joinedPath)
     || trackedObject.exactPathAliases.has(joinedPath)
     || Boolean(getCollectionInfo(trackedObject, segments))
     || hasTrackedChildren(trackedObject, segments);
+}
+
+function cloneTrackedObjectForCallSite(base: TrackedObject, id: string): TrackedObject {
+  return {
+    ...base,
+    id,
+    reportingOwnerId: base.reportingOwnerId ?? base.id,
+    nodes: new Map([...base.nodes.entries()].map(([key, value]) => [key, {
+      entity: value.entity,
+      fullPath: [...value.fullPath],
+      origin: value.origin,
+    }])),
+    callablePaths: new Map([...base.callablePaths.entries()].map(([key, value]) => [key, {
+      symbolKey: value.symbolKey,
+      declaration: value.declaration,
+    }])),
+    descendantNodeKeys: new Map([...base.descendantNodeKeys.entries()].map(([key, value]) => [key, [...value]])),
+    collections: new Map([...base.collections.entries()].map(([key, value]) => [key, {
+      kind: value.kind,
+      path: [...value.path],
+      childPaths: value.childPaths.map((childPath) => [...childPath]),
+      arrayLength: value.arrayLength,
+    }])),
+    collectionStates: new Map([...base.collectionStates.entries()].map(([key, value]) => [key, {
+      path: [...value.path],
+      epoch: value.epoch,
+      arrayLength: value.arrayLength,
+    }])),
+    collectionBoundaries: new Map([...base.collectionBoundaries.entries()].map(([key, value]) => [key, {
+      entity: value.entity,
+      path: [...value.path],
+      category: value.category,
+      reason: value.reason,
+    }])),
+    invalidatedCollectionPaths: new Set(base.invalidatedCollectionPaths),
+    invalidatedPaths: new Map([...base.invalidatedPaths.entries()].map(([key, value]) => [key, {
+      reason: value.reason,
+      findingKind: value.findingKind,
+    }])),
+    placeStates: new Map(base.placeStates),
+    observedSubtrees: new Set(),
+    escapedPaths: new Map([...base.escapedPaths.entries()].map(([key, value]) => [key, {
+      category: value.category,
+      reason: value.reason,
+    }])),
+    exactPathAliases: new Map([...base.exactPathAliases.entries()].map(([key, alias]) => [key, {
+      ...alias,
+      sourcePath: [...alias.sourcePath],
+    }])),
+    valueFates: base.valueFates.map((valueFate) => ({
+      ...valueFate,
+      path: [...valueFate.path],
+      relatedPath: valueFate.relatedPath ? [...valueFate.relatedPath] : undefined,
+    })),
+    reads: new Set(),
+    writes: new Set(),
+  };
+}
+
+function syncTrackedObjectForCallSite(target: TrackedObject, source: TrackedObject): void {
+  target.nodes = new Map([...source.nodes.entries()].map(([key, value]) => [key, {
+    entity: value.entity,
+    fullPath: [...value.fullPath],
+    origin: value.origin,
+  }]));
+  target.callablePaths = new Map([...source.callablePaths.entries()].map(([key, value]) => [key, {
+    symbolKey: value.symbolKey,
+    declaration: value.declaration,
+  }]));
+  target.descendantNodeKeys = new Map([...source.descendantNodeKeys.entries()].map(([key, value]) => [key, [...value]]));
+  target.collections = new Map([...source.collections.entries()].map(([key, value]) => [key, {
+    kind: value.kind,
+    path: [...value.path],
+    childPaths: value.childPaths.map((childPath) => [...childPath]),
+    arrayLength: value.arrayLength,
+  }]));
+  target.collectionStates = new Map([...source.collectionStates.entries()].map(([key, value]) => [key, {
+    path: [...value.path],
+    epoch: value.epoch,
+    arrayLength: value.arrayLength,
+  }]));
+  target.collectionBoundaries = new Map([...source.collectionBoundaries.entries()].map(([key, value]) => [key, {
+    entity: value.entity,
+    path: [...value.path],
+    category: value.category,
+    reason: value.reason,
+  }]));
+  target.invalidatedCollectionPaths = new Set(source.invalidatedCollectionPaths);
+  target.invalidatedPaths = new Map([...source.invalidatedPaths.entries()].map(([key, value]) => [key, {
+    reason: value.reason,
+    findingKind: value.findingKind,
+  }]));
+  target.placeStates = new Map(source.placeStates);
+  target.escapedPaths = new Map([...source.escapedPaths.entries()].map(([key, value]) => [key, {
+    category: value.category,
+    reason: value.reason,
+  }]));
+  target.exactPathAliases = new Map([...source.exactPathAliases.entries()].map(([key, alias]) => [key, {
+    ...alias,
+    sourcePath: [...alias.sourcePath],
+  }]));
+  target.valueFates = source.valueFates.map((valueFate) => ({
+    ...valueFate,
+    path: [...valueFate.path],
+    relatedPath: valueFate.relatedPath ? [...valueFate.relatedPath] : undefined,
+  }));
+}
+
+function collapseExactBindingPrefix(
+  binding: TrackedObjectBinding,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding {
+  let current = binding;
+
+  while (current.prefix.length > 0) {
+    const baseBinding = new TrackedObjectBindingRecord(current.trackedObject, []);
+    const aliased = resolveExactPathAlias(baseBinding, current.prefix, trackedObjectsById);
+    if (sameTrackedBinding(aliased.binding, baseBinding)) {
+      break;
+    }
+
+    current = aliased.binding;
+  }
+
+  return current;
+}
+
+function getReturnedStructuredLiteralFromExpression(
+  project: ProjectContext,
+  callable: AnalyzableCallableBinding,
+  expression: ts.Expression,
+): ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined {
+  const node = unwrapExpression(expression);
+  if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
+    return node;
+  }
+
+  if (!ts.isIdentifier(node)) {
+    return undefined;
+  }
+
+  const symbol = project.checker.getSymbolAtLocation(node);
+  const declaration = symbol?.declarations?.find(ts.isVariableDeclaration);
+  if (!declaration?.initializer) {
+    return undefined;
+  }
+
+  const enclosingFunction = ts.findAncestor(
+    declaration,
+    (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+  );
+  if (enclosingFunction !== callable.declaration) {
+    return undefined;
+  }
+
+  const initializer = unwrapExpression(declaration.initializer);
+  return (ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer))
+    ? initializer
+    : undefined;
+}
+
+function getStructuredReturnLiteral(
+  project: ProjectContext,
+  callable: AnalyzableCallableBinding,
+): ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined {
+  if (!callable.declaration.body) {
+    return undefined;
+  }
+
+  let literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined;
+  let unsupported = false;
+
+  const visit = (node: ts.Node): void => {
+    if (unsupported) {
+      return;
+    }
+
+    if (ts.isFunctionLike(node) && node !== callable.declaration) {
+      return;
+    }
+
+    if (ts.isReturnStatement(node) && node.expression) {
+      const nextLiteral = getReturnedStructuredLiteralFromExpression(project, callable, node.expression);
+      if (!nextLiteral) {
+        unsupported = true;
+        return;
+      }
+
+      if (!literal) {
+        literal = nextLiteral;
+        return;
+      }
+
+      if (literal !== nextLiteral) {
+        unsupported = true;
+      }
+      return;
+    }
+
+    ts.forEachChild(node, visit);
+  };
+
+  ts.forEachChild(callable.declaration.body, visit);
+  return unsupported ? undefined : literal;
+}
+
+function registerSpecializedStructuredReturnAliases(
+  project: ProjectContext,
+  trackedObject: TrackedObject,
+  node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+  segments: PathSegment[],
+  maxDepth: number,
+  localBindings: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): void {
+  if (segments.length > maxDepth) {
+    return;
+  }
+
+  if (ts.isObjectLiteralExpression(node)) {
+    for (const property of node.properties) {
+      if (ts.isSpreadAssignment(property)) {
+        const resolved = resolveTrackedObjectAccess(
+          project,
+          property.expression,
+          localBindings,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+        if (resolved && !resolved.dynamic) {
+          const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          const spreadSegments = getResolvedSpreadPropertySegments(spreadBinding);
+          if (spreadSegments) {
+            for (const spreadSegment of spreadSegments) {
+              registerExactPathAlias(
+                trackedObject,
+                [...segments, spreadSegment],
+                extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
+                "call-site structured return keeps this spread property exact",
+              );
+            }
+          }
+        }
+        continue;
+      }
+
+      if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
+        continue;
+      }
+
+      const propertyName = ts.isShorthandPropertyAssignment(property)
+        ? property.name.text
+        : ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+          ? property.name.text
+          : undefined;
+      if (!propertyName) {
+        continue;
+      }
+
+      const fullPath = [...segments, propertySegment(propertyName)];
+      const initializer = ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer;
+      const unwrapped = unwrapExpression(initializer);
+      if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
+        registerSpecializedStructuredReturnAliases(
+          project,
+          trackedObject,
+          unwrapped,
+          fullPath,
+          maxDepth,
+          localBindings,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+        continue;
+      }
+
+      const resolved = resolveTrackedObjectAccess(
+        project,
+        unwrapped,
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      if (resolved && !resolved.dynamic) {
+        registerExactPathAlias(
+          trackedObject,
+          fullPath,
+          extendTrackedBinding(resolved.binding, resolved.segments),
+          "call-site structured return keeps this nested binding exact",
+        );
+      }
+    }
+    return;
+  }
+
+  node.elements.forEach((element, index) => {
+    if (!element || ts.isSpreadElement(element)) {
+      return;
+    }
+
+    const fullPath = [...segments, indexSegment(index)];
+    const unwrapped = unwrapExpression(element);
+    if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
+      registerSpecializedStructuredReturnAliases(
+        project,
+        trackedObject,
+        unwrapped,
+        fullPath,
+        maxDepth,
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      return;
+    }
+
+    const resolved = resolveTrackedObjectAccess(
+      project,
+      unwrapped,
+      localBindings,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    if (resolved && !resolved.dynamic) {
+      registerExactPathAlias(
+        trackedObject,
+        fullPath,
+        extendTrackedBinding(resolved.binding, resolved.segments),
+        "call-site structured return keeps this nested binding exact",
+      );
+    }
+  });
+}
+
+function pathStartsWith(path: PathSegment[], prefix: PathSegment[]): boolean {
+  return path.length >= prefix.length && samePath(path.slice(0, prefix.length), prefix);
+}
+
+function remapCallSiteReturnBinding(
+  binding: TrackedObjectBinding,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  specializedBindings: Map<string, TrackedObjectBinding>,
+): TrackedObjectBinding {
+  for (const [symbolKey, specializedBinding] of specializedBindings) {
+    const baseBinding = trackedBySymbolId.get(symbolKey);
+    if (!baseBinding || binding.trackedObject.id !== baseBinding.trackedObject.id) {
+      continue;
+    }
+
+    if (!pathStartsWith(binding.prefix, baseBinding.prefix)) {
+      continue;
+    }
+
+    return extendTrackedBinding(specializedBinding, binding.prefix.slice(baseBinding.prefix.length));
+  }
+
+  return binding;
+}
+
+function specializeReturnedAliasBinding(
+  node: ts.CallExpression,
+  binding: TrackedObjectBinding,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  specializedBindings: Map<string, TrackedObjectBinding>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding {
+  const directRemapped = remapCallSiteReturnBinding(binding, trackedBySymbolId, specializedBindings);
+  if (!sameTrackedBinding(directRemapped, binding)) {
+    return directRemapped;
+  }
+
+  if (specializedBindings.size === 0 || binding.trackedObject.exactPathAliases.size === 0) {
+    return binding;
+  }
+
+  let changed = false;
+  const remappedAliases = new Map<string, TrackedObject["exactPathAliases"] extends Map<string, infer T> ? T : never>();
+
+  for (const [aliasPath, alias] of binding.trackedObject.exactPathAliases.entries()) {
+    const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
+    if (!sourceTrackedObject) {
+      remappedAliases.set(aliasPath, {
+        ...alias,
+        sourcePath: [...alias.sourcePath],
+      });
+      continue;
+    }
+
+    const remappedSource = remapCallSiteReturnBinding(
+      {
+        trackedObject: sourceTrackedObject,
+        prefix: alias.sourcePath,
+      },
+      trackedBySymbolId,
+      specializedBindings,
+    );
+    if (
+      remappedSource.trackedObject.id !== alias.sourceObjectId
+      || !samePath(remappedSource.prefix, alias.sourcePath)
+    ) {
+      changed = true;
+    }
+
+    remappedAliases.set(aliasPath, {
+      ...alias,
+      sourceObjectId: remappedSource.trackedObject.id,
+      sourcePath: remappedSource.prefix,
+    });
+  }
+
+  if (!changed) {
+    return binding;
+  }
+
+  const callSiteId = `${binding.trackedObject.id}:returned-call:${node.getSourceFile().fileName}:${node.getStart()}`;
+  const existing = trackedObjectsById.get(callSiteId);
+  if (existing) {
+    syncTrackedObjectForCallSite(existing, binding.trackedObject);
+    existing.exactPathAliases = remappedAliases;
+    return new TrackedObjectBindingRecord(existing, binding.prefix);
+  }
+
+  const specialized = cloneTrackedObjectForCallSite(binding.trackedObject, callSiteId);
+  trackedObjectsById.set(callSiteId, specialized);
+
+  specialized.exactPathAliases = remappedAliases;
+  return new TrackedObjectBindingRecord(specialized, binding.prefix);
+}
+
+function getCallSiteStructuredReturnBinding(
+  project: ProjectContext,
+  node: ts.CallExpression,
+  callable: AnalyzableCallableBinding,
+  summary: CallableReturnSummary,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding | undefined {
+  const binding = getCallableReturnBinding(summary);
+  if (!binding) {
+    return undefined;
+  }
+
+  if (callable.declaration.parameters.length === 0) {
+    return binding;
+  }
+
+  const localBindings = new Map(trackedBySymbolId);
+  const specializedBindings = new Map<string, TrackedObjectBinding>();
+
+  node.arguments.forEach((argument, index) => {
+    const parameter = callable.declaration.parameters[index];
+    if (!parameter || !ts.isIdentifier(parameter.name)) {
+      return;
+    }
+
+    const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+    if (!parameterSymbol) {
+      return;
+    }
+
+    const paramSymbolKey = getSymbolKey(parameterSymbol);
+    const baseBinding = trackedBySymbolId.get(paramSymbolKey);
+    const specializedArgumentBinding = baseBinding
+      ? getCallSiteStructuredArgumentBinding(
+          project,
+          node,
+          argument,
+          baseBinding,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        )
+      : undefined;
+    if (specializedArgumentBinding) {
+      localBindings.set(paramSymbolKey, specializedArgumentBinding);
+      specializedBindings.set(paramSymbolKey, specializedArgumentBinding);
+    }
+  });
+
+  for (const forwarded of getForwardedParameterBindings(
+    project,
+    node,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  )) {
+    localBindings.set(forwarded.paramSymbolKey, forwarded.binding);
+    specializedBindings.set(forwarded.paramSymbolKey, forwarded.binding);
+  }
+
+  const remappedBinding = remapCallSiteReturnBinding(binding, trackedBySymbolId, specializedBindings);
+
+  if (summary.kind !== "structured") {
+    return specializeReturnedAliasBinding(
+      node,
+      remappedBinding,
+      trackedBySymbolId,
+      specializedBindings,
+      trackedObjectsById,
+    );
+  }
+
+  const literal = getStructuredReturnLiteral(project, callable);
+  if (!literal) {
+    return remappedBinding;
+  }
+
+  const callSiteId = `${binding.trackedObject.id}:call:${node.getSourceFile().fileName}:${node.getStart()}`;
+  const existing = trackedObjectsById.get(callSiteId);
+  if (existing) {
+    syncTrackedObjectForCallSite(existing, binding.trackedObject);
+    registerSpecializedStructuredReturnAliases(
+      project,
+      existing,
+      literal,
+      [],
+      project.config.value.objectAnalysis.maxPathDepth,
+      localBindings,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    return new TrackedObjectBindingRecord(existing, []);
+  }
+
+  const specialized = cloneTrackedObjectForCallSite(binding.trackedObject, callSiteId);
+  trackedObjectsById.set(callSiteId, specialized);
+
+  registerSpecializedStructuredReturnAliases(
+    project,
+    specialized,
+    literal,
+    [],
+    project.config.value.objectAnalysis.maxPathDepth,
+    localBindings,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+
+  return new TrackedObjectBindingRecord(specialized, []);
+}
+
+export function getCallSiteStructuredArgumentBinding(
+  project: ProjectContext,
+  node: ts.CallExpression,
+  argument: ts.Expression,
+  baseBinding: TrackedObjectBinding,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding | undefined {
+  const literal = unwrapExpression(argument);
+  if (!ts.isObjectLiteralExpression(literal) && !ts.isArrayLiteralExpression(literal)) {
+    return undefined;
+  }
+
+  const callSiteId = `${baseBinding.trackedObject.id}:arg:${node.getSourceFile().fileName}:${argument.getStart()}`;
+  const existing = trackedObjectsById.get(callSiteId);
+  if (existing) {
+    syncTrackedObjectForCallSite(existing, baseBinding.trackedObject);
+    registerSpecializedStructuredReturnAliases(
+      project,
+      existing,
+      literal,
+      [],
+      project.config.value.objectAnalysis.maxPathDepth,
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    return new TrackedObjectBindingRecord(existing, []);
+  }
+
+  const specialized = cloneTrackedObjectForCallSite(baseBinding.trackedObject, callSiteId);
+  trackedObjectsById.set(callSiteId, specialized);
+  registerSpecializedStructuredReturnAliases(
+    project,
+    specialized,
+    literal,
+    [],
+    project.config.value.objectAnalysis.maxPathDepth,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+
+  return new TrackedObjectBindingRecord(specialized, []);
 }
 
 function extractBoundedElementAccessSegment(
@@ -166,177 +748,19 @@ function resolveArrayAtIndex(
   return normalized >= 0 ? normalized : undefined;
 }
 
-export function isExactArrayCallbackMethod(methodName: string): boolean {
-  return EXACT_ARRAY_CALLBACK_METHODS.has(methodName);
-}
-
-export function getSupportedArrayCallbackParamIndex(methodName: string): number | undefined {
-  if (!isExactArrayCallbackMethod(methodName)) {
-    return undefined;
-  }
-
-  return methodName === "reduce" || methodName === "reduceRight" ? 1 : 0;
-}
-
-export function getSupportedArrayCallbackIndexParamIndex(methodName: string): number | undefined {
-  const valueParamIndex = getSupportedArrayCallbackParamIndex(methodName);
-  return valueParamIndex === undefined ? undefined : valueParamIndex + 1;
-}
-
-function getContainerTypeName(project: ProjectContext, expression: ts.Expression): string | undefined {
-  const typeSymbol = project.checker.getTypeAtLocation(expression).getSymbol();
-  return typeSymbol?.getName();
-}
-
-function isObjectCreateNullExpression(expression: ts.Expression): boolean {
-  const node = unwrapExpression(expression);
-  return ts.isCallExpression(node)
-    && ts.isPropertyAccessExpression(node.expression)
-    && ts.isIdentifier(node.expression.expression)
-    && node.expression.expression.text === "Object"
-    && node.expression.name.text === "create"
-    && node.arguments.length === 1
-    && node.arguments[0]!.kind === ts.SyntaxKind.NullKeyword;
-}
-
-function getLocallyOwnedRetainedBindingContainerKind(
-  project: ProjectContext,
-  expression: ts.Expression,
-): "map-like" | "object-backed" | undefined {
-  const node = unwrapExpression(expression);
-  if (!ts.isIdentifier(node)) {
-    return undefined;
-  }
-
-  const symbol = project.checker.getSymbolAtLocation(node);
-  if (!symbol) {
-    return undefined;
-  }
-
-  for (const declaration of getCanonicalSymbol(project, symbol).declarations ?? []) {
-    if (!ts.isVariableDeclaration(declaration) || !declaration.initializer) {
-      continue;
-    }
-
-    const initializer = unwrapExpression(declaration.initializer);
-    if (
-      ts.isNewExpression(initializer)
-      && ts.isIdentifier(initializer.expression)
-      && ["Map", "WeakMap"].includes(initializer.expression.text)
-    ) {
-      return "map-like";
-    }
-
-    if (isObjectCreateNullExpression(initializer)) {
-      return "object-backed";
-    }
-  }
-
-  return undefined;
-}
-
-function getRetainedBindingContainerReceiverKey(project: ProjectContext, receiver: ts.Expression): string | undefined {
-  const node = unwrapExpression(receiver);
-  if (!ts.isIdentifier(node)) {
-    return undefined;
-  }
-
-  const symbol = project.checker.getSymbolAtLocation(node);
-  return symbol ? `container:${getCanonicalSymbolKey(project, symbol)}` : undefined;
-}
-
-function getRetainedBindingContainerStaticPropertySlotKey(
-  project: ProjectContext,
-  receiver: ts.Expression,
-  propertyName: string,
-): string | undefined {
-  const receiverKey = getRetainedBindingContainerReceiverKey(project, receiver);
-  return receiverKey ? `${receiverKey}:string:${propertyName}` : undefined;
-}
-
-export function isSupportedRetainedBindingContainerType(
-  project: ProjectContext,
-  expression: ts.Expression,
-): boolean {
-  const typeName = getContainerTypeName(project, expression);
-  return typeName === "Map"
-    || typeName === "WeakMap"
-    || getLocallyOwnedRetainedBindingContainerKind(project, expression) === "object-backed";
-}
-
-export function isLocallyOwnedRetainedBindingContainer(
-  project: ProjectContext,
-  expression: ts.Expression,
-): boolean {
-  return getLocallyOwnedRetainedBindingContainerKind(project, expression) !== undefined;
-}
-
-function isLocallyOwnedObjectBackedRetainedBindingContainer(
-  project: ProjectContext,
-  expression: ts.Expression,
-): boolean {
-  return getLocallyOwnedRetainedBindingContainerKind(project, expression) === "object-backed";
-}
-
-function getRetainedBindingContainerSlotToken(project: ProjectContext, expression: ts.Expression): string | undefined {
-  const node = unwrapExpression(expression);
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-    return `string:${node.text}`;
-  }
-  if (ts.isNumericLiteral(node)) {
-    return `number:${node.text}`;
-  }
-  if (ts.isIdentifier(node)) {
-    const symbol = project.checker.getSymbolAtLocation(node);
-    return symbol ? `symbol:${getCanonicalSymbolKey(project, symbol)}` : undefined;
-  }
-  return undefined;
-}
-
-export function getRetainedBindingContainerSlotKey(
-  project: ProjectContext,
-  receiver: ts.Expression,
-  slot: ts.Expression,
-): string | undefined {
-  const receiverKey = getRetainedBindingContainerReceiverKey(project, receiver);
-  if (!receiverKey || !isSupportedRetainedBindingContainerType(project, receiver)) {
-    return undefined;
-  }
-
-  const slotToken = getRetainedBindingContainerSlotToken(project, slot);
-  if (!slotToken) {
-    return undefined;
-  }
-
-  return `${receiverKey}:${slotToken}`;
-}
-
-export function getObjectBackedRetainedBindingSlotKeyFromAccess(
-  project: ProjectContext,
-  node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-): string | undefined {
-  if (!isLocallyOwnedObjectBackedRetainedBindingContainer(project, node.expression)) {
-    return undefined;
-  }
-
-  if (ts.isPropertyAccessExpression(node)) {
-    return getRetainedBindingContainerStaticPropertySlotKey(project, node.expression, node.name.text);
-  }
-
-  if (!node.argumentExpression) {
-    return undefined;
-  }
-
-  const argument = unwrapExpression(node.argumentExpression);
-  if (
-    !ts.isStringLiteral(argument)
-    && !ts.isNoSubstitutionTemplateLiteral(argument)
-    && !ts.isNumericLiteral(argument)
-  ) {
-    return undefined;
-  }
-
-  return getRetainedBindingContainerSlotKey(project, node.expression, argument);
+function isDefinitelyNonNullishType(type: ts.Type): boolean {
+  const candidates = type.isUnion() ? type.types : [type];
+  return candidates.every((candidate) => {
+    const flags = candidate.flags;
+    return (flags & (
+      ts.TypeFlags.Any
+      | ts.TypeFlags.Unknown
+      | ts.TypeFlags.TypeParameter
+      | ts.TypeFlags.Null
+      | ts.TypeFlags.Undefined
+      | ts.TypeFlags.Void
+    )) === 0;
+  });
 }
 
 export function getAccessPath(
@@ -384,7 +808,7 @@ export function resolveTrackedObjectAccess(
   project: ProjectContext,
   node: ts.Node,
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): ResolvedTrackedObjectAccess | undefined {
   if (ts.isAwaitExpression(node)) {
@@ -424,11 +848,15 @@ export function resolveTrackedObjectAccess(
     if (!nested) {
       return undefined;
     }
-    const aliased = resolveExactPathAlias(nested.binding, [...nested.segments, propertySegment(node.name.text)], trackedObjectsById);
-    const nextSegments = sameTrackedBinding(aliased.binding, nested.binding)
-      ? [...nested.segments, propertySegment(node.name.text)]
+    const currentBinding = collapseExactBindingPrefix(
+      extendTrackedBinding(nested.binding, nested.segments),
+      trackedObjectsById,
+    );
+    const aliased = resolveExactPathAlias(currentBinding, [propertySegment(node.name.text)], trackedObjectsById);
+    const nextSegments = sameTrackedBinding(aliased.binding, currentBinding)
+      ? [propertySegment(node.name.text)]
       : [];
-    if (sameTrackedBinding(aliased.binding, nested.binding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
+    if (sameTrackedBinding(aliased.binding, currentBinding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
       return undefined;
     }
     return {
@@ -471,11 +899,15 @@ export function resolveTrackedObjectAccess(
     const boundedSegment = extractBoundedElementAccessSegment(project, node.argumentExpression);
     if (boundedSegment) {
       const nextSegment = boundedSegment;
-      const aliased = resolveExactPathAlias(nested.binding, [...nested.segments, nextSegment], trackedObjectsById);
-      const nextSegments = sameTrackedBinding(aliased.binding, nested.binding)
-        ? [...nested.segments, nextSegment]
+      const currentBinding = collapseExactBindingPrefix(
+        extendTrackedBinding(nested.binding, nested.segments),
+        trackedObjectsById,
+      );
+      const aliased = resolveExactPathAlias(currentBinding, [nextSegment], trackedObjectsById);
+      const nextSegments = sameTrackedBinding(aliased.binding, currentBinding)
+        ? [nextSegment]
         : [];
-      if (sameTrackedBinding(aliased.binding, nested.binding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
+      if (sameTrackedBinding(aliased.binding, currentBinding) && !hasExactTrackedPath(aliased.binding.trackedObject, [...aliased.binding.prefix, ...nextSegments])) {
         return undefined;
       }
       return {
@@ -621,8 +1053,25 @@ export function resolveTrackedObjectAccess(
       }
     }
 
-    const callable = getAnalyzableCallableBinding(project, node.expression);
-    const binding = callable ? getCallableReturnBinding(functionReturnSummaries.get(callable.symbolKey)) : undefined;
+    const callable = resolveAnalyzableCallableBinding(
+      project,
+      node.expression,
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    const summary = callable ? functionReturnSummaries.get(callable.symbolKey) : undefined;
+    const binding = callable && summary
+      ? getCallSiteStructuredReturnBinding(
+          project,
+          node,
+          callable,
+          summary,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        )
+      : undefined;
     return binding
       ? {
           binding,
@@ -641,9 +1090,16 @@ export function resolveTrackedObjectAccess(
     const left = resolveTrackedObjectAccess(project, node.left, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
     const right = resolveTrackedObjectAccess(project, node.right, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
     if (!left) {
-      return right;
+      return right && !right.dynamic ? right : undefined;
     }
     if (!right) {
+      return left && !left.dynamic ? left : undefined;
+    }
+    if (
+      node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      && !left.dynamic
+      && isDefinitelyNonNullishType(project.checker.getTypeAtLocation(node.left))
+    ) {
       return left;
     }
     return sameTrackedBinding(extendTrackedBinding(left.binding, left.segments), extendTrackedBinding(right.binding, right.segments))
@@ -661,10 +1117,10 @@ export function resolveTrackedObjectAccess(
     const whenTrue = resolveTrackedObjectAccess(project, node.whenTrue, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
     const whenFalse = resolveTrackedObjectAccess(project, node.whenFalse, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
     if (!whenTrue) {
-      return whenFalse;
+      return whenFalse && !whenFalse.dynamic ? whenFalse : undefined;
     }
     if (!whenFalse) {
-      return whenTrue;
+      return whenTrue && !whenTrue.dynamic ? whenTrue : undefined;
     }
     return sameTrackedBinding(
       extendTrackedBinding(whenTrue.binding, whenTrue.segments),
@@ -683,15 +1139,74 @@ export function resolveTrackedObjectAccess(
   return undefined;
 }
 
+export function resolveAnalyzableCallableBinding(
+  project: ProjectContext,
+  expression: ts.LeftHandSideExpression,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): AnalyzableCallableBinding | undefined {
+  const direct = getAnalyzableCallableBinding(project, expression);
+  if (direct) {
+    return direct;
+  }
+
+  let receiverExpression: ts.Expression | undefined;
+  let nextSegment: PathSegment | undefined;
+  if (ts.isPropertyAccessExpression(expression)) {
+    receiverExpression = expression.expression;
+    nextSegment = propertySegment(expression.name.text);
+  } else if (ts.isElementAccessExpression(expression) && expression.argumentExpression) {
+    receiverExpression = expression.expression;
+    nextSegment = extractBoundedElementAccessSegment(project, expression.argumentExpression);
+  }
+
+  if (!receiverExpression || !nextSegment) {
+    return undefined;
+  }
+
+  const receiver = resolveTrackedObjectAccess(
+    project,
+    receiverExpression,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+  if (!receiver || receiver.dynamic) {
+    return undefined;
+  }
+
+  return receiver.binding.trackedObject.callablePaths.get(
+    serializePath([...receiver.binding.prefix, ...receiver.segments, nextSegment]),
+  );
+}
+
 export function getForwardedParameterBindings(
   project: ProjectContext,
   node: ts.CallExpression,
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): ForwardedParameterBinding[] {
-  const callable = getAnalyzableCallableBinding(project, node.expression);
+  const callable = resolveAnalyzableCallableBinding(
+    project,
+    node.expression,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
   if (!callable) {
+    return [];
+  }
+
+  const enclosingFunction = ts.findAncestor(
+    node,
+    (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+  );
+  const enclosingCallable = enclosingFunction
+    ? getAnalyzableCallableBindingFromDeclaration(project, enclosingFunction)
+    : undefined;
+  if (enclosingCallable?.symbolKey === callable.symbolKey) {
     return [];
   }
 
@@ -714,7 +1229,6 @@ export function getForwardedParameterBindings(
     }
 
     forwarded.push({
-      index,
       paramSymbolKey: getSymbolKey(parameterSymbol),
       binding: extendTrackedBinding(resolved.binding, resolved.segments),
     });

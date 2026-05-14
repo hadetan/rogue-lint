@@ -48,6 +48,8 @@ export function kindToFinding(kind: EntityKind): FindingKind | undefined {
       return "unused-file";
     case "export":
       return "unused-export";
+    case "import":
+      return "unused-import";
     case "local":
       return "unused-local";
     case "type":

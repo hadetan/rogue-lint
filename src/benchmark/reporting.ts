@@ -2,6 +2,7 @@ import type { AuditRecord, DiagnosticRecord, FindingRecord } from "../types.js";
 import { renderResult } from "../output/render-result.js";
 import type {
   AnalyzedBenchmarkTarget,
+  BenchmarkCapabilityPriorityEntry,
   BenchmarkDiagnosticMatcher,
   BenchmarkFindingMatcher,
   BenchmarkGapPriorityEntry,
@@ -100,6 +101,27 @@ function renderTopCounts(title: string, entries: Array<[string, number]>): strin
   return ["", `${title}:`, ...entries.map(([name, count]) => `- ${name}: ${count}`)];
 }
 
+function formatCapabilityPriorityDetails(details: BenchmarkCapabilityPriorityEntry["details"]): string {
+  return details.map((detail) => `${detail.label}: ${detail.count}`).join(", ");
+}
+
+function renderCapabilityPriority(title: string, entries: BenchmarkCapabilityPriorityEntry[]): string[] {
+  if (entries.length === 0) {
+    return [];
+  }
+
+  return [
+    "",
+    `${title}:`,
+    ...entries.map((entry) => {
+      const detailSummary = formatCapabilityPriorityDetails(entry.details);
+      return detailSummary.length > 0
+        ? `- ${entry.capabilityId}: ${entry.count} (${detailSummary})`
+        : `- ${entry.capabilityId}: ${entry.count}`;
+    }),
+  ];
+}
+
 function describeFindingMatcherPrecision(matcher: BenchmarkFindingMatcher): string | undefined {
   return matcher.id === undefined
     && matcher.name === undefined
@@ -132,6 +154,7 @@ function gapPriorityRank(scope: BenchmarkGapPriorityScope): number {
     case "known-skip-growth":
       return 0;
     case "unexpected-finding":
+    case "unexpected-diagnostic":
     case "unexpected-skip":
       return 1;
     case "accepted-finding":
@@ -154,6 +177,8 @@ function formatGapPriorityScope(scope: BenchmarkGapPriorityScope): string {
       return "known skip growth";
     case "unexpected-finding":
       return "unexpected finding";
+    case "unexpected-diagnostic":
+      return "unexpected diagnostic";
     case "unexpected-skip":
       return "unexpected skip";
     default:
@@ -195,6 +220,55 @@ function collectWorkspaceGapPriority(targets: AnalyzedBenchmarkTarget[]): Array<
     });
 }
 
+function collectWorkspaceCapabilityPriority(
+  targets: AnalyzedBenchmarkTarget[],
+): Array<BenchmarkCapabilityPriorityEntry & { targetCount: number }> {
+  const grouped = new Map<
+    string,
+    {
+      entry: BenchmarkCapabilityPriorityEntry;
+      detailCounts: Map<string, number>;
+      targetIds: Set<string>;
+    }
+  >();
+
+  for (const target of targets) {
+    for (const entry of target.evaluation.capabilityPriority) {
+      const current = grouped.get(entry.capabilityId);
+      if (current) {
+        current.entry.count += entry.count;
+        current.targetIds.add(target.manifest.id);
+        for (const detail of entry.details) {
+          current.detailCounts.set(detail.label, (current.detailCounts.get(detail.label) ?? 0) + detail.count);
+        }
+        continue;
+      }
+
+      grouped.set(entry.capabilityId, {
+        entry: {
+          capabilityId: entry.capabilityId,
+          count: entry.count,
+          details: [],
+        },
+        detailCounts: new Map(entry.details.map((detail) => [detail.label, detail.count])),
+        targetIds: new Set([target.manifest.id]),
+      });
+    }
+  }
+
+  return [...grouped.values()]
+    .map(({ entry, detailCounts, targetIds }) => ({
+      ...entry,
+      details: [...detailCounts.entries()]
+        .map(([label, count]) => ({ label, count }))
+        .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label)),
+      targetCount: targetIds.size,
+    }))
+    .sort((left, right) => {
+      return right.targetCount - left.targetCount || right.count - left.count || left.capabilityId.localeCompare(right.capabilityId);
+    });
+}
+
 function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
   const lines = [
     `Target: ${target.manifest.id}`,
@@ -210,6 +284,7 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
     `- must-find matched: ${target.evaluation.required.mustFind.matched.length}/${target.evaluation.required.mustFind.total}`,
     `- must-not-find clean: ${target.evaluation.required.mustNotFind.clean.length}/${target.evaluation.required.mustNotFind.total}`,
     `- must-skip matched: ${target.evaluation.required.mustSkip.matched.length}/${target.evaluation.required.mustSkip.total}`,
+    `- must-not-skip clean: ${target.evaluation.required.mustNotSkip.clean.length}/${target.evaluation.required.mustNotSkip.total}`,
     `- must-diagnose matched: ${target.evaluation.required.mustDiagnose.matched.length}/${target.evaluation.required.mustDiagnose.total}`,
     `- must-not-diagnose clean: ${target.evaluation.required.mustNotDiagnose.clean.length}/${target.evaluation.required.mustNotDiagnose.total}`,
     "",
@@ -237,6 +312,12 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
     ...renderTopCounts(
       "Current Engine Gap Signal (Skip Categories)",
       target.evaluation.gapSignal.skipsByCategory,
+    ),
+  );
+  lines.push(
+    ...renderCapabilityPriority(
+      "Current Capability Gap Signal",
+      target.evaluation.capabilityPriority,
     ),
   );
 
@@ -273,6 +354,14 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
       "Required Skip Count Violations",
       target.evaluation.required.mustSkip.overLimit,
       formatAudit,
+    ),
+  );
+  lines.push(
+    ...renderMatcherRecords<BenchmarkSkipMatcher, AuditRecord>(
+      "Must-Not-Skip Violations",
+      target.evaluation.required.mustNotSkip.violations,
+      formatAudit,
+      describeSkipMatcherPrecision,
     ),
   );
   lines.push(
@@ -406,6 +495,22 @@ export function renderBenchmarkReport(result: BenchmarkWorkspaceRun): string {
   const failedTargets = analyzedTargets.filter((target) => target.exitCode === 1).length + invalidTargets.length;
   lines.push(`Failed targets: ${failedTargets}`);
   lines.push(`Passed targets: ${analyzedTargets.length - analyzedTargets.filter((target) => target.exitCode === 1).length}`);
+
+  const capabilityWorklist = collectWorkspaceCapabilityPriority(analyzedTargets);
+  if (capabilityWorklist.length > 0) {
+    lines.push(
+      "",
+      "Prioritized Capability Worklist:",
+      "Provider-attributed gap records are grouped by capability family below; raw kind/category worklist follows for source-level detail.",
+      ...capabilityWorklist.map((entry) => {
+        const detailSummary = formatCapabilityPriorityDetails(entry.details);
+        return `- capability ${entry.capabilityId}: ${entry.count} `
+          + `record${entry.count === 1 ? "" : "s"} across ${entry.targetCount} `
+          + `target${entry.targetCount === 1 ? "" : "s"}`
+          + (detailSummary.length > 0 ? ` (${detailSummary})` : "");
+      }),
+    );
+  }
 
   const worklist = collectWorkspaceGapPriority(analyzedTargets);
   if (worklist.length > 0) {

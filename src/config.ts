@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import type { CliOptions, ResolvedConfig, RogueLintConfig } from "./types.js";
+import type { AnalysisOptions, ResolvedConfig, RogueLintConfig } from "./types.js";
 
 const DEFAULT_CONFIG: ResolvedConfig["value"] = {
   mode: "application",
@@ -44,10 +44,10 @@ export function loadPackageJson(rootPath: string): {
   };
 }
 
-export function resolveConfig(rootPath: string, cliOptions: CliOptions): ResolvedConfig {
+export function resolveConfig(rootPath: string, options: AnalysisOptions): ResolvedConfig {
   const packageJson = loadPackageJson(rootPath);
-  const explicitPath = cliOptions.configPath
-    ? path.resolve(rootPath, cliOptions.configPath)
+  const explicitPath = options.configPath
+    ? path.resolve(rootPath, options.configPath)
     : undefined;
   const candidatePaths = [
     explicitPath,
@@ -73,10 +73,10 @@ export function resolveConfig(rootPath: string, cliOptions: CliOptions): Resolve
   const merged: ResolvedConfig["value"] = {
     ...DEFAULT_CONFIG,
     ...rawConfig,
-    mode: cliOptions.mode ?? rawConfig.mode ?? DEFAULT_CONFIG.mode,
+    mode: options.mode ?? rawConfig.mode ?? DEFAULT_CONFIG.mode,
     includeKinds:
-      cliOptions.includeKinds && cliOptions.includeKinds.length > 0
-        ? cliOptions.includeKinds
+      options.includeKinds && options.includeKinds.length > 0
+        ? options.includeKinds
         : rawConfig.includeKinds ?? DEFAULT_CONFIG.includeKinds,
     keep: {
       ...DEFAULT_CONFIG.keep,

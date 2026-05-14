@@ -68,7 +68,6 @@ export type CallableReturnSummary =
   | { kind: "opaque" };
 
 export interface ForwardedParameterBinding {
-  index: number;
   paramSymbolKey: string;
   binding: TrackedObjectBinding;
 }
@@ -113,34 +112,13 @@ interface ExactAppendValueSlotPlan {
   insertReason: string;
 }
 
-export type ExactAppendSlotPlan = ExactAppendAliasSlotPlan | ExactAppendValueSlotPlan;
+interface ExactAppendStructuredSlotPlan {
+  kind: "structured";
+  literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression;
+  insertReason: string;
+}
 
-export const STRUCTURAL_RECORD_FIELD_NAMES = new Set([
-  "binding",
-  "crossFileReferences",
-  "dynamic",
-  "findingKind",
-  "kind",
-  "reads",
-  "reason",
-  "references",
-  "root",
-  "sameFileReferences",
-  "segments",
-  "value",
-  "viaAliasObjectId",
-  "viaAliasPath",
-  "writes",
-]);
-
-export const STRUCTURAL_STATE_FIELD_NAMES = new Set([
-  "diagnostics",
-  "findings",
-  "kept",
-  "outgoing",
-  "skipped",
-  "unresolved",
-]);
+export type ExactAppendSlotPlan = ExactAppendAliasSlotPlan | ExactAppendValueSlotPlan | ExactAppendStructuredSlotPlan;
 
 export interface ResolvedProjectionAccess {
   projection: ArrayProjectionBinding;
@@ -159,12 +137,14 @@ export type HelperParameterEffectKind =
 
 export interface HelperParameterSummary {
   effectKinds: Set<HelperParameterEffectKind>;
+  exactReadPaths: PathSegment[][];
   boundaryNode?: ts.Node;
   boundaryReason?: string;
 }
 
 export class HelperParameterSummaryState implements HelperParameterSummary {
   readonly effectKinds = new Set<HelperParameterEffectKind>();
+  readonly exactReadPaths: PathSegment[][] = [];
 
   constructor(
     public boundaryNode?: ts.Node,

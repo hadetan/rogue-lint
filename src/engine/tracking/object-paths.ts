@@ -1,10 +1,10 @@
 import type {
   ProjectContext,
   SuppressionContext,
-  TrackedObject,
 } from "../../types.js";
 import type { AnalysisState } from "../analysis-state.js";
-import { buildTrackedObjects } from "./graph.js";
+import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { createObjectPathStageContext } from "./object-paths/stage-context.js";
 import { finalizeObjectPathFindings } from "./object-paths/reporting.js";
 import { visitObjectPathSourceFile } from "./object-paths/visitor.js";
 
@@ -16,29 +16,33 @@ export function analyzeObjectPaths(
   reachableFiles: Set<string>,
   state: AnalysisState,
   suppressionContext: SuppressionContext,
+  artifacts: AnalysisArtifacts,
 ): void {
   if (!project.config.value.objectAnalysis.enabled) {
     return;
   }
 
-  const { trackedBySymbolId, functionReturnSummaries, trackedObjectsById } = buildTrackedObjects(project, reachableFiles);
-  const trackedObjects = new Set<TrackedObject>(trackedObjectsById.values());
+  const stageContext = createObjectPathStageContext(
+    project,
+    reachableFiles,
+    state,
+    suppressionContext,
+    artifacts,
+  );
 
   for (const sourceFile of project.sourceFiles) {
-    if (!reachableFiles.has(sourceFile.fileName)) {
+    if (!stageContext.reachableFiles.has(sourceFile.fileName)) {
       continue;
     }
 
-    visitObjectPathSourceFile(
-      project,
-      sourceFile,
-      trackedBySymbolId,
-      functionReturnSummaries,
-      trackedObjectsById,
-      state,
-      suppressionContext,
-    );
+    visitObjectPathSourceFile(stageContext, stageContext.createSourceFileContext(sourceFile));
   }
 
-  finalizeObjectPathFindings(project, state, suppressionContext, trackedObjects);
+  finalizeObjectPathFindings(
+    project,
+    state,
+    suppressionContext,
+    stageContext.trackedObjectRegistry.values(),
+    stageContext.overlayState,
+  );
 }

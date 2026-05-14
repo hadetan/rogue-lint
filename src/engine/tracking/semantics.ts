@@ -1,12 +1,17 @@
 import ts from "typescript";
 
-import type { ProjectContext } from "../../types.js";
+import type { PathSegment, ProjectContext } from "../../types.js";
 import {
   getSymbolKey,
   hasModifier,
   isReadLikeUse,
 } from "../../compiler/ast-utils.js";
 import { toRelative } from "../../shared/path-utils.js";
+import {
+  indexSegment,
+  propertySegment,
+  serializePath,
+} from "../../shared/path-utils.js";
 import {
   HelperParameterSummaryState,
 } from "./model.js";
@@ -22,16 +27,18 @@ import {
   getStaticGlobalThisPropertyName,
 } from "./bindings.js";
 import {
-  getObjectBackedRetainedBindingSlotKeyFromAccess,
   isExactArrayCallbackMethod,
+} from "./projection-support.js";
+import {
+  getObjectBackedRetainedBindingSlotKeyFromAccess,
   isSupportedRetainedBindingContainerType,
-} from "./access.js";
+} from "./retained-bindings.js";
 import {
   getAnalyzableCallableBinding,
   getAnalyzableCallableBindingFromDeclaration,
   resolveAnalyzableFunctionDeclaration,
 } from "./callables.js";
-import { isTrackablePureExpression } from "./graph.js";
+import { isTrackablePureExpression } from "./trackable-structures.js";
 import {
   ASSIGNMENT_OPERATORS,
   getStaticObjectLiteralPropertyName,
@@ -132,6 +139,14 @@ function addHelperParameterEffect(summary: HelperParameterSummary, effect: Helpe
   summary.effectKinds.add(effect);
 }
 
+function addHelperParameterExactReadPath(summary: HelperParameterSummary, path: PathSegment[]): void {
+  const serialized = serializePath(path);
+  if (summary.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
+    return;
+  }
+  summary.exactReadPaths.push(path);
+}
+
 function markHelperParameterBoundary(
   summary: HelperParameterSummary,
   node: ts.Node,
@@ -142,6 +157,112 @@ function markHelperParameterBoundary(
     summary.boundaryNode = node;
     summary.boundaryReason = reason;
   }
+}
+
+function extractFiniteAccessSegments(project: ProjectContext, argument: ts.Expression): PathSegment[] | undefined {
+  const node = unwrapExpression(argument);
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return [propertySegment(node.text)];
+  }
+
+  if (ts.isNumericLiteral(node)) {
+    return [indexSegment(Number(node.text))];
+  }
+
+  if (
+    ts.isPrefixUnaryExpression(node)
+    && node.operator === ts.SyntaxKind.MinusToken
+    && ts.isNumericLiteral(node.operand)
+  ) {
+    return [indexSegment(-Number(node.operand.text))];
+  }
+
+  const type = project.checker.getTypeAtLocation(node);
+  const candidates = type.isUnion() ? type.types : [type];
+  const segments: PathSegment[] = [];
+  const seen = new Set<string>();
+
+  for (const candidate of candidates) {
+    let segment: PathSegment | undefined;
+    if (candidate.flags & ts.TypeFlags.StringLiteral) {
+      segment = propertySegment((candidate as ts.StringLiteralType).value);
+    } else if (candidate.flags & ts.TypeFlags.NumberLiteral) {
+      segment = indexSegment((candidate as ts.NumberLiteralType).value);
+    } else {
+      return undefined;
+    }
+
+    const key = serializePath([segment]);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    segments.push(segment);
+  }
+
+  return segments.length > 0 ? segments : undefined;
+}
+
+function getExactHelperReadPaths(project: ProjectContext, node: ts.Identifier): PathSegment[][] | undefined {
+  let current: ts.Expression = node;
+  let paths: PathSegment[][] = [[]];
+  let sawPath = false;
+
+  while (true) {
+    const parent = current.parent;
+    if (
+      ts.isPropertyAccessExpression(parent)
+      && parent.expression === current
+    ) {
+      if (
+        ts.isCallExpression(parent.parent)
+        && parent.parent.expression === parent
+      ) {
+        break;
+      }
+
+      paths = paths.map((path) => [...path, propertySegment(parent.name.text)]);
+      current = parent;
+      sawPath = true;
+      continue;
+    }
+
+    if (
+      ts.isElementAccessExpression(parent)
+      && parent.expression === current
+      && parent.argumentExpression
+    ) {
+      const segments = extractFiniteAccessSegments(project, parent.argumentExpression);
+      if (!segments) {
+        return undefined;
+      }
+
+      paths = paths.flatMap((path) => segments.map((segment) => [...path, segment]));
+      current = parent;
+      sawPath = true;
+      continue;
+    }
+
+    break;
+  }
+
+  if (!sawPath) {
+    return undefined;
+  }
+
+  const parent = current.parent;
+  if (
+    ts.isPropertyAccessExpression(parent)
+    && parent.expression === current
+    && ts.isCallExpression(parent.parent)
+    && parent.parent.expression === parent
+    && ["get", "has", "entries", "keys", "values"].includes(parent.name.text)
+    && isSupportedRetainedBindingContainerType(project, current)
+  ) {
+    return paths;
+  }
+
+  return isReadLikeUse(current) ? paths : undefined;
 }
 
 function isSymbolDeclaredWithinFunction(symbol: ts.Symbol, declaration: ts.FunctionLikeDeclaration): boolean {
@@ -260,7 +381,7 @@ function isExplicitlyPureIgnoredResultCall(expression: ts.CallExpression): boole
 export function getIgnoredResultReason(
   project: ProjectContext,
   expression: ts.Expression,
-  functionReturnSummaries: Map<string, CallableReturnSummary>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   caches: ValueAnalysisCaches,
 ): string | undefined {
   const node = unwrapExpression(expression);
@@ -653,7 +774,8 @@ export function summarizeHelperParameterUse(
         }
 
         if (isTrackedAliasIdentifier(candidate)) {
-          capturesTrackedAlias = true;
+          const parent = candidate.parent;
+          capturesTrackedAlias = !ts.isPropertyAccessExpression(parent) || parent.expression !== candidate;
           return;
         }
 
@@ -708,6 +830,11 @@ export function summarizeHelperParameterUse(
 
     if (ts.isIdentifier(node) && isTrackedAliasIdentifier(node)) {
       const parent = node.parent;
+
+      const exactReadPaths = getExactHelperReadPaths(project, node);
+      if (exactReadPaths) {
+        exactReadPaths.forEach((path) => addHelperParameterExactReadPath(summary, path));
+      }
 
       if (
         ts.isShorthandPropertyAssignment(parent)
