@@ -143,6 +143,11 @@ export interface HelperProjectedUsagePlan {
   elementSymbolKey: string;
 }
 
+export interface HigherOrderCallableReturnSummary {
+  exactReadPaths: PathSegment[][];
+  boundaryReason?: string;
+}
+
 export interface ObjectPathSourceFileContext {
   sourceFile: ts.SourceFile;
   projectionBindings: Map<string, ArrayProjectionBinding>;
@@ -157,6 +162,7 @@ export interface ObjectPathSourceFileContext {
   parameterSummaryCache: Map<string, HelperParameterSummary | null>;
   helperExactAppendPlanCache: Map<string, HelperExactAppendPlan[] | null>;
   helperProjectedUsagePlanCache: Map<string, HelperProjectedUsagePlan[] | null>;
+  higherOrderCallableReturnSummaryCache: Map<string, HigherOrderCallableReturnSummary | null>;
 }
 
 export interface ObjectPathStageContext {
@@ -235,6 +241,7 @@ export function createObjectPathStageContext(
         parameterSummaryCache: new Map<string, HelperParameterSummary | null>(),
         helperExactAppendPlanCache: new Map<string, HelperExactAppendPlan[] | null>(),
         helperProjectedUsagePlanCache: new Map<string, HelperProjectedUsagePlan[] | null>(),
+        higherOrderCallableReturnSummaryCache: new Map<string, HigherOrderCallableReturnSummary | null>(),
       };
     },
   };

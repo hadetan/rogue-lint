@@ -1562,6 +1562,33 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped).toHaveLength(0);
   });
 
+  it("preserves higher-order helper returns through supported collection pipelines", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("higher-order-helper-return-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && ["label", "location", "reason"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped).toHaveLength(0);
+  });
+
+  it("keeps unsupported higher-order callable carriers conservative instead of reporting guessed dead paths", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("higher-order-helper-return-boundary-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && ["label", "location", "dead"].includes(finding.entity.name)
+    )).toBe(false);
+  });
+
   it("keeps public returned issue objects and collected keys live in library mode", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
