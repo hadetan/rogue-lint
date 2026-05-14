@@ -4,7 +4,7 @@ import type {
 } from "../../types.js";
 import type { AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import { createObjectPathStageContext } from "./object-paths/context.js";
+import { createObjectPathStageContext } from "./object-paths/stage-context.js";
 import { finalizeObjectPathFindings } from "./object-paths/reporting.js";
 import { visitObjectPathSourceFile } from "./object-paths/visitor.js";
 

@@ -27,16 +27,18 @@ import {
   getStaticGlobalThisPropertyName,
 } from "./bindings.js";
 import {
-  getObjectBackedRetainedBindingSlotKeyFromAccess,
   isExactArrayCallbackMethod,
+} from "./projection-support.js";
+import {
+  getObjectBackedRetainedBindingSlotKeyFromAccess,
   isSupportedRetainedBindingContainerType,
-} from "./access.js";
+} from "./retained-bindings.js";
 import {
   getAnalyzableCallableBinding,
   getAnalyzableCallableBindingFromDeclaration,
   resolveAnalyzableFunctionDeclaration,
 } from "./callables.js";
-import { isTrackablePureExpression } from "./graph.js";
+import { isTrackablePureExpression } from "./trackable-structures.js";
 import {
   ASSIGNMENT_OPERATORS,
   getStaticObjectLiteralPropertyName,

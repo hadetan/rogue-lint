@@ -17,7 +17,7 @@ import {
   type AnalysisState,
 } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import { isTrackablePureExpression } from "./graph.js";
+import { isTrackablePureExpression } from "./trackable-structures.js";
 import type {
   ValueAccess,
 } from "./model.js";

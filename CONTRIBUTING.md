@@ -64,6 +64,29 @@ In practice, `test/analyze.test.ts` and `test/fixtures/` are the best map of wha
 
 ## Contribution principles
 
+### Prefer owner-based modules over generic sinks
+
+When reorganizing code for maintainability:
+
+- move shared helpers and constants into the domain that owns their behavior
+- avoid creating or expanding global `util`, `helpers`, or `const` buckets when the concern has a real owner
+- keep one-off local literals or tiny implementation-only types local when promoting them would reduce readability
+
+The goal is clearer ownership, not just fewer lines in a file.
+
+### Split hotspots by responsibility, not just by size
+
+Large files are a problem here when they mix invariants or reasons to change, not only when they exceed a line-count threshold.
+
+Prefer refactors that:
+
+- keep stage entry modules thin
+- extract behavior-heavy rule families into focused siblings
+- preserve stable entry surfaces while moving internals behind them
+- rename only when a new name explains ownership better than the old one
+
+For the current maintainability effort, the main hotspots are `src/engine/tracking/object-paths/visitor.ts`, `src/engine/tracking/access.ts`, and `src/engine/tracking/graph.ts`.
+
 ### Prefer conservative correctness over aggressive coverage
 
 False positives damage trust faster than missing one more edge case.
@@ -106,6 +129,18 @@ Recommended workflow for a new analysis rule or boundary refinement:
 6. Run broader validation before finishing.
 
 That order matters. `rogue-lint` behavior is easiest to reason about when the expected outcome is locked before the implementation expands.
+
+## Working on maintainability refactors
+
+Behavior-preserving refactors should follow the same trust-sensitive workflow as analyzer changes.
+
+1. Identify the smallest ownership seam or hotspot slice.
+2. Preserve stable public or orchestration-facing surfaces where possible.
+3. Move shared vocabulary and types into the smallest stable owner.
+4. Add or update JSDoc only where the touched surface carries a real contract or invariant.
+5. Run the narrowest validation that can falsify the slice before widening scope.
+
+Do not combine broad naming churn, structure changes, and semantic changes in one pass unless the narrower split is impossible.
 
 ## Adding or changing fixtures
 
@@ -178,6 +213,13 @@ Avoid statements like:
 - "rogue-lint fully understands"
 - "rogue-lint guarantees"
 - "this always works"
+
+For maintainability docs, prefer language that explains ownership and invariants directly, such as:
+
+- "this module owns"
+- "keep this entrypoint thin"
+- "move repeated vocabulary into the owning domain"
+- "validate this slice before widening scope"
 
 This project benefits from precise language more than promotional language.
 

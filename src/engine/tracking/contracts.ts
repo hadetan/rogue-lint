@@ -1,7 +1,16 @@
 import type { TrackedObject } from "../../types.js";
 import type { CallableReturnSummary, TrackedObjectBinding } from "./model.js";
 
-export type TrackingStage = "value-liveness" | "object-paths";
+export const VALUE_LIVENESS_TRACKING_STAGE = "value-liveness";
+export const OBJECT_PATHS_TRACKING_STAGE = "object-paths";
+const _TRACKING_STAGES = [VALUE_LIVENESS_TRACKING_STAGE, OBJECT_PATHS_TRACKING_STAGE] as const;
+
+export const TRACKING_BINDINGS_OWNER = "binding-convergence";
+export const TRACKING_RETURN_SUMMARY_OWNER = "return-summary-convergence";
+export const TRACKING_ALIAS_OWNER = "alias-state";
+export const TRACKING_BOUNDARY_OWNER = "boundary-state";
+
+export type TrackingStage = (typeof _TRACKING_STAGES)[number];
 
 type TrackingContractDiagnosticCode =
   | "convergence-warning"
@@ -20,42 +29,42 @@ type TrackingSeedPhaseArtifacts = {
 };
 
 type TrackingBindingsSurface = {
-  readonly owner: "binding-convergence";
+  readonly owner: typeof TRACKING_BINDINGS_OWNER;
   readonly bySymbolId: ReadonlyMap<string, TrackedObjectBinding>;
 };
 
 type MutableTrackingBindingsSurface = {
-  readonly owner: "binding-convergence";
+  readonly owner: typeof TRACKING_BINDINGS_OWNER;
   readonly bySymbolId: Map<string, TrackedObjectBinding>;
 };
 
 type TrackingReturnSummarySurface = {
-  readonly owner: "return-summary-convergence";
+  readonly owner: typeof TRACKING_RETURN_SUMMARY_OWNER;
   readonly byCallableId: ReadonlyMap<string, CallableReturnSummary>;
 };
 
 type MutableTrackingReturnSummarySurface = {
-  readonly owner: "return-summary-convergence";
+  readonly owner: typeof TRACKING_RETURN_SUMMARY_OWNER;
   readonly byCallableId: Map<string, CallableReturnSummary>;
 };
 
 type TrackingAliasSurface = {
-  readonly owner: "alias-state";
+  readonly owner: typeof TRACKING_ALIAS_OWNER;
   readonly trackedObjectsById: ReadonlyMap<string, TrackedObject>;
 };
 
 type MutableTrackingAliasSurface = {
-  readonly owner: "alias-state";
+  readonly owner: typeof TRACKING_ALIAS_OWNER;
   readonly trackedObjectsById: Map<string, TrackedObject>;
 };
 
 type TrackingBoundarySurface = {
-  readonly owner: "boundary-state";
+  readonly owner: typeof TRACKING_BOUNDARY_OWNER;
   readonly trackedObjectsById: ReadonlyMap<string, TrackedObject>;
 };
 
 type MutableTrackingBoundarySurface = {
-  readonly owner: "boundary-state";
+  readonly owner: typeof TRACKING_BOUNDARY_OWNER;
   readonly trackedObjectsById: Map<string, TrackedObject>;
 };
 
@@ -104,13 +113,13 @@ export type MutableTrackingSnapshot = {
 };
 
 type ValueLivenessTrackingStageArtifacts = {
-  stage: "value-liveness";
+  stage: typeof VALUE_LIVENESS_TRACKING_STAGE;
   returnSummaries: TrackingReturnSummarySurface;
   runtimeSummary: TrackingRuntimeSummary;
 };
 
 type ObjectPathTrackingStageArtifacts = {
-  stage: "object-paths";
+  stage: typeof OBJECT_PATHS_TRACKING_STAGE;
   bindings: TrackingBindingsSurface;
   returnSummaries: TrackingReturnSummarySurface;
   aliases: TrackingAliasSurface;

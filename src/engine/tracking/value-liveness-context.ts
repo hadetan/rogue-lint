@@ -1,6 +1,7 @@
 import type ts from "typescript";
 
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { VALUE_LIVENESS_TRACKING_STAGE } from "./contracts.js";
 import type {
   CallableReturnSummary,
   TrackedValueBinding,
@@ -24,7 +25,7 @@ export function createValueLivenessStageContext(
   reachableFiles: Set<string>,
   artifacts: AnalysisArtifacts,
 ): ValueLivenessStageContext {
-  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts("value-liveness");
+  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts(VALUE_LIVENESS_TRACKING_STAGE);
 
   return {
     reachableFiles,
