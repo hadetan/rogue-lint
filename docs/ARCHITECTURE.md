@@ -146,6 +146,7 @@ Keep internal project, graph, suppression, and tracked-object types here when th
 Owns report rendering.
 
 - `render-result.ts`: stable JSON output and grouped text output
+- grouped text leaves stay concise and can attach editor navigation when the terminal supports it; flat benchmark record sections keep their own formatter
 
 Formatting changes belong here, not in CLI or analyzer modules.
 

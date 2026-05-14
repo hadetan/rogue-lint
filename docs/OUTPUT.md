@@ -17,7 +17,7 @@ These buckets are the trust model. `rogue-lint` is not trying to flatten everyth
 
 ## Text Output
 
-Example text report:
+Example text report in a supported VS Code terminal session:
 
 ```text
 rogue-lint
@@ -31,22 +31,24 @@ Skipped: 2
 Findings:
 unused-export
   src/lib.ts
-    unused-export                src/lib.ts:2:14 unusedExport - exported declaration has no non-declaration references outside its declaring file
+    unusedExport - exported declaration has no non-declaration references outside its declaring file
 unused-file
   src/unused.ts
-    unused-file                  src/unused.ts:1:1 unused.ts - file is unreachable from configured entrypoints
+    unused.ts - file is unreachable from configured entrypoints
 
 Skipped:
 object-key
   src/index.ts
-    object-key                   src/index.ts:24:3 maybe - computed property access prevents exact path analysis
+    maybe - computed property access prevents exact path analysis
 ```
 
 Current text rendering behavior:
 
 - summary lines appear first
 - `Findings` and `Skipped` are grouped by kind and then by file
-- each line includes the reason string inline
+- grouped leaf rows show the entity label and reason inline, without repeating the parent kind or file path
+- supported VS Code terminal sessions can render the leaf label as a navigable link to the exact file, line, and column, so visible `line:column` text is omitted in that mode
+- plain-text fallback rows prefix the leaf with visible `line:column` coordinates beneath the enclosing file header
 - `Diagnostics` appear at the end when present
 - `Kept` appears only when `--kept` is passed to the CLI
 

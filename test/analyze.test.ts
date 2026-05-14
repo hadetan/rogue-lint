@@ -733,6 +733,47 @@ describe("rogue-lint analyzer", () => {
     expect(rendered).toContain("Skipped: 0");
   });
 
+  it("renders concise grouped leaf rows in plain-text fallback mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("app-basic"),
+      format: "json",
+    });
+
+    const finding = result.findings.find((entry) => entry.kind === "unused-export" && entry.entity.name === "unusedExport");
+    expect(finding).toBeDefined();
+    if (!finding) {
+      throw new Error("Expected unusedExport finding");
+    }
+
+    const rendered = renderResult(result, "text", true, { supportsTerminalLinks: false });
+
+    expect(rendered).toContain(`    ${finding.entity.location.line}:${finding.entity.location.column} ${finding.entity.name} - ${finding.reason}`);
+    expect(rendered).not.toContain(`    ${finding.kind.padEnd(28)} ${finding.entity.location.file}:${finding.entity.location.line}:${finding.entity.location.column}`);
+  });
+
+  it("renders grouped leaf labels as VS Code terminal links when supported", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("app-basic"),
+      format: "json",
+    });
+
+    const finding = result.findings.find((entry) => entry.kind === "unused-export" && entry.entity.name === "unusedExport");
+    expect(finding).toBeDefined();
+    if (!finding) {
+      throw new Error("Expected unusedExport finding");
+    }
+
+    const absolutePath = path.resolve(result.target, finding.entity.location.file).replace(/\\/g, "/");
+    const uriPath = absolutePath.startsWith("/") ? absolutePath : `/${absolutePath}`;
+    const target = `vscode://file${encodeURI(uriPath)}:${finding.entity.location.line}:${finding.entity.location.column}`;
+    const rendered = renderResult(result, "text", true, { supportsTerminalLinks: true });
+
+    expect(rendered).toContain(`\u001B]8;;${target}\u0007${finding.entity.name}\u001B]8;;\u0007 - ${finding.reason}`);
+    expect(rendered).not.toContain(`    ${finding.entity.location.line}:${finding.entity.location.column} ${finding.entity.name} - ${finding.reason}`);
+  });
+
   it("hides kept output in CLI text mode unless --kept is passed", async () => {
     const fixture = fixturePath("app-basic");
     const defaultStdout: string[] = [];

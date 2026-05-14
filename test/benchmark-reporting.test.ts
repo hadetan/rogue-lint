@@ -208,6 +208,32 @@ describe("benchmark reporting", () => {
     );
   });
 
+  it("reuses concise grouped analysis detail inside the benchmark report", () => {
+    const target = createAnalyzedTarget(
+      "detail-target",
+      "library-public-surface",
+      [createFinding("unused-local", "value", "src/example.ts")],
+      [],
+      [],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    const report = renderBenchmarkReport(createWorkspaceRun([target]));
+
+    expect(report).toContain("Analysis Detail:");
+    expect(report).toContain("unused-local\n  src/example.ts\n    1:1 value - value is unused");
+    expect(report).not.toContain("unused-local                  src/example.ts:1:1 value - value is unused");
+  });
+
   it("labels coarse accepted debt anchors in the report", () => {
     const target = createAnalyzedTarget(
       "coarse-target",
