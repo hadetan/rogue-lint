@@ -25,7 +25,7 @@ import { unwrapExpression } from "../syntax.js";
 interface ReturnedStructureHandlerOptions {
   project: ProjectContext;
   publicSurfaceIds: ReadonlySet<string>;
-  publicCallableIds: ReadonlySet<string>;
+  publiclyReachableCallableIds: ReadonlySet<string>;
   trackedBySymbolId: Map<string, TrackedObjectBinding>;
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>;
   trackedObjectsById: Map<string, TrackedObject>;
@@ -44,6 +44,95 @@ interface ReturnedStructureHandlerOptions {
   ) => void;
 }
 
+interface PubliclyReachableCallableIdsOptions {
+  publicSurfaceIds: ReadonlySet<string>;
+  publicCallableIds: ReadonlySet<string>;
+  trackedBySymbolId: ReadonlyMap<string, TrackedObjectBinding>;
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>;
+  trackedObjectsById: ReadonlyMap<string, TrackedObject>;
+}
+
+export function computePubliclyReachableCallableIds(
+  options: PubliclyReachableCallableIdsOptions,
+): Set<string> {
+  const {
+    publicSurfaceIds,
+    publicCallableIds,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  } = options;
+
+  const reachable = new Set(publicCallableIds);
+  const pendingBindings: TrackedObjectBinding[] = [];
+  const visitedBindings = new Set<string>();
+
+  const enqueueBinding = (binding: TrackedObjectBinding | undefined): void => {
+    if (!binding) {
+      return;
+    }
+
+    const key = `${binding.trackedObject.id}:${serializePath(binding.prefix)}`;
+    if (visitedBindings.has(key)) {
+      return;
+    }
+
+    visitedBindings.add(key);
+    pendingBindings.push(binding);
+  };
+
+  const enqueueCallable = (symbolKey: string): void => {
+    if (!reachable.has(symbolKey)) {
+      reachable.add(symbolKey);
+    }
+
+    enqueueBinding(getCallableReturnBinding(functionReturnSummaries.get(symbolKey)));
+  };
+
+  for (const symbolKey of publicCallableIds) {
+    enqueueBinding(getCallableReturnBinding(functionReturnSummaries.get(symbolKey)));
+  }
+
+  for (const binding of trackedBySymbolId.values()) {
+    if (publicSurfaceIds.has(binding.trackedObject.rootEntity.id)) {
+      enqueueBinding(binding);
+    }
+  }
+
+  while (pendingBindings.length > 0) {
+    const binding = pendingBindings.pop();
+    if (!binding) {
+      continue;
+    }
+
+    const prefix = serializePath(binding.prefix);
+
+    for (const [joinedPath, callable] of binding.trackedObject.callablePaths.entries()) {
+      if (isSerializedPathWithin(joinedPath, prefix)) {
+        enqueueCallable(callable.symbolKey);
+      }
+    }
+
+    for (const [aliasPath, alias] of binding.trackedObject.exactPathAliases.entries()) {
+      if (!isSerializedPathWithin(aliasPath, prefix)) {
+        continue;
+      }
+
+      const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
+      if (!sourceTrackedObject) {
+        continue;
+      }
+
+      enqueueBinding({
+        trackedObject: sourceTrackedObject,
+        prefix: alias.sourcePath,
+      });
+    }
+  }
+
+  return reachable;
+}
+
 /**
  * Creates the returned-structure and aggregate-literal helpers used by object-path analysis.
  */
@@ -55,7 +144,7 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
   const {
     project,
     publicSurfaceIds,
-    publicCallableIds,
+    publiclyReachableCallableIds,
     trackedBySymbolId,
     functionReturnSummaries,
     trackedObjectsById,
@@ -214,77 +303,6 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
       && (publiclyReachableCallableIds.has(callable.symbolKey) || isNestedPublicHelperCallable(declaration)),
     );
   };
-
-  const publiclyReachableCallableIds = (() => {
-    const reachable = new Set(publicCallableIds);
-    const pendingBindings: TrackedObjectBinding[] = [];
-    const visitedBindings = new Set<string>();
-
-    const enqueueBinding = (binding: TrackedObjectBinding | undefined): void => {
-      if (!binding) {
-        return;
-      }
-
-      const key = `${binding.trackedObject.id}:${serializePath(binding.prefix)}`;
-      if (visitedBindings.has(key)) {
-        return;
-      }
-
-      visitedBindings.add(key);
-      pendingBindings.push(binding);
-    };
-
-    const enqueueCallable = (symbolKey: string): void => {
-      if (!reachable.has(symbolKey)) {
-        reachable.add(symbolKey);
-      }
-
-      enqueueBinding(getCallableReturnBinding(functionReturnSummaries.get(symbolKey)));
-    };
-
-    for (const symbolKey of publicCallableIds) {
-      enqueueBinding(getCallableReturnBinding(functionReturnSummaries.get(symbolKey)));
-    }
-
-    for (const binding of trackedBySymbolId.values()) {
-      if (publicSurfaceIds.has(binding.trackedObject.rootEntity.id)) {
-        enqueueBinding(binding);
-      }
-    }
-
-    while (pendingBindings.length > 0) {
-      const binding = pendingBindings.pop();
-      if (!binding) {
-        continue;
-      }
-
-      const prefix = serializePath(binding.prefix);
-
-      for (const [joinedPath, callable] of binding.trackedObject.callablePaths.entries()) {
-        if (isSerializedPathWithin(joinedPath, prefix)) {
-          enqueueCallable(callable.symbolKey);
-        }
-      }
-
-      for (const [aliasPath, alias] of binding.trackedObject.exactPathAliases.entries()) {
-        if (!isSerializedPathWithin(aliasPath, prefix)) {
-          continue;
-        }
-
-        const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
-        if (!sourceTrackedObject) {
-          continue;
-        }
-
-        enqueueBinding({
-          trackedObject: sourceTrackedObject,
-          prefix: alias.sourcePath,
-        });
-      }
-    }
-
-    return reachable;
-  })();
 
   const getPublicReturnBinding = (node: ts.Node): TrackedObjectBinding | undefined => {
     if (project.config.value.mode !== "library") {

@@ -29,6 +29,18 @@ const EXPECTED_SELF_HOST_FINDINGS: string[] = [];
 const EXPECTED_SELF_HOST_SKIPS: string[] = [];
 const RETURNED_CONTEXT_USED_FIELD_NAMES = ["processors", "seen"];
 const OPAQUE_CALLBACK_USED_FIELD_NAMES = ["seen"];
+let selfHostLibraryResultPromise: ReturnType<typeof analyzeProject> | undefined;
+
+function getSelfHostLibraryResult() {
+  selfHostLibraryResultPromise ??= analyzeProject({
+    cwd: process.cwd(),
+    targetPath: process.cwd(),
+    format: "json",
+    mode: "library",
+  });
+
+  return selfHostLibraryResultPromise;
+}
 
 describe("rogue-lint analyzer", () => {
   it("assigns every public finding kind to exactly one capability owner", () => {
@@ -1896,12 +1908,7 @@ describe("rogue-lint analyzer", () => {
   });
 
   it("does not surface helper bookkeeping residuals during self-host analysis", async () => {
-    const result = await analyzeProject({
-      cwd: process.cwd(),
-      targetPath: process.cwd(),
-      format: "json",
-      mode: "library",
-    });
+    const result = await getSelfHostLibraryResult();
 
     expect(result.findings.some((finding) =>
       finding.kind === "unused-array-element"
@@ -1936,12 +1943,7 @@ describe("rogue-lint analyzer", () => {
   }, 15000);
 
   it("enforces the normalized self-host library-mode zero-gap surface", async () => {
-    const result = await analyzeProject({
-      cwd: process.cwd(),
-      targetPath: process.cwd(),
-      format: "json",
-      mode: "library",
-    });
+    const result = await getSelfHostLibraryResult();
 
     expect(result.diagnostics).toHaveLength(0);
     expect(getCapabilityCoverageGapDiagnostics(result)).toHaveLength(0);
@@ -1953,12 +1955,7 @@ describe("rogue-lint analyzer", () => {
   }, 15000);
 
   it("keeps helper and finite capability boundary debt out of the normalized self-host surface", async () => {
-    const result = await analyzeProject({
-      cwd: process.cwd(),
-      targetPath: process.cwd(),
-      format: "json",
-      mode: "library",
-    });
+    const result = await getSelfHostLibraryResult();
     const ledger = getAnalysisCapabilityLedger(result);
 
     expect(

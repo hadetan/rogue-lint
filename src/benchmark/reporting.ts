@@ -16,16 +16,30 @@ import type {
 const REPORT_KIND_WIDTH = 28;
 const COARSE_MATCHER_NOTE = "coarse matcher: same-file churn is surfaced only in the raw records below";
 
+function qualifyLabel(owner: string | undefined, name: string): string {
+  if (!owner || name === owner || name.startsWith(`${owner}.`) || name.startsWith(`${owner}[`)) {
+    return name;
+  }
+
+  return name.startsWith("[") ? `${owner}${name}` : `${owner}.${name}`;
+}
+
 function formatFinding(record: FindingRecord): string {
-  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.entity.location.file}:${record.entity.location.line}:${record.entity.location.column} ${record.entity.name} - ${record.reason}`;
+  const label = record.entity.kind === "file"
+    ? record.entity.name
+    : qualifyLabel(record.entity.owner, record.entity.name);
+
+  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.entity.location.file}:${record.entity.location.line}:${record.entity.location.column} ${label} - ${record.reason}`;
 }
 
 function formatAudit(record: AuditRecord): string {
+  const label = qualifyLabel(record.owner, record.name);
+
   if (!record.location) {
-    return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.name} - ${record.reason}`;
+    return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${label} - ${record.reason}`;
   }
 
-  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.location.file}:${record.location.line}:${record.location.column} ${record.name} - ${record.reason}`;
+  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.location.file}:${record.location.line}:${record.location.column} ${label} - ${record.reason}`;
 }
 
 function formatDiagnostic(record: DiagnosticRecord): string {

@@ -76,9 +76,10 @@ describe("benchmark harness", () => {
           url: "https://github.com/example/example-repo",
           ref: "main",
         },
-        localCorpusPath: path.join(process.cwd(), "__references", "get-shit-done"),
+        localCorpusPath: "benchmark/corpus/project-reference-root",
         expectations: {},
       });
+      fs.mkdirSync(path.join(workspaceRoot, "benchmark", "corpus", "project-reference-root"), { recursive: true });
 
       const result = await runWorkspaceBenchmark(workspaceRoot);
 

@@ -105,6 +105,17 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     };
   };
 
+  const cloneReturnSummary = (summary: CallableReturnSummary): CallableReturnSummary => {
+    if (summary.kind === "value" || summary.kind === "opaque") {
+      return { kind: summary.kind };
+    }
+
+    return {
+      kind: summary.kind,
+      binding: summary.binding,
+    };
+  };
+
   const resolveStructuredReturnAliasCallable = (
     declaration: ts.VariableDeclaration,
   ): AnalyzableCallableBinding | undefined => {
@@ -192,20 +203,20 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     next: CallableReturnSummary,
   ): CallableReturnSummary | undefined => {
     if (!current) {
-      return next;
+      return cloneReturnSummary(next);
     }
 
     if (current.kind === "value" && next.kind === "value") {
-      return current;
+      return { kind: "value" };
     }
 
     const currentBinding = getCallableReturnBinding(current);
     const nextBinding = getCallableReturnBinding(next);
     if (!currentBinding) {
-      return next;
+      return cloneReturnSummary(next);
     }
     if (!nextBinding) {
-      return current;
+      return cloneReturnSummary(current);
     }
 
     if (!sameTrackedBinding(currentBinding, nextBinding)) {
@@ -216,7 +227,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       return { kind: "returned-alias", binding: currentBinding };
     }
 
-    return current;
+    return cloneReturnSummary(current);
   };
 
   const summarizeCallbackReturnExpression = (
@@ -261,7 +272,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     };
 
     ts.forEachChild(callback.body, visit);
-    return !unsupported && sawReturn ? summary : undefined;
+    return !unsupported && sawReturn && summary ? cloneReturnSummary(summary) : undefined;
   };
 
   const summarizeReturnExpression = (
@@ -326,7 +337,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         trackedObjectsById,
       );
       const summary = nestedCallable ? functionReturnSummaries.get(nestedCallable.symbolKey) : undefined;
-      return summary && summary.kind !== "opaque" ? summary : undefined;
+      return summary && summary.kind !== "opaque" ? cloneReturnSummary(summary) : undefined;
     }
 
     if (
@@ -485,7 +496,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       return undefined;
     }
 
-    return unsupported ? { kind: "opaque" } : summary ?? { kind: "opaque" };
+    return unsupported ? { kind: "opaque" } : summary ? cloneReturnSummary(summary) : { kind: "opaque" };
   };
 
   return {

@@ -325,6 +325,106 @@ describe("benchmark reporting", () => {
     expect(report).toContain("forbidden computed-property skip");
   });
 
+  it("renders owner-qualified skip labels when reporting owner-scoped skip matches", () => {
+    const target = createAnalyzedTarget(
+      "owner-qualified-must-not-skip-target",
+      "library-public-surface",
+      [],
+      [
+        {
+          id: "skip-1",
+          kind: "object-key",
+          name: "value",
+          owner: "validate()",
+          reason: "computed property access prevents exact path analysis",
+          category: "computed-property-access",
+          location: {
+            file: "src/example.ts",
+            line: 1,
+            column: 1,
+          },
+        },
+        {
+          id: "skip-2",
+          kind: "object-key",
+          name: "value",
+          owner: "handleOptionalResult",
+          reason: "computed property access prevents exact path analysis",
+          category: "computed-property-access",
+          location: {
+            file: "src/example.ts",
+            line: 2,
+            column: 1,
+          },
+        },
+      ],
+      [],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [
+          {
+            label: "validate skip must be gone",
+            category: "computed-property-access",
+            file: "src/example.ts",
+            name: "value",
+            owner: "validate()",
+            maxCount: 0,
+          },
+        ],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    const report = renderBenchmarkReport(createWorkspaceRun([target]));
+
+    expect(report).toContain("validate().value - computed property access prevents exact path analysis");
+    expect(report).toContain("handleOptionalResult.value - computed property access prevents exact path analysis");
+    expect(report).toContain("1:1 validate().value - computed property access prevents exact path analysis");
+    expect(report).toContain("2:1 handleOptionalResult.value - computed property access prevents exact path analysis");
+  });
+
+  it("renders owner-qualified finding labels when reporting owner-scoped finding matches", () => {
+    const finding = createFinding("unused-object-key", "issues", "src/example.ts");
+    finding.entity.owner = "validate()";
+
+    const target = createAnalyzedTarget(
+      "owner-qualified-must-not-find-target",
+      "library-public-surface",
+      [finding],
+      [],
+      [],
+      {
+        mustFind: [],
+        mustNotFind: [
+          {
+            label: "validate issues must be gone",
+            kind: "unused-object-key",
+            file: "src/example.ts",
+            name: "issues",
+            owner: "validate()",
+            maxCount: 0,
+          },
+        ],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    const report = renderBenchmarkReport(createWorkspaceRun([target]));
+
+    expect(report).toContain("src/example.ts:1:1 validate().issues - issues is unused");
+    expect(report).toContain("1:1 validate().issues - issues is unused");
+  });
+
   it("does not surface required skip anchors as gap worklist debt", () => {
     const skip: AuditRecord = {
       id: "skip-1",

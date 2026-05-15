@@ -37,7 +37,7 @@ function createFindingLeafPresentation(finding: FindingRecord): GroupedLeafPrese
 
 function createAuditLeafPresentation(record: AuditRecord): GroupedLeafPresentation {
   return {
-    label: record.name,
+    label: qualifyLabel(record.owner, record.name),
     location: record.location,
     reason: record.reason,
   };

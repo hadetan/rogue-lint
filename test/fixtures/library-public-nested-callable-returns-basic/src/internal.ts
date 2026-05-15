@@ -39,7 +39,7 @@ function safeParseAsync(input: unknown): Promise<ParseResult> {
 
 export const publicSchema = {} as {
   "~standard": {
-    validate(input: unknown): ValidationResult;
+    validate(input: unknown): ValidationResult | Promise<ValidationResult>;
   };
 };
 

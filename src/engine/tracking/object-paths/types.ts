@@ -79,7 +79,7 @@ export interface ObjectPathStageContext {
   project: ProjectContext;
   reachableFiles: Set<string>;
   publicSurfaceIds: Set<string>;
-  publicCallableIds: Set<string>;
+  publiclyReachableCallableIds: Set<string>;
   state: AnalysisState;
   suppressionContext: SuppressionContext;
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>;

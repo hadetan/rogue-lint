@@ -16,6 +16,7 @@ import type {
   TrackedObjectBinding,
 } from "../model.js";
 import type { ObjectPathOverlayState } from "./overlay.js";
+import { computePubliclyReachableCallableIds } from "./returned-structures.js";
 import type {
   FiniteLookupCandidate,
   HelperExactAppendPlan,
@@ -171,12 +172,19 @@ export function createObjectPathStageContext(
       cloneCallableReturnSummaryForObjectPathStage(summary, trackedObjectRegistry),
     ]),
   );
+  const publiclyReachableCallableIds = computePubliclyReachableCallableIds({
+    publicSurfaceIds: artifacts.publicSurfaceIds,
+    publicCallableIds: artifacts.publicCallableIds,
+    trackedBySymbolId: trackedBindingRegistry,
+    functionReturnSummaries,
+    trackedObjectsById: trackedObjectRegistry,
+  });
 
   return {
     project,
     reachableFiles,
     publicSurfaceIds: artifacts.publicSurfaceIds,
-    publicCallableIds: artifacts.publicCallableIds,
+    publiclyReachableCallableIds,
     state,
     suppressionContext,
     functionReturnSummaries,
