@@ -135,6 +135,7 @@ function describeFindingMatcherPrecision(matcher: BenchmarkFindingMatcher): stri
 function describeSkipMatcherPrecision(matcher: BenchmarkSkipMatcher): string | undefined {
   return matcher.id === undefined
     && matcher.name === undefined
+    && matcher.owner === undefined
     && matcher.reasonIncludes === undefined
     ? COARSE_MATCHER_NOTE
     : undefined;

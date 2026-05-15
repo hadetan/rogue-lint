@@ -44,6 +44,7 @@ export interface BenchmarkSkipMatcher extends BenchmarkCountMatcherFields {
   kind?: EntityKind;
   file?: string;
   name?: string;
+  owner?: string;
   category?: SkipCategory;
   reasonIncludes?: string;
 }

@@ -214,6 +214,7 @@ export function addSkipped(
     id: entity.id,
     kind: entity.kind,
     name: entity.name,
+    owner: entity.owner,
     reason,
     category,
     location: entity.location,

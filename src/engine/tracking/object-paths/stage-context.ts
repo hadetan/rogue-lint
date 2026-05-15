@@ -175,6 +175,7 @@ export function createObjectPathStageContext(
   return {
     project,
     reachableFiles,
+    publicSurfaceIds: artifacts.publicSurfaceIds,
     publicCallableIds: artifacts.publicCallableIds,
     state,
     suppressionContext,

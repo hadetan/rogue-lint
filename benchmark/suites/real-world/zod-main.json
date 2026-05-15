@@ -197,6 +197,7 @@
         "label": "v4 ~standard validate wrapper must not escape returned issue arrays as returned objects",
         "category": "returned-object",
         "file": "src/v4/core/schemas.ts",
+        "owner": "validate()",
         "name": "issues",
         "maxCount": 0
       },

@@ -33,6 +33,7 @@ function createSkip(overrides: Partial<AuditRecord> = {}): AuditRecord {
     id: overrides.id ?? "skip-1",
     kind: overrides.kind ?? "object-key",
     name: overrides.name ?? "value",
+    owner: overrides.owner,
     reason: overrides.reason ?? "computed property access is not modeled exactly",
     category: overrides.category ?? "computed-property-access",
     location: overrides.location ?? {
@@ -257,6 +258,39 @@ describe("benchmark expectation evaluation", () => {
     expect(evaluation.required.mustNotSkip.violations[0]?.actualCount).toBe(1);
     expect(evaluation.unexpected.skips).toHaveLength(0);
     expect(evaluation.failed).toBe(true);
+  });
+
+  it("matches skip owners when negative skip anchors need owner precision", () => {
+    const evaluation = evaluateBenchmarkExpectations(
+      createAnalysisResult([], [
+        createSkip({ id: "skip-1", owner: "validate()" }),
+        createSkip({ id: "skip-2", owner: "handleOptionalResult" }),
+      ], []),
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [
+          {
+            label: "validate skip must be gone",
+            category: "computed-property-access",
+            file: "src/example.ts",
+            name: "value",
+            owner: "validate()",
+            maxCount: 0,
+          },
+        ],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    expect(evaluation.required.mustNotSkip.violations).toHaveLength(1);
+    expect(evaluation.required.mustNotSkip.violations[0]?.actualCount).toBe(1);
+    expect(evaluation.required.mustNotSkip.violations[0]?.records).toHaveLength(1);
+    expect(evaluation.required.mustNotSkip.violations[0]?.records[0]?.owner).toBe("validate()");
   });
 
   it("keeps required skip anchors out of gap-priority and capability-priority debt signals", () => {

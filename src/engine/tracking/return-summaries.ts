@@ -187,6 +187,83 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     return getTrackableStructuredLiteral(declaration.initializer, { allowArraySpreadBoundary: true });
   };
 
+  const mergeReturnSummaries = (
+    current: CallableReturnSummary | undefined,
+    next: CallableReturnSummary,
+  ): CallableReturnSummary | undefined => {
+    if (!current) {
+      return next;
+    }
+
+    if (current.kind === "value" && next.kind === "value") {
+      return current;
+    }
+
+    const currentBinding = getCallableReturnBinding(current);
+    const nextBinding = getCallableReturnBinding(next);
+    if (!currentBinding) {
+      return next;
+    }
+    if (!nextBinding) {
+      return current;
+    }
+
+    if (!sameTrackedBinding(currentBinding, nextBinding)) {
+      return undefined;
+    }
+
+    if (current.kind !== next.kind && !(current.kind === "returned-alias" && next.kind === "returned-alias")) {
+      return { kind: "returned-alias", binding: currentBinding };
+    }
+
+    return current;
+  };
+
+  const summarizeCallbackReturnExpression = (
+    callable: AnalyzableCallableBinding,
+    callback: ts.FunctionExpression | ts.ArrowFunction,
+  ): CallableReturnSummary | undefined => {
+    if (!ts.isBlock(callback.body)) {
+      return summarizeReturnExpression(callable, callback.body);
+    }
+
+    let summary: CallableReturnSummary | undefined;
+    let sawReturn = false;
+    let unsupported = false;
+
+    const visit = (node: ts.Node): void => {
+      if (unsupported) {
+        return;
+      }
+
+      if (ts.isFunctionLike(node) && node !== callback) {
+        return;
+      }
+
+      if (ts.isReturnStatement(node) && node.expression) {
+        sawReturn = true;
+        const nextSummary = summarizeReturnExpression(callable, node.expression);
+        if (!nextSummary) {
+          unsupported = true;
+          return;
+        }
+
+        const merged = mergeReturnSummaries(summary, nextSummary);
+        if (!merged) {
+          unsupported = true;
+          return;
+        }
+
+        summary = merged;
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(callback.body, visit);
+    return !unsupported && sawReturn ? summary : undefined;
+  };
+
   const summarizeReturnExpression = (
     callable: AnalyzableCallableBinding,
     expression: ts.Expression,
@@ -211,6 +288,36 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     }
 
     if (ts.isCallExpression(expression)) {
+      if (
+        ts.isPropertyAccessExpression(expression.expression)
+        && (expression.expression.name.text === "then" || expression.expression.name.text === "catch")
+      ) {
+        let callbackSummary: CallableReturnSummary | undefined;
+
+        for (const argument of expression.arguments) {
+          const callback = unwrapExpression(argument);
+          if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
+            continue;
+          }
+
+          const nextSummary = summarizeCallbackReturnExpression(callable, callback);
+          if (!nextSummary) {
+            return undefined;
+          }
+
+          const merged = mergeReturnSummaries(callbackSummary, nextSummary);
+          if (!merged) {
+            return undefined;
+          }
+
+          callbackSummary = merged;
+        }
+
+        if (callbackSummary) {
+          return callbackSummary;
+        }
+      }
+
       const nestedCallable = resolveAnalyzableCallableBinding(
         project,
         expression.expression,

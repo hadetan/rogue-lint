@@ -54,6 +54,7 @@ function matchesSkip(record: AuditRecord, matcher: BenchmarkSkipMatcher): boolea
     && (matcher.kind === undefined || record.kind === matcher.kind)
     && (matcher.file === undefined || record.location?.file === matcher.file)
     && (matcher.name === undefined || record.name === matcher.name)
+    && (matcher.owner === undefined || record.owner === matcher.owner)
     && (matcher.category === undefined || record.category === matcher.category)
     && (matcher.reasonIncludes === undefined || record.reason.includes(matcher.reasonIncludes))
   );

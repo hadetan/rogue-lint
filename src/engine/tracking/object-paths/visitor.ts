@@ -90,6 +90,7 @@ export function visitObjectPathSourceFile(
 ): void {
   const {
     project,
+    publicSurfaceIds,
     publicCallableIds,
     overlayState,
     trackedBindingRegistry: trackedBySymbolId,
@@ -211,6 +212,7 @@ export function visitObjectPathSourceFile(
 
   const returnedStructureHandler = createReturnedStructureHandler({
     project,
+    publicSurfaceIds,
     publicCallableIds,
     trackedBySymbolId,
     functionReturnSummaries,

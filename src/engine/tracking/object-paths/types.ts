@@ -78,6 +78,7 @@ export interface ObjectPathSourceFileContext {
 export interface ObjectPathStageContext {
   project: ProjectContext;
   reachableFiles: Set<string>;
+  publicSurfaceIds: Set<string>;
   publicCallableIds: Set<string>;
   state: AnalysisState;
   suppressionContext: SuppressionContext;

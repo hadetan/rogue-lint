@@ -108,6 +108,7 @@ function parseSkipMatcher(value: unknown, location: string): BenchmarkSkipMatche
     kind: parseOptionalString(value.kind, `${location}.kind`) as BenchmarkSkipMatcher["kind"],
     file: parseOptionalString(value.file, `${location}.file`),
     name: parseOptionalString(value.name, `${location}.name`),
+    owner: parseOptionalString(value.owner, `${location}.owner`),
     category: parseOptionalString(value.category, `${location}.category`) as BenchmarkSkipMatcher["category"],
     reasonIncludes: parseOptionalString(value.reasonIncludes, `${location}.reasonIncludes`),
   };

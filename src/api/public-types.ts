@@ -162,6 +162,7 @@ export interface AuditRecord {
   id: string;
   kind: EntityKind;
   name: string;
+  owner?: string;
   reason: string;
   category?: SkipCategory;
   location?: Location;

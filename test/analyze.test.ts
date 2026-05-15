@@ -1797,6 +1797,48 @@ describe("rogue-lint analyzer", () => {
     expect(getCapabilityCoverageGapDiagnostics(result)).toHaveLength(0);
   });
 
+  it("keeps nested public callback return carriers live in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-public-nested-callable-returns-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "value"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "issues"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "message"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("keeps unsupported nested public callback carrier flows conservative in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-public-nested-callable-returns-boundary-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "value"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(true);
+  });
+
   it("tracks direct returned literals for whole-result and nested structured usage", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
