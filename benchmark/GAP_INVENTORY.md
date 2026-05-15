@@ -6,9 +6,17 @@ Snapshot source:
 - benchmark command: `npm run benchmark`
 - baseline benchmark date: `2026-05-09`
 - post-remediation benchmark date: `2026-05-10`
+- latest follow-up benchmark date: `2026-05-14`
 - benchmark targets: `zod-main`, `dayjs-core`
 
 The detailed classifications below reflect the last fully source-verified snapshot from `2026-05-10`. A later rerun on `2026-05-11` after the recursive helper forwarding fix still left `zod-main` failing (`276` unexpected findings, `1010` unexpected skips), but that output has not been fully reclassified yet and should not overwrite the verified snapshot in this document without a follow-up review.
+
+Follow-up note:
+- A targeted follow-up exploration on `2026-05-14` completed the missing source-backed classification for the next benchmark remediation slice. That follow-up isolated three confirmed false-positive implementation families: same-project helper aggregate forwarding, returned-carrier readback, and symbol-liveness alias accounting.
+- The same follow-up also confirmed that the largest remaining non-locale skip clusters in `src/v3/types.ts`, `src/v4/core/json-schema-processors.ts`, and `src/v4/classic/from-json-schema.ts` are still honest conservative boundaries or contract-sensitive cases rather than newly proven false positives.
+- The current working-tree implementation landed narrow fixes and focused regression coverage for same-project helper aggregate forwarding, exported type-alias public-surface accounting, and same-file namespace re-export import liveness, but it does not finish the broader benchmark remediation slice.
+- The latest `2026-05-14` benchmark rerun is still red. `dayjs-root` fails `must-not-skip` clean `0/1`, and `zod-main` fails `must-not-find` clean `20/23` plus `must-not-skip` clean `0/4`.
+- The detailed classifications below therefore remain anchored to the last fully source-verified snapshot until another source-backed reclassification pass confirms the residual benchmark surface.
 
 Classification labels used here:
 - `confirmed false positive`: engine-reported deadness that source-backed verification shows is actually live
@@ -21,10 +29,12 @@ Classification labels used here:
 
 ## Measured Outcome
 
+- Latest follow-up outcome (`2026-05-14`) - benchmark still failing. `dayjs-root` remains red on `must-not-skip` clean `0/1`, and `zod-main` remains red on `must-not-find` clean `20/23` plus `must-not-skip` clean `0/4`. The current tree should not be treated as a clean real-world benchmark pass yet.
+
 - `unused-local` - baseline `1`, current `0`. Resolved benchmark mistake; the Day.js `meridiemFunc` false positive remains guarded by `mustNotFind`.
 - `dead-store` - baseline `2`, current `0`. Resolved and still guarded by `mustNotFind` anchors.
 - `unused-enum-member` - baseline `36`, current `0`. Resolved and still guarded by `mustNotFind` anchors.
-- `unused-class-member` - baseline `154`, current `0`. Resolved in this change by following bounded local prototype alias chains from exported factory entrypoints; `dayjs-core` now passes with the required `unused-export` anchors still intact.
+- `unused-class-member` - baseline `154`, current `0`. Resolved in this change by following bounded local prototype alias chains from exported factory entrypoints; the `unused-class-member` family is now clean in Day.js while the required `unused-export` anchors in `src/constant.js` stay visible.
 - `unused-array-element` - baseline `9`, current `1`. Reduced to the remaining Zod `unrecognized[0]` case in `src/v4/core/schemas.ts`; current source-backed verification still says this is a false positive caused by bounded issue-array readback loss.
 - `unused-object-key` - baseline `59`, current `245`. The family is still mixed, but the returned-carrier subfamily is now resolved. The remaining confirmed false positives are concentrated in the `allProcessors` dispatch-table flow, while most residual locale entries now verify as true or contract-sensitive compatibility labels rather than keyed-read misses.
 - `unused-nested-path` - current `8`. The current `src/v4/locales/he.ts` `label` and `gender` findings on `regex`, `starts_with`, `ends_with`, and `includes` are now verified true detections: those specific dictionary entries are bypassed by earlier direct returns, so the child paths are genuinely unread under the current source.
@@ -55,8 +65,11 @@ Classification labels used here:
 
 ## Resolved In This Change
 
-- `unused-class-member` - the remaining Day.js instance-method false positives are gone. `dayjs-core` now passes while keeping the required `src/constant.js` `unused-export` anchors visible.
+- `unused-class-member` - the remaining Day.js instance-method false positives are gone. The `unused-class-member` family is now clean while the required `src/constant.js` `unused-export` anchors remain visible.
 - `write-only-state` - the returned-carrier false positives in `flattenError`, `flatten`, `mergeValues`, and registry `toJSONSchema` are gone. The paired wrapper-field findings on `{ valid, data }`, `{ formErrors, fieldErrors }`, and `{ schemas }` are no longer in the live benchmark output.
+- `unused-import` - the `export { z }` namespace re-export false positives in `src/mini/index.ts`, `src/v4/mini/index.ts`, and `src/v4-mini/index.ts` are gone and are now pinned by `mustNotFind` anchors.
+- `unused-export` - the compat-layer exported-alias regression on `src/v4/classic/compat.ts` is gone and is now pinned by a `mustNotFind` anchor on `ZodType`.
+- `opaque-object-call` on the `issueData` helper path - the same-project aggregate-forwarding false positives routed through `src/v3/helpers/parseUtil.ts` are gone and no longer surface as unexpected helper-boundary output.
 
 ## Remaining Confirmed False Positives
 
@@ -90,7 +103,6 @@ Classification labels used here:
 ## Next Change Sequence
 
 1. Resolve the returned-carrier and bounded issue-array readback false positives so `write-only-state` falls from `4`, the non-locale `unused-object-key` subfamily keeps shrinking, and `unused-array-element` falls from `1`.
-1. Resolve the bounded heterogeneous issue-array readback false positive so the remaining `unused-array-element` anchor at `unrecognized[0]` falls from `1`.
 2. Extend finite keyed-read precision only for the remaining `allProcessors` false-positive subfamily while keeping genuinely dead or compatibility-only locale entries such as `uuidv4`, `uuidv6`, `template_literal`, and `mac` reportable.
 3. Tackle the conservative boundary families in explicit follow-up slices: `computed-property-access` (`970`), `object-spread` (`12`), `returned-object` (`4`), `array-spread` (`2`), `opaque-object-call` (`2`), `dynamic-array-index` (`2`), `array-opaque-mutation` (`1`), and `array-append-mutation` (`1`).
 4. Revisit the contract-sensitive `unused-type` family only after the package-surface decision is explicit, so a later change does not accidentally erase correct internal-only detections.

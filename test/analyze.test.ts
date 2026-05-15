@@ -137,6 +137,27 @@ describe("rogue-lint analyzer", () => {
     expect(result.kept.some((entry) => entry.kind === "type" && entry.name === "ToolkitConfig")).toBe(true);
   });
 
+  it("keeps exported type aliases rooted in imported source types live in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-exported-type-alias-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      ["unused-type", "unused-export"].includes(finding.kind)
+      && finding.entity.name === "PublicSchema"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      ["unused-type", "unused-export"].includes(finding.kind)
+      && finding.entity.name === "PublicConfig"
+    )).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-type" && finding.entity.name === "InternalOnly")).toBe(true);
+
+    expect(result.kept.some((entry) => entry.kind === "type" && entry.name === "PublicSchema")).toBe(true);
+    expect(result.kept.some((entry) => entry.kind === "type" && entry.name === "PublicConfig")).toBe(true);
+  });
+
   it("keeps exported public object members live without implicitly preserving private helpers", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -201,6 +222,19 @@ describe("rogue-lint analyzer", () => {
     expect(kindsAndNames).not.toContain("unused-import:usedNamed");
     expect(kindsAndNames).not.toContain("unused-import:usedNamespace");
     expect(kindsAndNames).not.toContain("unused-import:UsedType");
+  });
+
+  it("treats same-file namespace re-exports as live import usage", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("unused-import-namespace-reexport-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-import:unusedNamespace");
+    expect(kindsAndNames).not.toContain("unused-import:usedNamespace");
   });
 
   it("supports exact and conservative array analysis", async () => {
@@ -1315,6 +1349,25 @@ describe("rogue-lint analyzer", () => {
     )).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "opaque-object-call")).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves same-project helper aggregate forwarding through later local reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-aggregate-forwarding-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).not.toContain("unused-object-key:message");
+    expect(kindsAndNames).not.toContain("unused-object-key:path");
+    expect(kindsAndNames).not.toContain("unused-object-key:fatal");
+    expect(kindsAndNames).not.toContain("unused-object-key:extra");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(result.findings.some((finding) => finding.kind === "write-only-state")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "opaque-object-call")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "object-spread")).toBe(false);
   });
 
   it("treats Promise.all array aggregation as a supported whole-array observation", async () => {

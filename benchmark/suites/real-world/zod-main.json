@@ -118,6 +118,34 @@
         "maxCount": 0
       },
       {
+        "label": "namespace re-export import in src/mini/index.ts must not return as unused",
+        "kind": "unused-import",
+        "file": "src/mini/index.ts",
+        "name": "z",
+        "maxCount": 0
+      },
+      {
+        "label": "namespace re-export import in src/v4/mini/index.ts must not return as unused",
+        "kind": "unused-import",
+        "file": "src/v4/mini/index.ts",
+        "name": "z",
+        "maxCount": 0
+      },
+      {
+        "label": "namespace re-export import in src/v4-mini/index.ts must not return as unused",
+        "kind": "unused-import",
+        "file": "src/v4-mini/index.ts",
+        "name": "z",
+        "maxCount": 0
+      },
+      {
+        "label": "compat type alias export source name in src/v4/classic/compat.ts must not return",
+        "kind": "unused-export",
+        "file": "src/v4/classic/compat.ts",
+        "name": "ZodType",
+        "maxCount": 0
+      },
+      {
         "label": "resolved unused types in src/v4/core/json-schema.ts must not return",
         "kind": "unused-type",
         "file": "src/v4/core/json-schema.ts",

@@ -1,7 +1,7 @@
 import ts from "typescript";
 
 import type { ProjectContext, SuppressionContext } from "../../types.js";
-import { getSymbolKey } from "../../compiler/ast-utils.js";
+import { summarizeNonDeclarationReferences } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
@@ -13,32 +13,13 @@ function hasLocalImportUsage(
   sourceFile: ts.SourceFile,
   nameNode: ts.Identifier,
 ): boolean {
-  const bindingSymbol = project.checker.getSymbolAtLocation(nameNode);
-  if (!bindingSymbol) {
-    return false;
-  }
-
-  const bindingSymbolKey = getSymbolKey(bindingSymbol);
-  let used = false;
-
-  const visit = (node: ts.Node): void => {
-    if (used) {
-      return;
-    }
-
-    if (ts.isIdentifier(node) && node !== nameNode) {
-      const symbol = project.checker.getSymbolAtLocation(node);
-      if (symbol && getSymbolKey(symbol) === bindingSymbolKey) {
-        used = true;
-        return;
-      }
-    }
-
-    ts.forEachChild(node, visit);
-  };
-
-  ts.forEachChild(sourceFile, visit);
-  return used;
+  return summarizeNonDeclarationReferences(
+    project.languageService,
+    sourceFile,
+    nameNode,
+    project.analyzableFiles,
+    project.rootPath,
+  ).sameFileReferences > 0;
 }
 
 function analyzeImportBinding(

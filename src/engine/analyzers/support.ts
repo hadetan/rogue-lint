@@ -207,6 +207,15 @@ function addDeclarationIds(
   }
 }
 
+function addExportSpecifierIds(
+  project: ProjectContext,
+  ids: Set<string>,
+  exportSpecifier: ts.ExportSpecifier,
+): void {
+  ids.add(makeEntity(project.rootPath, "export", exportSpecifier.getSourceFile(), exportSpecifier.name, exportSpecifier.name.text).id);
+  ids.add(makeEntity(project.rootPath, "type", exportSpecifier.getSourceFile(), exportSpecifier.name, exportSpecifier.name.text).id);
+}
+
 function unwrapTrackedExpression(expression: ts.Expression): ts.Expression {
   let current = expression;
 
@@ -330,6 +339,12 @@ function collectPublicSurfaceFromSymbol(
   symbol: ts.Symbol,
   visited: Set<string>,
 ): void {
+  for (const declaration of symbol.declarations ?? []) {
+    if (ts.isExportSpecifier(declaration)) {
+      addExportSpecifierIds(project, ids, declaration);
+    }
+  }
+
   const underlying = getCanonicalPublicSurfaceSymbol(project, symbol);
   const symbolKey = getSymbolKey(underlying);
   if (visited.has(symbolKey)) {
@@ -478,14 +493,16 @@ export function collectExportCandidates(project: ProjectContext, sourceFile: ts.
         const localName = element.propertyName ?? element.name;
         const symbol = project.checker.getSymbolAtLocation(localName);
         const declaration = symbol?.declarations?.[0];
-        const nameNode = declaration ? getDeclarationNameNode(declaration) : undefined;
-        const name = declaration ? getNodeName(declaration) : undefined;
-        if (!declaration || !nameNode || !name) {
+        const nameNode = element.name;
+        const name = element.name.text;
+        if (!nameNode || !name) {
           continue;
         }
 
         const exportedKind: EntityKind =
-          ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration)
+          statement.isTypeOnly
+          || element.isTypeOnly
+          || (declaration !== undefined && (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration)))
             ? "type"
             : "export";
         const entity = makeEntity(project.rootPath, exportedKind, sourceFile, nameNode, name);

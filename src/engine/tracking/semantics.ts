@@ -147,6 +147,125 @@ function addHelperParameterExactReadPath(summary: HelperParameterSummary, path: 
   summary.exactReadPaths.push(path);
 }
 
+function mergeHelperParameterSummary(
+  summary: HelperParameterSummary,
+  nested: HelperParameterSummary,
+): void {
+  nested.effectKinds.forEach((effect) => addHelperParameterEffect(summary, effect));
+  nested.exactReadPaths.forEach((path) => addHelperParameterExactReadPath(summary, path));
+}
+
+function pathStartsWith(path: PathSegment[], prefix: PathSegment[]): boolean {
+  return prefix.length <= path.length && prefix.every((segment, index) => {
+    const candidate = path[index];
+    return candidate !== undefined && candidate.kind === segment.kind && candidate.value === segment.value;
+  });
+}
+
+function getAggregateForwardingPath(node: ts.Node): {
+  literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression;
+  path: PathSegment[];
+} | undefined {
+  if (ts.isShorthandPropertyAssignment(node) && ts.isObjectLiteralExpression(node.parent)) {
+    return {
+      literal: node.parent,
+      path: [propertySegment(node.name.text)],
+    };
+  }
+
+  if (
+    ts.isIdentifier(node)
+    && ts.isPropertyAssignment(node.parent)
+    && node.parent.initializer === node
+    && ts.isObjectLiteralExpression(node.parent.parent)
+  ) {
+    const property: ts.PropertyAssignment = node.parent;
+    const propertyName = getStaticObjectLiteralPropertyName(property);
+    if (!propertyName) {
+      return undefined;
+    }
+
+    return {
+      literal: node.parent.parent,
+      path: [propertySegment(propertyName)],
+    };
+  }
+
+  if (ts.isIdentifier(node) && ts.isArrayLiteralExpression(node.parent)) {
+    const index = node.parent.elements.indexOf(node);
+    if (index < 0) {
+      return undefined;
+    }
+
+    return {
+      literal: node.parent,
+      path: [indexSegment(index)],
+    };
+  }
+
+  return undefined;
+}
+
+function trySummarizeAggregateLiteralForwarding(
+  project: ProjectContext,
+  forwardingNode: ts.Node,
+  cache: Map<string, boolean | null>,
+  summaryCache: Map<string, HelperParameterSummary | null>,
+): HelperParameterSummary | undefined {
+  const forwarding = getAggregateForwardingPath(forwardingNode);
+  if (!forwarding) {
+    return undefined;
+  }
+
+  const parent = forwarding.literal.parent;
+  if (!ts.isCallExpression(parent) && !ts.isNewExpression(parent)) {
+    return undefined;
+  }
+
+  const argumentIndex = (parent.arguments ?? []).findIndex((argument) => argument === forwarding.literal);
+  if (argumentIndex < 0) {
+    return undefined;
+  }
+
+  const callable = resolveAnalyzableFunctionDeclaration(project, parent.expression);
+  if (!callable) {
+    return undefined;
+  }
+
+  const nestedParameter = callable.parameters[argumentIndex];
+  if (!nestedParameter || !ts.isIdentifier(nestedParameter.name)) {
+    return undefined;
+  }
+
+  const nestedSummary = summarizeHelperParameterUse(project, callable, nestedParameter.name, cache, summaryCache);
+  if (nestedSummary.boundaryReason) {
+    return undefined;
+  }
+
+  const remapped = new HelperParameterSummaryState();
+  let matched = false;
+
+  nestedSummary.exactReadPaths.forEach((path) => {
+    if (!pathStartsWith(path, forwarding.path)) {
+      return;
+    }
+
+    matched = true;
+    addHelperParameterExactReadPath(remapped, path.slice(forwarding.path.length));
+  });
+
+  if (!matched) {
+    return undefined;
+  }
+
+  addHelperParameterEffect(remapped, "read");
+  if (nestedSummary.effectKinds.has("returned-alias")) {
+    addHelperParameterEffect(remapped, "returned-alias");
+  }
+
+  return remapped;
+}
+
 function markHelperParameterBoundary(
   summary: HelperParameterSummary,
   node: ts.Node,
@@ -804,6 +923,12 @@ export function summarizeHelperParameterUse(
     if (ts.isShorthandPropertyAssignment(node)) {
       const valueSymbol = project.checker.getShorthandAssignmentValueSymbol(node);
       if (valueSymbol && trackedAliasKeys.has(getCanonicalSymbolKey(project, valueSymbol))) {
+        const forwardedSummary = trySummarizeAggregateLiteralForwarding(project, node, cache, summaryCache);
+        if (forwardedSummary) {
+          mergeHelperParameterSummary(summary, forwardedSummary);
+          return;
+        }
+
         markHelperParameterBoundary(summary, node.name, "helper stores this value inside an aggregate literal beyond exact local analysis");
         return;
       }
@@ -841,6 +966,12 @@ export function summarizeHelperParameterUse(
         || (ts.isPropertyAssignment(parent) && parent.initializer === node && ts.isObjectLiteralExpression(parent.parent))
         || (ts.isArrayLiteralExpression(parent) && parent.elements.includes(node))
       ) {
+        const forwardedSummary = trySummarizeAggregateLiteralForwarding(project, node, cache, summaryCache);
+        if (forwardedSummary) {
+          mergeHelperParameterSummary(summary, forwardedSummary);
+          return;
+        }
+
         markHelperParameterBoundary(summary, parent, "helper stores this value inside an aggregate literal beyond exact local analysis");
         return;
       }
@@ -939,8 +1070,17 @@ export function summarizeHelperParameterUse(
 
   ts.forEachChild(body, visit);
   const directStorageNode = findDirectReferenceStorageParameterUse(project, declaration, parameterName);
+  const supportedAggregateForwarding = directStorageNode
+    ? trySummarizeAggregateLiteralForwarding(
+        project,
+        ts.isShorthandPropertyAssignment(directStorageNode.parent) ? directStorageNode.parent : directStorageNode,
+        cache,
+        summaryCache,
+      )
+    : undefined;
   if (
     directStorageNode
+    && !supportedAggregateForwarding
     && (
       !summary.boundaryReason
       || summary.boundaryReason === "helper stores this value inside an aggregate literal beyond exact local analysis"
