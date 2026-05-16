@@ -6,10 +6,10 @@ import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { getBindingSymbolKey, resolveProjectionAccess } from "../access.js";
 import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
 import type { ArrayProjectionBinding, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
-import { getSupportedArrayCallbackIndexParamIndex, getSupportedArrayCallbackParamIndex, isExactArrayCallbackMethod } from "../projection-support.js";
 import { classifySupportedCallArgumentUse } from "../semantics.js";
 import { getCollectionInfo, getConcreteProjectionPaths, getProjectionBinding, hasTrackedChildren, resolveExactPathAlias } from "../state.js";
 import { maybeInvalidateReplacedTrackedPath, recordArrayBoundary } from "./effects.js";
+import { getSupportedArrayCallbackIndexParamIndex, getSupportedArrayCallbackParamIndex, isExactArrayCallbackMethod } from "../vocabulary.js";
 import {
   markObjectPathProjectionChildReads as markProjectionChildReads, markObjectPathProjectionReads as markProjectionReads,
   markObjectPathProjectionWrites as markProjectionWrites, type ObjectPathOverlayState,

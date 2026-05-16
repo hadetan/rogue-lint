@@ -7,14 +7,13 @@ import { indexSegment, propertySegment, serializePath } from "../../shared/path-
 import { HelperParameterSummaryState } from "./model.js";
 import type { CallableReturnSummary, HelperParameterEffectKind, HelperParameterSummary, ValueAnalysisCaches } from "./model.js";
 import { getCanonicalSymbol, getCanonicalSymbolKey, getStaticGlobalThisPropertyName } from "./bindings.js";
-import { isExactArrayCallbackMethod } from "./projection-support.js";
 import { getObjectBackedRetainedBindingSlotKeyFromAccess, isSupportedRetainedBindingContainerType } from "./retained-bindings.js";
 import { getAnalyzableCallableBinding, getAnalyzableCallableBindingFromDeclaration, resolveAnalyzableFunctionDeclaration } from "./callables.js";
 import { isTrackablePureExpression } from "./trackable-structures.js";
 import { ASSIGNMENT_OPERATORS, getStaticObjectLiteralPropertyName, isPureObjectConstructorExpression, unwrapExpression } from "./syntax.js";
 import {
   ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS, TRACKING_RETAINED_BINDING_WRITE_METHOD, TRACKING_RETAINED_BINDING_OBSERVER_METHODS,
-  TRACKING_ACCESS_KIND, TRACKING_HELPER_PARAMETER_EFFECT_KIND, TRACKING_ARRAY_INDEX_ACCESS_METHOD, WHOLE_ARRAY_CONSUMPTION_METHODS,
+  TRACKING_ACCESS_KIND, TRACKING_HELPER_PARAMETER_EFFECT_KIND, TRACKING_ARRAY_INDEX_ACCESS_METHOD, WHOLE_ARRAY_CONSUMPTION_METHODS, isExactArrayCallbackMethod,
 } from "./vocabulary.js";
 
 export { ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS, WHOLE_ARRAY_CONSUMPTION_METHODS } from "./vocabulary.js";

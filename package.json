@@ -17,6 +17,7 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "benchmark": "npm run build && node dist/benchmark-cli.js",
+    "lint:direct-wiring": "node tools/validate-direct-module-wiring.js",
     "lint:literals": "node tools/validate-literal-ownership.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "npm run lint -- --fix",
@@ -24,7 +25,7 @@
     "test:watch": "vitest",
     "self": "npm run build && node dist/cli.js . --mode library",
     "self:json": "npm run build && node dist/cli.js . --mode library --json",
-    "check": "npm run lint && npm run build && npm test",
+    "check": "npm run lint && npm run lint:direct-wiring && npm run build && npm test",
     "pack:check": "npm pack --dry-run --ignore-scripts",
     "prep": "npm run check && node dist/cli.js . --mode library && npm run pack:check"
   },

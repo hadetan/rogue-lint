@@ -6,9 +6,11 @@ import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { getAccessPath, getBindingSymbolKey, resolveProjectionAccess, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, getBindingByNode, sameTrackedBinding } from "../bindings.js";
 import type { ArrayProjectionBinding, CallableReturnSummary, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
-import { getSupportedArrayCallbackIndexParamIndex, getSupportedArrayCallbackParamIndex, isExactArrayCallbackMethod } from "../projection-support.js";
 import { ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS, WHOLE_ARRAY_CONSUMPTION_METHODS } from "../semantics.js";
-import { TRACKING_ARRAY_EXACT_APPEND_METHODS, TRACKING_COLLECTION_KIND, TRACKING_VALUE_FATE } from "../vocabulary.js";
+import {
+  getSupportedArrayCallbackIndexParamIndex, getSupportedArrayCallbackParamIndex, isExactArrayCallbackMethod,
+  TRACKING_ARRAY_EXACT_APPEND_METHODS, TRACKING_COLLECTION_KIND, TRACKING_VALUE_FATE,
+} from "../vocabulary.js";
 import { unwrapExpression } from "../syntax.js";
 import { addValueFate, getCollectionInfo, getProjectionBinding, resolveExactPathAlias } from "../state.js";
 

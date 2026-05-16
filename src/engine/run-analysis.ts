@@ -7,16 +7,16 @@ import { createAnalysisRunState } from "./analysis-run-state.js";
 import { appendProviderObligationDiagnostics, createAnalysisState } from "./analysis-state.js";
 import { createAnalysisArtifacts } from "./analysis-artifacts.js";
 import { analyzeCompilerSafetyDiagnostics } from "./analyzers/compiler-safety.js";
-import { analyzeObjectPaths } from "./analyzers/object-paths.js";
 import { analyzeUnusedFiles } from "./analyzers/unused-files.js";
 import { analyzeSymbolLiveness } from "./analyzers/symbol-liveness.js";
-import { analyzeValueLiveness } from "./analyzers/value-liveness.js";
 import { collectPublicSurface } from "./analyzers/support.js";
 import { attachAnalysisCapabilityLedger, collectAnalysisCapabilityLedger } from "./capabilities/providers.js";
 import { assembleProviderBackedReportSurface } from "./capabilities/report-assembly.js";
 import { validateFindingKindOwners } from "./finding-kind-owners.js";
 import { appendTrackingAnalysisDiagnostics } from "./tracking/diagnostics.js";
+import { analyzeObjectPaths } from "./tracking/object-paths.js";
 import { attachTrackingRuntimeSummary } from "./tracking/upgrade-safety.js";
+import { analyzeValueLiveness } from "./tracking/value-liveness.js";
 
 interface AnalysisStage {
   enabled: boolean;
