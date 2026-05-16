@@ -15,7 +15,7 @@ import type {
   HelperParameterSummary,
   TrackedObjectBinding,
 } from "../model.js";
-import type { ObjectPathOverlayState } from "./overlay.js";
+import { createObjectPathOverlayState, type ObjectPathOverlayState } from "./overlay.js";
 import { computePubliclyReachableCallableIds } from "./returned-structures.js";
 import type {
   FiniteLookupCandidate,
@@ -65,32 +65,12 @@ function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObjec
         arrayLength: state.arrayLength,
       },
     ])),
-    collectionBoundaries: new Map([...base.collectionBoundaries.entries()].map(([id, boundary]) => [
-      id,
-      {
-        entity: boundary.entity,
-        path: [...boundary.path],
-        category: boundary.category,
-        reason: boundary.reason,
-      },
-    ])),
-    invalidatedCollectionPaths: new Set(base.invalidatedCollectionPaths),
-    invalidatedPaths: new Map([...base.invalidatedPaths.entries()].map(([joinedPath, invalidated]) => [
-      joinedPath,
-      {
-        reason: invalidated.reason,
-        findingKind: invalidated.findingKind,
-      },
-    ])),
+    collectionBoundaries: new Map(),
+    invalidatedCollectionPaths: new Set(),
+    invalidatedPaths: new Map(),
     placeStates: new Map(base.placeStates),
-    observedSubtrees: new Set(base.observedSubtrees),
-    escapedPaths: new Map([...base.escapedPaths.entries()].map(([joinedPath, escaped]) => [
-      joinedPath,
-      {
-        category: escaped.category,
-        reason: escaped.reason,
-      },
-    ])),
+    observedSubtrees: new Set(),
+    escapedPaths: new Map(),
     exactPathAliases: new Map([...base.exactPathAliases.entries()].map(([joinedPath, alias]) => [
       joinedPath,
       {
@@ -105,8 +85,8 @@ function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObjec
       path: [...valueFate.path],
       relatedPath: valueFate.relatedPath ? [...valueFate.relatedPath] : undefined,
     })),
-    reads: new Set(base.reads),
-    writes: new Set(base.writes),
+    reads: new Set(),
+    writes: new Set(),
   };
 }
 
@@ -165,15 +145,9 @@ export function createObjectPathStageContext(
   artifacts: AnalysisArtifacts,
 ): ObjectPathStageContext {
   const trackingInput = createObjectPathTrackingInput(artifacts);
-  const overlayState: ObjectPathOverlayState = {
-    readsByObjectId: new Map(),
-    writesByObjectId: new Map(),
-    observedSubtreesByObjectId: new Map(),
-    observedAliasesByObjectId: new Map(),
-    invalidatedCollectionsByObjectId: new Map(),
-    escapedPathsByObjectId: new Map(),
-    boundaryRecordsByObjectId: new Map(),
-  };
+  const overlayState: ObjectPathOverlayState = createObjectPathOverlayState(
+    trackingInput.sharedFacts.aliases.trackedObjectsById.values(),
+  );
   const trackedObjectRegistry = new Map(
     [...trackingInput.sharedFacts.aliases.trackedObjectsById.entries()].map(([id, trackedObject]) => [
       id,

@@ -3,6 +3,7 @@ import { loadProject } from "../project.js";
 import { buildSuppressionContext } from "../suppressions.js";
 import type { AnalysisOptions, AnalysisResult, FindingKind } from "../types.js";
 import { getVersion } from "../shared/general-utils.js";
+import { createAnalysisRunState } from "./analysis-run-state.js";
 import { appendProviderObligationDiagnostics, createAnalysisState } from "./analysis-state.js";
 import { createAnalysisArtifacts } from "./analysis-artifacts.js";
 import { analyzeCompilerSafetyDiagnostics } from "./analyzers/compiler-safety.js";
@@ -30,15 +31,22 @@ interface AnalysisStage {
  */
 export async function analyzeProject(options: AnalysisOptions): Promise<AnalysisResult> {
   validateFindingKindOwners();
-
   const project = loadProject(options);
-  const state = createAnalysisState();
+  const runState = createAnalysisRunState();
+  const state = createAnalysisState(runState);
   const suppressionContext = buildSuppressionContext(project);
   const graph = buildModuleGraph(project);
   const entrypointDiscovery = discoverEntrypoints(project);
   const reachableFiles = computeReachableFiles(entrypointDiscovery.entrypoints, graph);
   const publicSurface = collectPublicSurface(project, entrypointDiscovery.publicSurfaceEntrypoints);
-  const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurface.ids, publicSurface.callableIds);
+  const artifacts = createAnalysisArtifacts(
+    project,
+    reachableFiles,
+    publicSurface.ids,
+    publicSurface.callableIds,
+    undefined,
+    runState,
+  );
 
   state.diagnostics.push(...entrypointDiscovery.diagnostics);
   state.diagnostics.push(...graph.unresolved);
@@ -76,6 +84,7 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
   appendProviderObligationDiagnostics(state);
 
   const capabilityLedger = collectAnalysisCapabilityLedger(project, state, artifacts);
+  runState.capabilityLedger = capabilityLedger;
   const includeKinds = project.config.value.includeKinds;
   const { findings, kept, skipped, diagnostics } = assembleProviderBackedReportSurface(
     state,
@@ -112,8 +121,11 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
     diagnostics,
   };
 
+  const trackingRuntimeSummary = artifacts.getTrackingRunArtifacts().runtimeSummary;
+  runState.trackingRuntimeSummary = trackingRuntimeSummary;
+
   attachAnalysisCapabilityLedger(result, capabilityLedger);
-  attachTrackingRuntimeSummary(result, artifacts.getTrackingRunArtifacts().runtimeSummary);
+  attachTrackingRuntimeSummary(result, trackingRuntimeSummary);
 
   return result;
 }

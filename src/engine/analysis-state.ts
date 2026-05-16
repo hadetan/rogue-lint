@@ -15,6 +15,8 @@ import type {
   AnalysisCapabilityObligationRecord,
   AnalysisCapabilityOutcome,
 } from "./capabilities/types.js";
+import type { AnalysisRunState } from "./analysis-run-state.js";
+import { createAnalysisRunState } from "./analysis-run-state.js";
 import {
   createCapabilityFactRecordId,
   createCapabilityObligationGapMessage,
@@ -30,23 +32,21 @@ export interface AnalysisState {
   skipped: AuditRecord[];
   diagnostics: DiagnosticRecord[];
   capabilityObligations: Map<string, AnalysisCapabilityObligationRecord>;
+  runState: AnalysisRunState;
 }
-
-const capabilityFactsByState = new WeakMap<AnalysisState, Map<string, AnalysisCapabilityFactRecord>>();
 
 /**
  * Creates a fresh analysis-state container for a single orchestration pass.
  */
-export function createAnalysisState(): AnalysisState {
+export function createAnalysisState(runState: AnalysisRunState = createAnalysisRunState()): AnalysisState {
   const state: AnalysisState = {
     findings: [],
     kept: [],
     skipped: [],
     diagnostics: [],
     capabilityObligations: new Map(),
+    runState,
   };
-
-  capabilityFactsByState.set(state, new Map());
   return state;
 }
 
@@ -66,8 +66,8 @@ export function registerCapabilityFact(
   } = {},
 ): void {
   const id = createCapabilityFactRecordId(family, entity, capabilityId, options.detailHint);
-  const facts = capabilityFactsByState.get(state);
-  if (!facts || facts.has(id)) {
+  const facts = state.runState.capabilityFacts;
+  if (facts.has(id)) {
     return;
   }
 
@@ -89,12 +89,7 @@ export function registerCapabilityFact(
 export function getCapabilityFacts(
   state: AnalysisState,
 ): readonly AnalysisCapabilityFactRecord[] {
-  const facts = capabilityFactsByState.get(state);
-  if (!facts) {
-    return [];
-  }
-
-  return [...facts.values()];
+  return [...state.runState.capabilityFacts.values()];
 }
 
 /**

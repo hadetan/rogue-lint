@@ -1,5 +1,6 @@
 import type { AnalysisResult } from "../../types.js";
 
+import { attachAnalysisRunResultMetadata, getAnalysisRunResultMetadata } from "../analysis-run-state.js";
 import type { TrackingRuntimeSummary } from "./contracts.js";
 
 export interface TrackingSafetyBudgets {
@@ -43,19 +44,16 @@ export interface TrackingSafetyEvaluation {
     }>;
   };
 }
-
-const trackingRuntimeSummaryByResult = new WeakMap<AnalysisResult, TrackingRuntimeSummary>();
-
 function normalizeBudget(value: number): number {
   return Math.max(1, Math.floor(value));
 }
 
 export function attachTrackingRuntimeSummary(result: AnalysisResult, runtimeSummary: TrackingRuntimeSummary): void {
-  trackingRuntimeSummaryByResult.set(result, runtimeSummary);
+  attachAnalysisRunResultMetadata(result, { trackingRuntimeSummary: runtimeSummary });
 }
 
 function getTrackingRuntimeSummary(result: AnalysisResult): TrackingRuntimeSummary | undefined {
-  return trackingRuntimeSummaryByResult.get(result);
+  return getAnalysisRunResultMetadata(result)?.trackingRuntimeSummary;
 }
 
 function observeTrackingSafetyEvaluationShape(evaluation: TrackingSafetyEvaluation): void {

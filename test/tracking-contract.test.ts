@@ -16,6 +16,7 @@ import {
 import { createObjectPathStageContext } from "../src/engine/tracking/object-paths/stage-context.js";
 import {
   getObjectPathOverlayBoundaryRecords,
+  getObjectPathOverlayEscapedReason,
   getObjectPathOverlayObservedAliases,
   getObjectPathOverlayReads,
   isObjectPathOverlayCollectionPathInvalidated,
@@ -483,6 +484,67 @@ describe("tracking kernel contract", () => {
     expect(boundaries).toBeDefined();
     expect([...boundaries!.values()].some((boundary) => boundary.category === "array-reorder-mutation")).toBe(true);
     expect(isObjectPathOverlayCollectionPathInvalidated(objectPathStage.overlayState, queue.id, [])).toBe(true);
+  });
+
+  it("seeds snapshot-derived boundary, invalidation, and escape state into the overlay instead of stage clone runtime fields", () => {
+    const { project, reachableFiles, publicSurfaceIds, publicCallableIds } = createProjectContext("helper-queue-basic");
+    const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, publicCallableIds);
+    const snapshotQueue = getTrackedObjectByRootName(
+      artifacts.getTrackingStageArtifacts("object-paths").aliases.trackedObjectsById.values(),
+      "queue",
+    );
+
+    snapshotQueue.collectionBoundaries.set("boundary:queue", {
+      entity: {
+        id: "boundary:queue",
+        kind: "collection-boundary",
+        name: "queue",
+        owner: "queue",
+        location: {
+          file: "src/index.ts",
+          line: 1,
+          column: 1,
+        },
+      },
+      path: [],
+      category: "array-reorder-mutation",
+      reason: "seeded boundary",
+    });
+    snapshotQueue.invalidatedCollectionPaths.add(serializePath([]));
+    snapshotQueue.invalidatedPaths.set(serializePath([]), {
+      reason: "seeded invalidation",
+      findingKind: "stale-read-after-mutation",
+    });
+    snapshotQueue.escapedPaths.set(serializePath([indexSegment(0)]), {
+      category: "opaque-object-call",
+      reason: "seeded escape",
+    });
+    snapshotQueue.reads.add(serializePath([indexSegment(0)]));
+    snapshotQueue.writes.add(serializePath([indexSegment(0)]));
+
+    const state = createAnalysisState();
+    const suppressionContext = buildSuppressionContext(project);
+    const objectPathStage = createObjectPathStageContext(
+      project,
+      reachableFiles,
+      state,
+      suppressionContext,
+      artifacts,
+    );
+    const stageQueue = getTrackedObjectByRootName(objectPathStage.trackedObjectRegistry.values(), "queue");
+
+    expect(getObjectPathOverlayBoundaryRecords(objectPathStage.overlayState, stageQueue.id)?.get("boundary:queue")).toEqual(
+      snapshotQueue.collectionBoundaries.get("boundary:queue"),
+    );
+    expect(isObjectPathOverlayCollectionPathInvalidated(objectPathStage.overlayState, stageQueue.id, [])).toBe(true);
+    expect(getObjectPathOverlayEscapedReason(objectPathStage.overlayState, stageQueue.id, [indexSegment(0)])).toEqual(
+      snapshotQueue.escapedPaths.get(serializePath([indexSegment(0)])),
+    );
+    expect(stageQueue.collectionBoundaries.size).toBe(0);
+    expect(stageQueue.invalidatedCollectionPaths.size).toBe(0);
+    expect(stageQueue.escapedPaths.size).toBe(0);
+    expect(stageQueue.reads.size).toBe(0);
+    expect(stageQueue.writes.size).toBe(0);
   });
 
   it("keeps fresh call-site clones from leaking collection metadata back into the source return object", () => {

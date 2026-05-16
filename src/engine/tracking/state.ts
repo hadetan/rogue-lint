@@ -1,7 +1,6 @@
 import type ts from "typescript";
 
 import type {
-  EscapedPathRecord,
   EntityRecord,
   InvalidatedPathRecord,
   PathSegment,
@@ -329,15 +328,6 @@ export function createInvalidatedPathRecord(
   }
 }
 
-export function isCollectionPathInvalidated(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
-  for (let index = segments.length; index >= 0; index -= 1) {
-    if (trackedObject.invalidatedCollectionPaths.has(serializePath(segments.slice(0, index)))) {
-      return true;
-    }
-  }
-  return false;
-}
-
 export function getNearestArrayCollectionPath(
   trackedObject: TrackedObject,
   segments: PathSegment[],
@@ -436,15 +426,4 @@ export function markEscaped(
   if (!(category === "opaque-object-call" && segments.length === 0)) {
     clearExactAliasesWithin(trackedObject, segments);
   }
-}
-
-export function getEscapedReason(trackedObject: TrackedObject, segments: PathSegment[]): EscapedPathRecord | undefined {
-  for (let index = segments.length; index >= 0; index -= 1) {
-    const key = serializePath(segments.slice(0, index));
-    const escaped = trackedObject.escapedPaths.get(key);
-    if (escaped) {
-      return escaped;
-    }
-  }
-  return undefined;
 }

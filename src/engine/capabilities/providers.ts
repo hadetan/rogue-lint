@@ -1,6 +1,7 @@
 import type { AnalysisResult, AuditRecord, DiagnosticRecord } from "../../types.js";
 import type { ProjectContext } from "../../types.js";
 
+import { attachAnalysisRunResultMetadata, getAnalysisRunResultMetadata } from "../analysis-run-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 import {
   getCapabilityFacts,
@@ -41,8 +42,6 @@ interface AnalysisCapabilityProviderContext {
 }
 
 type AnalysisCapabilityProvider = (context: AnalysisCapabilityProviderContext) => AnalysisCapabilityLedger;
-
-const analysisCapabilityLedgerByResult = new WeakMap<AnalysisResult, AnalysisCapabilityLedger>();
 
 function createRecordCapabilityIndex(
   attributions: ReadonlyArray<AnalysisCapabilityLedger["attributions"][number]>,
@@ -438,11 +437,11 @@ export function attachAnalysisCapabilityLedger(
   result: AnalysisResult,
   ledger: AnalysisCapabilityLedger,
 ): void {
-  analysisCapabilityLedgerByResult.set(result, ledger);
+  attachAnalysisRunResultMetadata(result, { capabilityLedger: ledger });
 }
 
 export function getAnalysisCapabilityLedger(
   result: AnalysisResult,
 ): AnalysisCapabilityLedger | undefined {
-  return analysisCapabilityLedgerByResult.get(result);
+  return getAnalysisRunResultMetadata(result)?.capabilityLedger;
 }

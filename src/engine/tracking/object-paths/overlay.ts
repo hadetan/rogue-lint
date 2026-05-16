@@ -36,6 +36,45 @@ export interface ObjectPathOverlayState {
   boundaryRecordsByObjectId: PathRecordMapByObjectId<CollectionBoundaryRecord>;
 }
 
+export function createObjectPathOverlayState(
+  trackedObjects: Iterable<TrackedObject> = [],
+): ObjectPathOverlayState {
+  const overlayState: ObjectPathOverlayState = {
+    readsByObjectId: new Map(),
+    writesByObjectId: new Map(),
+    observedSubtreesByObjectId: new Map(),
+    observedAliasesByObjectId: new Map(),
+    invalidatedCollectionsByObjectId: new Map(),
+    escapedPathsByObjectId: new Map(),
+    boundaryRecordsByObjectId: new Map(),
+  };
+
+  for (const trackedObject of trackedObjects) {
+    if (trackedObject.collectionBoundaries.size > 0) {
+      const boundaries = ensurePathRecordMap(overlayState.boundaryRecordsByObjectId, trackedObject.id);
+      for (const [recordId, boundary] of trackedObject.collectionBoundaries.entries()) {
+        boundaries.set(recordId, boundary);
+      }
+    }
+
+    if (trackedObject.invalidatedCollectionPaths.size > 0) {
+      const invalidations = ensurePathRecordMap(overlayState.invalidatedCollectionsByObjectId, trackedObject.id);
+      for (const joinedPath of trackedObject.invalidatedCollectionPaths) {
+        invalidations.set(joinedPath, trackedObject.invalidatedPaths.get(joinedPath) ?? null);
+      }
+    }
+
+    if (trackedObject.escapedPaths.size > 0) {
+      const escapes = ensurePathRecordMap(overlayState.escapedPathsByObjectId, trackedObject.id);
+      for (const [joinedPath, escaped] of trackedObject.escapedPaths.entries()) {
+        escapes.set(joinedPath, escaped);
+      }
+    }
+  }
+
+  return overlayState;
+}
+
 function ensurePathSet(pathsByObjectId: PathSetByObjectId, objectId: string): Set<string> {
   const existing = pathsByObjectId.get(objectId);
   if (existing) {

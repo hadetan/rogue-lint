@@ -18,9 +18,7 @@ import {
 } from "../../analysis-state.js";
 import {
   getCollectionInfo,
-  getEscapedReason,
   hasTrackedChildren,
-  isCollectionPathInvalidated,
 } from "../state.js";
 import type { TrackedObjectBinding } from "../model.js";
 import { shouldSuppressStructuralPath, shouldSuppressStructuralRoot } from "../syntax.js";
@@ -60,7 +58,7 @@ function getReportingBoundaries(
   overlayState: ObjectPathOverlayState,
   tracked: TrackedObject,
 ): ReadonlyMap<string, CollectionBoundaryRecord> {
-  return getObjectPathOverlayBoundaryRecords(overlayState, tracked.id) ?? tracked.collectionBoundaries;
+  return getObjectPathOverlayBoundaryRecords(overlayState, tracked.id) ?? new Map<string, CollectionBoundaryRecord>();
 }
 
 function getReportingOwnerId(
@@ -109,8 +107,7 @@ function shouldReportBoundary(
   }
 
   return !getReportingObservedSubtrees(reportingObservedSubtreesById, tracked).has(joinedPath)
-    || isObjectPathOverlayCollectionPathInvalidated(overlayState, tracked.id, path)
-    || isCollectionPathInvalidated(tracked, path);
+    || isObjectPathOverlayCollectionPathInvalidated(overlayState, tracked.id, path);
 }
 
 function isReturnedContractMemberCandidate(tracked: TrackedObject, joinedPath: string): boolean {
@@ -224,7 +221,6 @@ export function finalizeObjectPathFindings(
       }
       if (
         isObjectPathOverlayCollectionPathInvalidated(overlayState, tracked.id, objectNode.fullPath)
-        || isCollectionPathInvalidated(tracked, objectNode.fullPath)
       ) {
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
@@ -238,8 +234,7 @@ export function finalizeObjectPathFindings(
         continue;
       }
 
-      const escapedReason = getObjectPathOverlayEscapedReason(overlayState, tracked.id, objectNode.fullPath)
-        ?? getEscapedReason(tracked, objectNode.fullPath);
+      const escapedReason = getObjectPathOverlayEscapedReason(overlayState, tracked.id, objectNode.fullPath);
       if (escapedReason) {
         if (isReturnedContractMember) {
           resolveCapabilityObligation(

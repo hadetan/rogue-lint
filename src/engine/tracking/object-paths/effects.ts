@@ -35,7 +35,6 @@ import {
   createInvalidatedPathRecord,
   ensureCollectionChildPath,
   getCollectionInfo,
-  getEscapedReason,
   getNearestArrayCollectionPath,
   getTrackedArrayLength,
   hasTrackedChildren,
@@ -125,7 +124,7 @@ export function maybeReportInvalidatedRead(
     return;
   }
 
-  if (getObjectPathOverlayEscapedReason(overlayState, trackedObject.id, fullPath) ?? getEscapedReason(trackedObject, fullPath)) {
+  if (getObjectPathOverlayEscapedReason(overlayState, trackedObject.id, fullPath)) {
     return;
   }
 
