@@ -1,77 +1,30 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, SkipCategory, TrackedObject } from "../../../types.js";
+import type { AnalysisCapabilityFactFamily } from "../../capabilities/vocabulary.js";
 import { getSymbolKey } from "../../../compiler/ast-utils.js";
 import { serializePath } from "../../../shared/path-utils.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { registerCapabilityFact } from "../../analysis-state.js";
+import { ANALYSIS_CAPABILITY_DETAIL_LABEL, ANALYSIS_CAPABILITY_FACT_FAMILY, ANALYSIS_CAPABILITY_FACT_OUTCOME, ANALYSIS_CAPABILITY_ID } from "../../capabilities/vocabulary.js";
+import { isTrackingProtectedStructuralRole } from "../ownership.js";
+import { TRACKING_COLLECTION_KIND, TRACKING_RETAINED_BINDING_WRITE_METHOD } from "../vocabulary.js";
+import { getObjectBackedRetainedBindingSlotKeyFromAccess, getRetainedBindingContainerSlotKey, isLocallyOwnedRetainedBindingContainer, isSupportedRetainedBindingContainerType } from "../retained-bindings.js";
+import { getBindingSymbolKey, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, getCanonicalSymbolKey, getGlobalThisBindingKey, getStaticGlobalThisPropertyName, mergeTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import { getCallableReturnBinding } from "../callables.js";
+import type { ArrayProjectionBinding, ResolvedTrackedObjectAccess, TrackedObjectBinding } from "../model.js";
+import { buildHelperBoundaryReason, classifySupportedCallArgumentUse, summarizeHelperParameterUse } from "../semantics.js";
+import { buildCollectionBoundaryEntity, getCollectionInfo, getProjectionBinding, hasTrackedChildren, resolveExactPathAlias } from "../state.js";
 import {
-  getObjectBackedRetainedBindingSlotKeyFromAccess,
-  getRetainedBindingContainerSlotKey,
-  isLocallyOwnedRetainedBindingContainer,
-  isSupportedRetainedBindingContainerType,
-} from "../retained-bindings.js";
-import {
-  getBindingSymbolKey,
-  resolveAnalyzableCallableBinding,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  getCanonicalSymbolKey,
-  getGlobalThisBindingKey,
-  getStaticGlobalThisPropertyName,
-  mergeTrackedBinding,
-  sameTrackedBinding,
-} from "../bindings.js";
-import {
-  getCallableReturnBinding,
-} from "../callables.js";
-import type {
-  ArrayProjectionBinding,
-  ResolvedTrackedObjectAccess,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  buildHelperBoundaryReason,
-  classifySupportedCallArgumentUse,
-  summarizeHelperParameterUse,
-} from "../semantics.js";
-import {
-  buildCollectionBoundaryEntity,
-  getCollectionInfo,
-  getProjectionBinding,
-  hasTrackedChildren,
-  resolveExactPathAlias,
-} from "../state.js";
-import {
-  handleSupportedValueFateCall as handleSupportedValueFateCallEffect,
-  handleTrackedArrayMutation as handleTrackedArrayMutationEffect,
-  maybeInvalidateReplacedTrackedPath as maybeInvalidateReplacedTrackedPathEffect,
-  maybeReportInvalidatedRead as maybeReportInvalidatedReadEffect,
-  recordArrayBoundary as recordArrayBoundaryEffect,
-  tryRegisterExactArrayInsertion,
+  handleSupportedValueFateCall as handleSupportedValueFateCallEffect, handleTrackedArrayMutation as handleTrackedArrayMutationEffect, maybeInvalidateReplacedTrackedPath as maybeInvalidateReplacedTrackedPathEffect,
+  maybeReportInvalidatedRead as maybeReportInvalidatedReadEffect, recordArrayBoundary as recordArrayBoundaryEffect, tryRegisterExactArrayInsertion,
 } from "./effects.js";
 import {
-  markObjectPathAliasObserved,
-  markObjectPathEscaped,
-  markObjectPathObservedChildPaths,
-  markObjectPathObservedSubtree,
-  markObjectPathProjectionChildReads,
-  markObjectPathProjectionElementRead,
-  markObjectPathProjectionReads,
-  markObjectPathProjectionWrites,
-  markObjectPathRead,
-  markObjectPathWrite,
+  markObjectPathAliasObserved, markObjectPathEscaped, markObjectPathObservedChildPaths, markObjectPathObservedSubtree, markObjectPathProjectionChildReads,
+  markObjectPathProjectionElementRead, markObjectPathProjectionReads, markObjectPathProjectionWrites, markObjectPathRead, markObjectPathWrite,
 } from "./overlay.js";
-import type {
-  FiniteLookupCandidate,
-  ObjectPathSourceFileContext,
-  ObjectPathStageContext,
-} from "./types.js";
+import type { FiniteLookupCandidate, ObjectPathSourceFileContext, ObjectPathStageContext } from "./types.js";
 import { createCollectionOperationHandler } from "./collection-operations.js";
 import { createDestructuringHandler } from "./destructuring.js";
 import { createFiniteLookupPlanner } from "./finite-lookups.js";
@@ -150,34 +103,56 @@ export function visitObjectPathSourceFile(
     reason: string,
     detailHint?: string,
   ): void => {
-    if (["array-callback-escape", "array-opaque-mutation", "opaque-object-call"].includes(category)) {
-      const entity = category === "array-callback-escape" || category === "array-opaque-mutation"
+    if (
+      category === SKIP_CATEGORY.arrayCallbackEscape
+      || category === SKIP_CATEGORY.arrayOpaqueMutation
+      || category === SKIP_CATEGORY.opaqueObjectCall
+    ) {
+      const entity = category === SKIP_CATEGORY.arrayCallbackEscape || category === SKIP_CATEGORY.arrayOpaqueMutation
         ? buildCollectionBoundaryEntity(project, trackedObject, boundarySourceFile, node, segments)
         : getTrackedEntityAtPath(trackedObject, segments);
-      registerCapabilityFact(state, "helper-transport", entity, "helper-transport", "boundary", {
+      registerCapabilityFact(
+        state,
+        ANALYSIS_CAPABILITY_ID.helperTransport,
+        entity,
+        ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport,
+        ANALYSIS_CAPABILITY_FACT_OUTCOME.boundary,
+        {
         category,
         reason,
         detailHint,
-      });
+        },
+      );
       return;
     }
 
-    if (["array-at-call", "computed-property-access", "dynamic-array-index"].includes(category)) {
-      const entity = category === "array-at-call" || category === "dynamic-array-index"
+    if (
+      category === SKIP_CATEGORY.arrayAtCall
+      || category === SKIP_CATEGORY.computedPropertyAccess
+      || category === SKIP_CATEGORY.dynamicArrayIndex
+    ) {
+      const entity = category === SKIP_CATEGORY.arrayAtCall || category === SKIP_CATEGORY.dynamicArrayIndex
         ? buildCollectionBoundaryEntity(project, trackedObject, boundarySourceFile, node, segments)
         : getTrackedEntityAtPath(trackedObject, segments);
-      registerCapabilityFact(state, "finite-keyed-access", entity, "finite-keyed-access", "boundary", {
+      registerCapabilityFact(
+        state,
+        ANALYSIS_CAPABILITY_ID.finiteKeyedAccess,
+        entity,
+        ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+        ANALYSIS_CAPABILITY_FACT_OUTCOME.boundary,
+        {
         category,
         reason,
         detailHint,
-      });
+        },
+      );
     }
   };
 
   const registerLiveCapabilityFact = (
     trackedObject: TrackedObject,
     segments: PathSegment[],
-    capabilityId: "helper-transport" | "finite-keyed-access",
+    capabilityId: AnalysisCapabilityFactFamily,
     detailHint: string,
   ): void => {
     registerCapabilityFact(
@@ -185,7 +160,7 @@ export function visitObjectPathSourceFile(
       capabilityId,
       getTrackedEntityAtPath(trackedObject, segments),
       capabilityId,
-      "live",
+      ANALYSIS_CAPABILITY_FACT_OUTCOME.live,
       { detailHint },
     );
   };
@@ -461,8 +436,8 @@ export function visitObjectPathSourceFile(
       registerLiveCapabilityFact(
         candidate.binding.trackedObject,
         fullPath,
-        "finite-keyed-access",
-        "bounded finite key read",
+        ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+        ANALYSIS_CAPABILITY_DETAIL_LABEL.boundedFiniteKeyRead,
       );
       maybeReportInvalidatedRead(
         project,
@@ -534,9 +509,7 @@ export function visitObjectPathSourceFile(
   };
 
   const shouldReplayExactHelperReadPaths = (binding: TrackedObjectBinding): boolean => (
-    binding.trackedObject.structuralRole !== "structural-record"
-    && binding.trackedObject.structuralRole !== "structural-record-array"
-    && binding.trackedObject.structuralRole !== "state-holder"
+    !isTrackingProtectedStructuralRole(binding.trackedObject.structuralRole)
   );
 
   const {
@@ -711,7 +684,7 @@ export function visitObjectPathSourceFile(
       const handledRetainedContainerIndices = new Set<number>();
       if (
         ts.isPropertyAccessExpression(node.expression)
-        && node.expression.name.text === "set"
+        && node.expression.name.text === TRACKING_RETAINED_BINDING_WRITE_METHOD
         && node.arguments.length >= 2
         && isSupportedRetainedBindingContainerType(project, node.expression.expression)
       ) {
@@ -780,9 +753,9 @@ export function visitObjectPathSourceFile(
               markEscaped(
                 callableReturnBinding.trackedObject,
                 callableReturnBinding.prefix,
-                "opaque-object-call",
+                SKIP_CATEGORY.opaqueObjectCall,
                 higherOrderSummary.boundaryReason,
-                "same-project helper escape",
+                ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperEscape,
               );
             }
           }
@@ -806,7 +779,7 @@ export function visitObjectPathSourceFile(
         const fullPath = [...resolved.binding.prefix, ...resolved.segments];
         if (resolved.dynamic) {
           const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
-          if (collectionInfo?.kind === "array" && resolved.boundaryCategory) {
+          if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array && resolved.boundaryCategory) {
             recordArrayBoundary(
               project,
               resolved.binding.trackedObject,
@@ -822,7 +795,7 @@ export function visitObjectPathSourceFile(
             markEscaped(
               resolved.binding.trackedObject,
               fullPath,
-              resolved.boundaryCategory ?? "computed-property-access",
+              resolved.boundaryCategory ?? SKIP_CATEGORY.computedPropertyAccess,
               resolved.boundaryReason ?? "computed property access prevents exact path analysis",
             );
           }
@@ -852,7 +825,7 @@ export function visitObjectPathSourceFile(
           continue;
         }
 
-        if (collectionInfo?.kind === "array") {
+        if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array) {
           recordArrayBoundary(
             project,
             resolved.binding.trackedObject,
@@ -860,7 +833,7 @@ export function visitObjectPathSourceFile(
             argument,
             fullPath,
             fullPath,
-            "array-opaque-mutation",
+            SKIP_CATEGORY.arrayOpaqueMutation,
             resolved.segments.length === 0
               ? "collection passed to call expression escapes exact local analysis"
               : "collection path passed to call expression escapes exact local analysis",
@@ -878,7 +851,7 @@ export function visitObjectPathSourceFile(
         markEscaped(
           resolved.binding.trackedObject,
           fullPath,
-          "opaque-object-call",
+          SKIP_CATEGORY.opaqueObjectCall,
           resolved.segments.length === 0
             ? "object passed to call expression escapes exact local analysis"
             : "object path passed to call expression escapes exact local analysis",
@@ -921,7 +894,11 @@ export function visitObjectPathSourceFile(
           const fullPath = [...resolved.binding.prefix, ...resolved.segments];
           const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
           const parameter = callable.parameters[argumentIndex];
-          if (collectionInfo?.kind === "array" && parameter && ts.isIdentifier(parameter.name)) {
+          if (
+            collectionInfo?.kind === TRACKING_COLLECTION_KIND.array
+            && parameter
+            && ts.isIdentifier(parameter.name)
+          ) {
             const summary = summarizeHelperParameterUse(
               project,
               callable,
@@ -939,7 +916,7 @@ export function visitObjectPathSourceFile(
               node,
               fullPath,
               fullPath,
-              "array-opaque-mutation",
+              SKIP_CATEGORY.arrayOpaqueMutation,
               buildHelperBoundaryReason(
                 project,
                 summary,
@@ -993,7 +970,7 @@ export function visitObjectPathSourceFile(
         }
 
         const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
-        if (collectionInfo?.kind === "array" && resolved.boundaryCategory) {
+        if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array && resolved.boundaryCategory) {
           recordArrayBoundary(
             project,
             resolved.binding.trackedObject,
@@ -1009,7 +986,7 @@ export function visitObjectPathSourceFile(
           markEscaped(
             resolved.binding.trackedObject,
             fullPath,
-            resolved.boundaryCategory ?? "computed-property-access",
+            resolved.boundaryCategory ?? SKIP_CATEGORY.computedPropertyAccess,
             resolved.boundaryReason ?? "computed property access prevents exact path analysis",
           );
         }

@@ -1,57 +1,28 @@
 import ts from "typescript";
 
 import { getSuppressionAudit } from "../../../suppressions.js";
-import type {
-  EntityRecord,
-  PathSegment,
-  ProjectContext,
-  SkipCategory,
-  SuppressionContext,
-  TrackedObject,
-} from "../../../types.js";
+import type { EntityRecord, PathSegment, ProjectContext, SkipCategory, SuppressionContext, TrackedObject } from "../../../types.js";
+import { ENTITY_KIND } from "../../../shared/entity-vocabulary.js";
+import { FINDING_KIND } from "../../../shared/finding-vocabulary.js";
 import { makeEntity } from "../../../shared/entity-utils.js";
+import { PATH_SEGMENT_KIND } from "../../../shared/path-vocabulary.js";
 import { indexSegment, renderPathWithRoot } from "../../../shared/path-utils.js";
-import {
-  addAudit,
-  addFinding,
-  type AnalysisState,
-} from "../../analysis-state.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
+import { addAudit, addFinding, type AnalysisState } from "../../analysis-state.js";
 import { getAccessPath, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, getBindingByNode } from "../bindings.js";
-import type {
-  CallableReturnSummary,
-  ExactAppendSlotPlan,
-  TrackedObjectBinding,
-} from "../model.js";
+import type { CallableReturnSummary, ExactAppendSlotPlan, TrackedObjectBinding } from "../model.js";
+import { ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS } from "../semantics.js";
+import { TRACKING_ARRAY_EXACT_APPEND_METHODS, TRACKING_COLLECTION_KIND, TRACKING_METHOD_NAME, TRACKING_VALUE_FATE } from "../vocabulary.js";
 import {
-  ARRAY_APPEND_METHODS,
-  ARRAY_REORDER_METHODS,
-  ARRAY_REPLACEMENT_METHODS,
-  ARRAY_TRUNCATE_METHODS,
-} from "../semantics.js";
-import {
-  addValueFate,
-  buildCollectionBoundaryEntity,
-  createInvalidatedPathRecord,
-  ensureCollectionChildPath,
-  getCollectionInfo,
-  getNearestArrayCollectionPath,
-  getTrackedArrayLength,
-  hasTrackedChildren,
-  materializeExactAppendSlot,
-  setTrackedArrayLength,
+  addValueFate, buildCollectionBoundaryEntity, createInvalidatedPathRecord, ensureCollectionChildPath, getCollectionInfo,
+  getNearestArrayCollectionPath, getTrackedArrayLength, hasTrackedChildren, materializeExactAppendSlot, setTrackedArrayLength,
 } from "../state.js";
 import { materializeTrackedLiteralAtPath } from "../literal-materialization.js";
 import { unwrapExpression } from "../syntax.js";
 import {
-  getObjectPathOverlayEscapedReason,
-  getObjectPathOverlayInvalidatedPathRecord,
-  invalidateObjectPathCollectionPath,
-  markObjectPathEscaped,
-  markObjectPathObservedSubtree,
-  markObjectPathRead,
-  recordObjectPathCollectionBoundary,
-  type ObjectPathOverlayState,
+  getObjectPathOverlayEscapedReason, getObjectPathOverlayInvalidatedPathRecord, invalidateObjectPathCollectionPath, markObjectPathEscaped,
+  markObjectPathObservedSubtree, markObjectPathRead, recordObjectPathCollectionBoundary, type ObjectPathOverlayState,
 } from "./overlay.js";
 
 function isNestedTrackedAccess(node: ts.Node): boolean {
@@ -71,7 +42,7 @@ function buildReadExpressionEntity(
 ): EntityRecord {
   return makeEntity(
     project.rootPath,
-    "expression",
+    ENTITY_KIND.expression,
     sourceFile,
     node,
     renderPathWithRoot(trackedObject.rootName, fullPath),
@@ -140,7 +111,7 @@ export function maybeReportInvalidatedRead(
     entity,
     invalidated.findingKind,
     invalidated.reason,
-    invalidated.findingKind === "invalidated-read"
+    invalidated.findingKind === FINDING_KIND.invalidatedRead
       ? `Invalidated read of ${renderedPath}`
       : `Stale read after mutation of ${renderedPath}`,
     "review",
@@ -222,7 +193,7 @@ export function handleTrackedArrayMutation(
   }
 
   if (ARRAY_REORDER_METHODS.has(methodName)) {
-    if (methodName === "shift" && arrayLength === 1) {
+    if (methodName === TRACKING_METHOD_NAME.shift && arrayLength === 1) {
       const removedPath = [...collectionPath, indexSegment(0)];
       markObjectPathRead(overlayState, trackedObject, removedPath);
       invalidateObjectPathCollectionPath(
@@ -279,11 +250,11 @@ export function tryRegisterExactArrayInsertion(
     return false;
   }
 
-  if (methodName === "unshift" && arrayLength > 0) {
+  if (methodName === TRACKING_METHOD_NAME.unshift && arrayLength > 0) {
     return false;
   }
 
-  const startIndex = methodName === "unshift" ? 0 : arrayLength;
+  const startIndex = methodName === TRACKING_METHOD_NAME.unshift ? 0 : arrayLength;
   slotPlans.forEach((slotPlan, index) => {
     const receiverPath = [...collectionPath, indexSegment(startIndex + index)];
     ensureCollectionChildPath(trackedObject, collectionPath, receiverPath);
@@ -327,7 +298,7 @@ export function handleSupportedValueFateCall(
   const calleeText = node.expression.getText(sourceFile);
   const calleeAccessPath = getAccessPath(node.expression);
   const methodName = calleeAccessPath && !calleeAccessPath.dynamic && calleeAccessPath.segments.length > 0
-    ? calleeAccessPath.segments.at(-1)?.kind === "property"
+    ? calleeAccessPath.segments.at(-1)?.kind === PATH_SEGMENT_KIND.property
       ? calleeAccessPath.segments.at(-1)?.value
       : undefined
     : undefined;
@@ -341,21 +312,31 @@ export function handleSupportedValueFateCall(
     ? getCollectionInfo(trackedReceiver.trackedObject, receiverPath)
     : undefined;
 
-  if (trackedReceiver && receiverPath && receiverCollection?.kind === "array" && methodName === "slice") {
+  if (
+    trackedReceiver
+    && receiverPath
+    && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
+    && methodName === "slice"
+  ) {
     markObjectPathObservedSubtree(overlayState, trackedReceiver.trackedObject, receiverPath, trackedObjectsById);
     addValueFate(
       trackedReceiver.trackedObject,
-      "shallow-cloned",
+      TRACKING_VALUE_FATE.shallowCloned,
       receiverPath,
       "slice reads the receiver to create a shallow-cloned array",
     );
   }
 
-  if (trackedReceiver && receiverPath && receiverCollection?.kind === "array" && methodName === "concat") {
+  if (
+    trackedReceiver
+    && receiverPath
+    && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
+    && methodName === "concat"
+  ) {
     markObjectPathObservedSubtree(overlayState, trackedReceiver.trackedObject, receiverPath, trackedObjectsById);
     addValueFate(
       trackedReceiver.trackedObject,
-      "shallow-cloned",
+      TRACKING_VALUE_FATE.shallowCloned,
       receiverPath,
       "concat reads the receiver to create a shallow-cloned array",
     );
@@ -375,7 +356,7 @@ export function handleSupportedValueFateCall(
       markObjectPathObservedSubtree(overlayState, resolved.binding.trackedObject, fullPath, trackedObjectsById);
       addValueFate(
         resolved.binding.trackedObject,
-        "shallow-cloned",
+        TRACKING_VALUE_FATE.shallowCloned,
         fullPath,
         "concat reads this value to create a shallow-cloned array",
         trackedReceiver.trackedObject.id,
@@ -396,7 +377,7 @@ export function handleSupportedValueFateCall(
     if (resolved && !resolved.dynamic) {
       const fullPath = [...resolved.binding.prefix, ...resolved.segments];
       const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
-      if (collectionInfo?.kind === "array") {
+      if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array) {
         markObjectPathObservedSubtree(overlayState, resolved.binding.trackedObject, fullPath, trackedObjectsById);
         handledIndices.add(0);
       }
@@ -406,8 +387,9 @@ export function handleSupportedValueFateCall(
   if (
     trackedReceiver
     && receiverPath
-    && receiverCollection?.kind === "array"
-    && (methodName === "push" || methodName === "unshift")
+    && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
+    && typeof methodName === "string"
+    && TRACKING_ARRAY_EXACT_APPEND_METHODS.has(methodName)
   ) {
     const slotPlans: ExactAppendSlotPlan[] = [];
     let exactAppendSupported = node.arguments.length > 0;
@@ -433,7 +415,7 @@ export function handleSupportedValueFateCall(
 
         const spreadPath = [...resolvedSpread.binding.prefix, ...resolvedSpread.segments];
         const spreadCollection = getCollectionInfo(resolvedSpread.binding.trackedObject, spreadPath);
-        if (!spreadCollection || spreadCollection.kind !== "array") {
+        if (!spreadCollection || spreadCollection.kind !== TRACKING_COLLECTION_KIND.array) {
           exactAppendSupported = false;
           continue;
         }
@@ -520,7 +502,7 @@ export function handleSupportedValueFateCall(
             receiverPath,
             receiverPath,
             "array-append-mutation",
-            methodName === "unshift"
+            methodName === TRACKING_METHOD_NAME.unshift
               ? "unshift cannot preserve exact slot remapping once the receiver already contains elements"
               : `${methodName} spreads a source beyond exact local analysis`,
           );
@@ -570,7 +552,7 @@ export function handleSupportedValueFateCall(
       markObjectPathObservedSubtree(overlayState, resolved.binding.trackedObject, fullPath, trackedObjectsById);
       addValueFate(
         resolved.binding.trackedObject,
-        "deep-cloned",
+        TRACKING_VALUE_FATE.deepCloned,
         fullPath,
         "structuredClone reads this value to create a deep-cloned copy",
       );
@@ -592,7 +574,7 @@ export function handleSupportedValueFateCall(
         overlayState,
         target.binding.trackedObject,
         targetPath,
-        "object-spread",
+        SKIP_CATEGORY.objectSpread,
         "Object.assign merges properties beyond exact local analysis",
       );
       handledIndices.add(0);
@@ -614,7 +596,7 @@ export function handleSupportedValueFateCall(
       markObjectPathObservedSubtree(overlayState, resolved.binding.trackedObject, fullPath, trackedObjectsById);
       addValueFate(
         resolved.binding.trackedObject,
-        "shallow-cloned",
+        TRACKING_VALUE_FATE.shallowCloned,
         fullPath,
         "Object.assign reads this value to copy properties into another object",
       );

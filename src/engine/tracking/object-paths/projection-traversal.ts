@@ -1,37 +1,15 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { serializePath } from "../../../shared/path-utils.js";
-import {
-  getBindingSymbolKey,
-  resolveProjectionAccess,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  sameTrackedBinding,
-} from "../bindings.js";
-import type {
-  ArrayProjectionBinding,
-  CallableReturnSummary,
-  ProjectedArrayUsageContext,
-  TrackedObjectBinding,
-} from "../model.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
+import { getBindingSymbolKey, resolveProjectionAccess, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import type { ArrayProjectionBinding, CallableReturnSummary, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
 import { classifySupportedCallArgumentUse } from "../semantics.js";
-import {
-  getProjectionBinding,
-  resolveExactPathAlias,
-} from "../state.js";
-import {
-  isAssignmentLeft,
-  visitProjectedArrayUsage,
-} from "./projections.js";
+import { getProjectionBinding, resolveExactPathAlias } from "../state.js";
+import { isAssignmentLeft, visitProjectedArrayUsage } from "./projections.js";
 import type { ObjectPathOverlayState } from "./overlay.js";
 
 interface ProjectionTraversalHandlerOptions {
@@ -202,7 +180,7 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
         node.expression,
         projected.projection.sourcePath,
         projected.projection.sourcePath,
-        projected.boundaryCategory ?? "array-callback-escape",
+        projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
         projected.boundaryReason ?? "array projection escapes exact local analysis",
         true,
       );
@@ -263,7 +241,7 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
         node,
         projected.projection.sourcePath,
         projected.projection.sourcePath,
-        projected.boundaryCategory ?? "array-callback-escape",
+        projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
         projected.boundaryReason ?? "array projection escapes exact local analysis",
         true,
       );

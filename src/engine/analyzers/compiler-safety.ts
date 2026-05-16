@@ -4,6 +4,7 @@ import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { findNodeAtPosition } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
@@ -41,7 +42,7 @@ function buildCompilerSafetyEntity(
       return {
         entity: makeEntity(
           project.rootPath,
-          "class-member",
+          ENTITY_KIND.classMember,
           sourceFile,
           nameNode,
           name,
@@ -53,7 +54,7 @@ function buildCompilerSafetyEntity(
 
     if (ts.isVariableDeclaration(declarationNode) && ts.isIdentifier(declarationNode.name)) {
       return {
-        entity: makeEntity(project.rootPath, "local", sourceFile, node, declarationNode.name.text),
+        entity: makeEntity(project.rootPath, ENTITY_KIND.local, sourceFile, node, declarationNode.name.text),
         targetNode: node,
       };
     }
@@ -61,7 +62,7 @@ function buildCompilerSafetyEntity(
 
   if (ts.isIdentifier(node)) {
     return {
-      entity: makeEntity(project.rootPath, "local", sourceFile, node, node.text),
+      entity: makeEntity(project.rootPath, ENTITY_KIND.local, sourceFile, node, node.text),
       targetNode: node,
     };
   }
@@ -72,7 +73,7 @@ function buildCompilerSafetyEntity(
   }
 
   return {
-    entity: makeEntity(project.rootPath, "expression", sourceFile, node, text),
+    entity: makeEntity(project.rootPath, ENTITY_KIND.expression, sourceFile, node, text),
     targetNode: node,
   };
 }

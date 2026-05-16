@@ -23,7 +23,6 @@ import type {
   BenchmarkExpectations,
   BenchmarkFindingMatcher,
   BenchmarkGapPriorityEntry,
-  BenchmarkGapPriorityScope,
   BenchmarkSkipMatcher,
   BenchmarkTargetManifest,
   CountedMatcherRecords,
@@ -32,6 +31,17 @@ import type {
   PositiveExpectationResult,
 } from "./types.js";
 import { getBenchmarkTrackingSafetyBudgets } from "./upgrade-safety.js";
+import {
+  BENCHMARK_COVERAGE_CLASS,
+  BENCHMARK_DIAGNOSTIC_GAP_PRIORITY_SCOPE,
+  BENCHMARK_FINDING_GAP_PRIORITY_SCOPE,
+  BENCHMARK_SKIP_GAP_PRIORITY_SCOPE,
+  getBenchmarkGapPriorityRank,
+} from "./vocabulary.js";
+import type {
+  BenchmarkFindingGapPriorityScope,
+  BenchmarkSkipGapPriorityScope,
+} from "./vocabulary.js";
 
 interface CountMatcherFields {
   minCount?: number;
@@ -172,26 +182,9 @@ function countKinds<T extends string>(values: T[]): Array<[T, number]> {
   return [...counts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]));
 }
 
-function gapPriorityRank(scope: BenchmarkGapPriorityScope): number {
-  switch (scope) {
-    case "accepted-finding-growth":
-    case "known-skip-growth":
-      return 0;
-    case "unexpected-finding":
-    case "unexpected-diagnostic":
-    case "unexpected-skip":
-      return 1;
-    case "accepted-finding":
-    case "known-skip":
-      return 2;
-    default:
-      return 3;
-  }
-}
-
 function groupFindingPriority(
   records: FindingRecord[],
-  scope: Extract<BenchmarkGapPriorityScope, "accepted-finding" | "accepted-finding-growth" | "unexpected-finding">,
+  scope: BenchmarkFindingGapPriorityScope,
 ): BenchmarkGapPriorityEntry[] {
   return countKinds(records.map((record) => record.kind)).map(([label, count]) => ({
     scope,
@@ -202,7 +195,7 @@ function groupFindingPriority(
 
 function groupSkipPriority(
   records: AuditRecord[],
-  scope: Extract<BenchmarkGapPriorityScope, "known-skip" | "known-skip-growth" | "unexpected-skip">,
+  scope: BenchmarkSkipGapPriorityScope,
 ): BenchmarkGapPriorityEntry[] {
   return countKinds(records.map((record) => record.category ?? record.kind)).map(([label, count]) => ({
     scope,
@@ -222,7 +215,7 @@ function getDiagnosticPriorityLabel(record: DiagnosticRecord): string {
 
 function groupDiagnosticPriority(
   records: DiagnosticRecord[],
-  scope: Extract<BenchmarkGapPriorityScope, "unexpected-diagnostic">,
+  scope: typeof BENCHMARK_DIAGNOSTIC_GAP_PRIORITY_SCOPE,
 ): BenchmarkGapPriorityEntry[] {
   return countKinds(records.map(getDiagnosticPriorityLabel)).map(([label, count]) => ({
     scope,
@@ -233,7 +226,7 @@ function groupDiagnosticPriority(
 
 function sortGapPriority(entries: BenchmarkGapPriorityEntry[]): BenchmarkGapPriorityEntry[] {
   return [...entries].sort((left, right) => {
-    const rankDelta = gapPriorityRank(left.scope) - gapPriorityRank(right.scope);
+    const rankDelta = getBenchmarkGapPriorityRank(left.scope) - getBenchmarkGapPriorityRank(right.scope);
     if (rankDelta !== 0) {
       return rankDelta;
     }
@@ -336,8 +329,8 @@ export function evaluateBenchmarkExpectations(
   result: AnalysisResult,
   expectations: BenchmarkExpectations,
   coverageClass: BenchmarkTargetManifest["coverageClass"] = result.mode === "library"
-    ? "library-public-surface"
-    : "application-entrypoint-driven",
+    ? BENCHMARK_COVERAGE_CLASS.libraryPublicSurface
+    : BENCHMARK_COVERAGE_CLASS.applicationEntrypointDriven,
 ): BenchmarkEvaluation {
   const findings = result.findings;
   const skips = result.skipped;
@@ -417,30 +410,30 @@ export function evaluateBenchmarkExpectations(
     || unexpectedDiagnostics.length > 0;
 
   const gapPriority = sortGapPriority([
-    ...groupFindingPriority(unexpectedFindings, "unexpected-finding"),
-    ...groupDiagnosticPriority(unexpectedDiagnostics, "unexpected-diagnostic"),
-    ...groupSkipPriority(unexpectedSkips, "unexpected-skip"),
+    ...groupFindingPriority(unexpectedFindings, BENCHMARK_FINDING_GAP_PRIORITY_SCOPE.unexpected),
+    ...groupDiagnosticPriority(unexpectedDiagnostics, BENCHMARK_DIAGNOSTIC_GAP_PRIORITY_SCOPE),
+    ...groupSkipPriority(unexpectedSkips, BENCHMARK_SKIP_GAP_PRIORITY_SCOPE.unexpected),
     ...groupFindingPriority(
       [
         ...acceptedFindings.present.flatMap((entry) => entry.records),
         ...acceptedFindings.reduced.flatMap((entry) => entry.records),
       ],
-      "accepted-finding",
+      BENCHMARK_FINDING_GAP_PRIORITY_SCOPE.accepted,
     ),
     ...groupFindingPriority(
       acceptedFindings.regressions.flatMap((entry) => entry.records),
-      "accepted-finding-growth",
+      BENCHMARK_FINDING_GAP_PRIORITY_SCOPE.acceptedGrowth,
     ),
     ...groupSkipPriority(
       [
         ...knownSkips.present.flatMap((entry) => entry.records),
         ...knownSkips.reduced.flatMap((entry) => entry.records),
       ],
-      "known-skip",
+      BENCHMARK_SKIP_GAP_PRIORITY_SCOPE.known,
     ),
     ...groupSkipPriority(
       knownSkips.regressions.flatMap((entry) => entry.records),
-      "known-skip-growth",
+      BENCHMARK_SKIP_GAP_PRIORITY_SCOPE.knownGrowth,
     ),
   ]);
   const capabilityPriority = groupCapabilityPriority(

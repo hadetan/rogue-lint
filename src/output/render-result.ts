@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import type { AnalysisResult, AuditRecord, FindingRecord, Location, ReportFormat } from "../types.js";
+import { ENTITY_KIND } from "../shared/entity-vocabulary.js";
 
 interface GroupedLeafPresentation {
   label: string;
@@ -25,7 +26,7 @@ function qualifyLabel(owner: string | undefined, name: string): string {
 }
 
 function createFindingLeafPresentation(finding: FindingRecord): GroupedLeafPresentation {
-  const label = finding.entity.kind === "file"
+  const label = finding.entity.kind === ENTITY_KIND.file
     ? finding.entity.name
     : qualifyLabel(finding.entity.owner, finding.entity.name);
   return {

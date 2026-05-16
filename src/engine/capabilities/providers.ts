@@ -1,5 +1,6 @@
 import type { AnalysisResult, AuditRecord, DiagnosticRecord } from "../../types.js";
 import type { ProjectContext } from "../../types.js";
+import { SKIP_CATEGORY } from "../../shared/skip-category-vocabulary.js";
 
 import { attachAnalysisRunResultMetadata, getAnalysisRunResultMetadata } from "../analysis-run-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
@@ -15,6 +16,15 @@ import {
   getCapabilityFactDetailLabel,
   getCapabilityObligationDetailLabel,
 } from "./summary-models.js";
+import {
+  ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE,
+  ANALYSIS_CAPABILITY_BOUNDARY_SOURCE,
+  ANALYSIS_CAPABILITY_EVIDENCE_SOURCE,
+  ANALYSIS_CAPABILITY_FACT_FAMILY,
+  ANALYSIS_CAPABILITY_FACT_OUTCOME,
+  ANALYSIS_CAPABILITY_ID,
+  ANALYSIS_CAPABILITY_OUTCOME,
+} from "./vocabulary.js";
 import {
   createCapabilityObligationGapMessage,
   createCapabilityAttributionRecord,
@@ -111,7 +121,7 @@ function createObligationBackedProvider(capabilityId: AnalysisCapabilityId): Ana
 
       ledger.obligations.push(obligation);
       ledger.evidences.push(
-        createCapabilityEvidenceRecord(capabilityId, "obligation", obligation.id, obligation.family),
+        createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.obligation, obligation.id, obligation.family),
       );
       const detailLabel = getCapabilityObligationDetailLabel(
         context.summaryRegistry,
@@ -120,64 +130,64 @@ function createObligationBackedProvider(capabilityId: AnalysisCapabilityId): Ana
       );
 
       switch (obligation.outcome) {
-        case "finding": {
+        case ANALYSIS_CAPABILITY_OUTCOME.finding: {
           const finding = findingsById.get(obligation.entity.id);
           if (finding) {
             ledger.attributions.push(
-              createCapabilityAttributionRecord(capabilityId, "finding", finding.id),
+              createCapabilityAttributionRecord(capabilityId, ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.finding, finding.id),
             );
             ledger.evidences.push(
-              createCapabilityEvidenceRecord(capabilityId, "finding", finding.id, finding.kind),
+              createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.finding, finding.id, finding.kind),
             );
             if (detailLabel && detailLabel !== finding.kind) {
               ledger.evidences.push(
-                createCapabilityEvidenceRecord(capabilityId, "finding", finding.id, detailLabel),
+                createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.finding, finding.id, detailLabel),
               );
             }
           }
           break;
         }
-        case "kept": {
+        case ANALYSIS_CAPABILITY_OUTCOME.kept: {
           const kept = keptById.get(obligation.entity.id);
           if (kept) {
             ledger.attributions.push(
-              createCapabilityAttributionRecord(capabilityId, "kept", kept.id),
+              createCapabilityAttributionRecord(capabilityId, ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.kept, kept.id),
             );
             ledger.evidences.push(
-              createCapabilityEvidenceRecord(capabilityId, "kept", kept.id, kept.kind),
+              createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.kept, kept.id, kept.kind),
             );
             if (detailLabel && detailLabel !== kept.kind) {
               ledger.evidences.push(
-                createCapabilityEvidenceRecord(capabilityId, "kept", kept.id, detailLabel),
+                createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.kept, kept.id, detailLabel),
               );
             }
           }
           break;
         }
-        case "skipped": {
+        case ANALYSIS_CAPABILITY_OUTCOME.skipped: {
           const skipped = skippedById.get(obligation.entity.id);
           if (skipped) {
             ledger.attributions.push(
-              createCapabilityAttributionRecord(capabilityId, "skipped", skipped.id),
+              createCapabilityAttributionRecord(capabilityId, ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.skipped, skipped.id),
             );
             ledger.evidences.push(
-              createCapabilityEvidenceRecord(capabilityId, "skipped", skipped.id, skipped.category ?? skipped.kind),
+              createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.skipped, skipped.id, skipped.category ?? skipped.kind),
             );
             const skippedDetailLabel = detailLabel ?? getCapabilityFallbackBoundaryLabel(capabilityId);
             if (skippedDetailLabel !== skipped.category && skippedDetailLabel !== skipped.kind) {
               ledger.evidences.push(
-                createCapabilityEvidenceRecord(capabilityId, "skipped", skipped.id, skippedDetailLabel),
+                createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.skipped, skipped.id, skippedDetailLabel),
               );
             }
             ledger.boundaries.push(
-              createCapabilityBoundaryRecord(capabilityId, "skipped", skipped.id, skipped.reason, skipped.category),
+              createCapabilityBoundaryRecord(capabilityId, ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.skipped, skipped.id, skipped.reason, skipped.category),
             );
           }
           break;
         }
-        case "boundary": {
+        case ANALYSIS_CAPABILITY_OUTCOME.boundary: {
           ledger.boundaries.push(
-            createCapabilityBoundaryRecord(capabilityId, "boundary", obligation.id, obligation.family),
+            createCapabilityBoundaryRecord(capabilityId, ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.boundary, obligation.id, obligation.family),
           );
           break;
         }
@@ -185,7 +195,7 @@ function createObligationBackedProvider(capabilityId: AnalysisCapabilityId): Ana
           const recordId = createUnresolvedObligationDiagnosticId(obligation);
           const unresolvedLabel = detailLabel ?? getCapabilityFallbackBoundaryLabel(capabilityId);
           ledger.boundaries.push(
-            createCapabilityBoundaryRecord(capabilityId, "obligation", recordId, unresolvedLabel),
+            createCapabilityBoundaryRecord(capabilityId, ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.obligation, recordId, unresolvedLabel),
           );
           break;
         }
@@ -217,10 +227,10 @@ function createSkippedBoundaryProvider(
       }
 
       ledger.attributions.push(
-        createCapabilityAttributionRecord(capabilityId, "skipped", skipped.id),
+        createCapabilityAttributionRecord(capabilityId, ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.skipped, skipped.id),
       );
       ledger.evidences.push(
-        createCapabilityEvidenceRecord(capabilityId, "skipped", skipped.id, skipped.category ?? skipped.kind),
+        createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.skipped, skipped.id, skipped.category ?? skipped.kind),
       );
       const detailLabel = getCapabilityBoundaryDetailLabel(
         context.summaryRegistry,
@@ -229,11 +239,11 @@ function createSkippedBoundaryProvider(
       ) ?? getCapabilityFallbackBoundaryLabel(capabilityId);
       if (detailLabel !== skipped.category && detailLabel !== skipped.kind) {
         ledger.evidences.push(
-          createCapabilityEvidenceRecord(capabilityId, "skipped", skipped.id, detailLabel),
+          createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.skipped, skipped.id, detailLabel),
         );
       }
       ledger.boundaries.push(
-        createCapabilityBoundaryRecord(capabilityId, "skipped", skipped.id, skipped.reason, skipped.category),
+        createCapabilityBoundaryRecord(capabilityId, ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.skipped, skipped.id, skipped.reason, skipped.category),
       );
     }
 
@@ -269,27 +279,27 @@ function createFactBackedProvider(
       ) ?? getCapabilityFallbackBoundaryLabel(capabilityId);
 
       ledger.evidences.push(
-        createCapabilityEvidenceRecord(capabilityId, "fact", fact.id, detailLabel),
+        createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.fact, fact.id, detailLabel),
       );
 
-      if (fact.outcome === "live") {
+      if (fact.outcome === ANALYSIS_CAPABILITY_FACT_OUTCOME.live) {
         const finding = findingsById.get(fact.entity.id);
         if (finding) {
           ledger.attributions.push(
-            createCapabilityAttributionRecord(capabilityId, "finding", finding.id),
+            createCapabilityAttributionRecord(capabilityId, ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.finding, finding.id),
           );
           ledger.evidences.push(
-            createCapabilityEvidenceRecord(capabilityId, "finding", finding.id, finding.kind),
+            createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.finding, finding.id, finding.kind),
           );
         }
 
         const kept = keptById.get(fact.entity.id);
         if (kept) {
           ledger.attributions.push(
-            createCapabilityAttributionRecord(capabilityId, "kept", kept.id),
+            createCapabilityAttributionRecord(capabilityId, ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.kept, kept.id),
           );
           ledger.evidences.push(
-            createCapabilityEvidenceRecord(capabilityId, "kept", kept.id, kept.kind),
+            createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.kept, kept.id, kept.kind),
           );
         }
         continue;
@@ -301,18 +311,18 @@ function createFactBackedProvider(
       }
 
       ledger.attributions.push(
-        createCapabilityAttributionRecord(capabilityId, "skipped", skipped.id),
+        createCapabilityAttributionRecord(capabilityId, ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.skipped, skipped.id),
       );
       ledger.evidences.push(
-        createCapabilityEvidenceRecord(capabilityId, "skipped", skipped.id, skipped.category ?? skipped.kind),
+        createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.skipped, skipped.id, skipped.category ?? skipped.kind),
       );
       if (detailLabel !== skipped.category && detailLabel !== skipped.kind) {
         ledger.evidences.push(
-          createCapabilityEvidenceRecord(capabilityId, "skipped", skipped.id, detailLabel),
+          createCapabilityEvidenceRecord(capabilityId, ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.skipped, skipped.id, detailLabel),
         );
       }
       ledger.boundaries.push(
-        createCapabilityBoundaryRecord(capabilityId, "skipped", skipped.id, detailLabel, skipped.category),
+        createCapabilityBoundaryRecord(capabilityId, ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.skipped, skipped.id, detailLabel, skipped.category),
       );
     }
 
@@ -395,20 +405,20 @@ function assertProviderCapabilityOwnership(
 }
 
 const ANALYSIS_CAPABILITY_PROVIDERS: readonly AnalysisCapabilityProvider[] = [
-  createObligationBackedProvider("library-public-surface-aliasing"),
-  createObligationBackedProvider("returned-structure-transport"),
-  createSkippedBoundaryProvider("helper-transport", [
-    "array-callback-escape",
-    "array-opaque-mutation",
-    "opaque-object-call",
+  createObligationBackedProvider(ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing),
+  createObligationBackedProvider(ANALYSIS_CAPABILITY_ID.returnedStructureTransport),
+  createSkippedBoundaryProvider(ANALYSIS_CAPABILITY_ID.helperTransport, [
+    SKIP_CATEGORY.arrayCallbackEscape,
+    SKIP_CATEGORY.arrayOpaqueMutation,
+    SKIP_CATEGORY.opaqueObjectCall,
   ]),
-  createFactBackedProvider("helper-transport", "helper-transport"),
-  createSkippedBoundaryProvider("finite-keyed-access", [
-    "array-at-call",
-    "computed-property-access",
-    "dynamic-array-index",
+  createFactBackedProvider(ANALYSIS_CAPABILITY_ID.helperTransport, ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport),
+  createSkippedBoundaryProvider(ANALYSIS_CAPABILITY_ID.finiteKeyedAccess, [
+    SKIP_CATEGORY.arrayAtCall,
+    SKIP_CATEGORY.computedPropertyAccess,
+    SKIP_CATEGORY.dynamicArrayIndex,
   ]),
-  createFactBackedProvider("finite-keyed-access", "finite-keyed-access"),
+  createFactBackedProvider(ANALYSIS_CAPABILITY_ID.finiteKeyedAccess, ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess),
 ];
 
 export function collectAnalysisCapabilityLedger(

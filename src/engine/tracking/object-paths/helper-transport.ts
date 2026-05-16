@@ -1,34 +1,18 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { getSymbolKey } from "../../../compiler/ast-utils.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { getCallSiteStructuredArgumentBinding } from "../access.js";
 import { extendTrackedBinding } from "../bindings.js";
-import {
-  getAnalyzableCallableBindingFromDeclaration,
-  getCallableReturnBinding,
-} from "../callables.js";
-import type {
-  CallableReturnSummary,
-  HelperParameterSummary,
-  ResolvedTrackedObjectAccess,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  buildHelperBoundaryReason,
-  summarizeHelperParameterUse,
-} from "../semantics.js";
-import {
-  getCollectionInfo,
-  hasTrackedChildren,
-} from "../state.js";
+import { getAnalyzableCallableBindingFromDeclaration, getCallableReturnBinding } from "../callables.js";
+import type { CallableReturnSummary, HelperParameterSummary, ResolvedTrackedObjectAccess, TrackedObjectBinding } from "../model.js";
+import { buildHelperBoundaryReason, summarizeHelperParameterUse } from "../semantics.js";
+import { getCollectionInfo, hasTrackedChildren } from "../state.js";
+import { ANALYSIS_CAPABILITY_DETAIL_LABEL, ANALYSIS_CAPABILITY_ID } from "../../capabilities/vocabulary.js";
+import { TRACKING_COLLECTION_KIND, TRACKING_HELPER_PARAMETER_EFFECT_KIND } from "../vocabulary.js";
 
-type HelperTransportCapabilityId = "helper-transport";
+type HelperTransportCapabilityId = typeof ANALYSIS_CAPABILITY_ID.helperTransport;
 
 interface HelperTransportHandlerOptions {
   project: ProjectContext;
@@ -115,18 +99,18 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
       || summary.boundaryReason?.includes("stores this value inside an aggregate literal")
       || summary.boundaryReason?.includes("unsupported retained location")
     ) {
-      return "same-project helper retained storage";
+      return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperRetainedStorage;
     }
 
-    if (summary.effectKinds.has("retained-binding")) {
-      return "same-project helper retained storage";
+    if (summary.effectKinds.has(TRACKING_HELPER_PARAMETER_EFFECT_KIND.retainedBinding)) {
+      return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperRetainedStorage;
     }
 
-    if (summary.effectKinds.has("opaque-escape")) {
-      return "same-project helper escape";
+    if (summary.effectKinds.has(TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape)) {
+      return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperEscape;
     }
 
-    return "same-project helper transport";
+    return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperTransport;
   };
 
   const handleStructuredHelperArgument = (
@@ -182,11 +166,11 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
       registerLiveCapabilityFact(
         resolved.binding.trackedObject,
         fullPath,
-        "helper-transport",
+        ANALYSIS_CAPABILITY_ID.helperTransport,
         getHelperTransportDetailHint(summary),
       );
     }
-    if (collectionInfo?.kind === "array") {
+    if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array) {
       if (summary.boundaryReason) {
         recordArrayBoundary(
           project,
@@ -195,7 +179,7 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
           argument,
           fullPath,
           fullPath,
-          "array-opaque-mutation",
+          SKIP_CATEGORY.arrayOpaqueMutation,
           buildHelperBoundaryReason(
             project,
             summary,
@@ -215,8 +199,8 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
         : undefined;
       const boundaryCategory: SkipCategory = summary.boundaryReason.includes("stores this value by reference")
         && helperReturnBinding
-        ? "returned-object"
-        : "opaque-object-call";
+        ? SKIP_CATEGORY.returnedObject
+        : SKIP_CATEGORY.opaqueObjectCall;
       markEscaped(
         resolved.binding.trackedObject,
         fullPath,

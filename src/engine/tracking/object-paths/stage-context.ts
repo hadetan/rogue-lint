@@ -1,30 +1,17 @@
 import type ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SuppressionContext,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, SuppressionContext, TrackedObject } from "../../../types.js";
 import type { AnalysisState } from "../../analysis-state.js";
 import type { AnalysisArtifacts } from "../../analysis-artifacts.js";
 import { OBJECT_PATHS_TRACKING_STAGE, type TrackingSharedFactsPlane } from "../contracts.js";
-import type {
-  ArrayProjectionBinding,
-  CallableReturnSummary,
-  HelperParameterSummary,
-  TrackedObjectBinding,
-} from "../model.js";
+import type { ArrayProjectionBinding, CallableReturnSummary, HelperParameterSummary, TrackedObjectBinding } from "../model.js";
 import { createObjectPathOverlayState, type ObjectPathOverlayState } from "./overlay.js";
 import { computePubliclyReachableCallableIds } from "./returned-structures.js";
 import type {
-  FiniteLookupCandidate,
-  HelperExactAppendPlan,
-  HelperProjectedUsagePlan,
-  HigherOrderCallableReturnSummary,
-  ObjectPathSourceFileContext,
-  ObjectPathStageContext,
+  FiniteLookupCandidate, HelperExactAppendPlan, HelperProjectedUsagePlan,
+  HigherOrderCallableReturnSummary, ObjectPathSourceFileContext, ObjectPathStageContext,
 } from "./types.js";
+import { TRACKING_RETURN_SUMMARY_KIND } from "../vocabulary.js";
 
 function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObject {
   return {
@@ -104,7 +91,10 @@ function cloneCallableReturnSummaryForObjectPathStage(
   summary: CallableReturnSummary,
   trackedObjectsById: ReadonlyMap<string, TrackedObject>,
 ): CallableReturnSummary {
-  if (summary.kind === "structured" || summary.kind === "returned-alias") {
+  if (
+    summary.kind === TRACKING_RETURN_SUMMARY_KIND.structured
+    || summary.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+  ) {
     return {
       kind: summary.kind,
       binding: cloneTrackedObjectBindingForObjectPathStage(summary.binding, trackedObjectsById),

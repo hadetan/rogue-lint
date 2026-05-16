@@ -4,6 +4,7 @@ import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { findNodeAtPosition } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
@@ -43,7 +44,7 @@ export function analyzeUnusedLocals(
         continue;
       }
 
-      const entity = makeEntity(project.rootPath, "local", sourceFile, nameNode, name);
+      const entity = makeEntity(project.rootPath, ENTITY_KIND.local, sourceFile, nameNode, name);
       const suppression = getSuppressionAudit(project, suppressionContext, entity, declarationNode ?? nameNode);
       if (addAudit(state.kept, suppression)) {
         continue;

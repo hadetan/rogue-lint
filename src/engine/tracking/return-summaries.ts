@@ -1,37 +1,15 @@
 import ts from "typescript";
 
-import type {
-  EntityKind,
-  ProjectContext,
-  TrackedObject,
-} from "../../types.js";
-import {
-  extendTrackedBinding,
-  getCanonicalSymbolKey,
-  sameTrackedBinding,
-} from "./bindings.js";
-import {
-  resolveAnalyzableCallableBinding,
-  resolveTrackedObjectAccess,
-} from "./access.js";
-import {
-  cloneCallableReturnSummary,
-  getAnalyzableCallableBindingFromDeclaration,
-  getAnalyzableCallableName,
-  getCallableReturnBinding,
-  joinCallableReturnSummaries,
-} from "./callables.js";
-import type {
-  AnalyzableCallableBinding,
-  CallableReturnSummary,
-  TrackedObjectBinding,
-} from "./model.js";
+import type { EntityKind, ProjectContext, TrackedObject } from "../../types.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
+import { extendTrackedBinding, getCanonicalSymbolKey, sameTrackedBinding } from "./bindings.js";
+import { resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "./access.js";
+import { cloneCallableReturnSummary, getAnalyzableCallableBindingFromDeclaration, getAnalyzableCallableName, getCallableReturnBinding, joinCallableReturnSummaries } from "./callables.js";
+import type { AnalyzableCallableBinding, CallableReturnSummary, TrackedObjectBinding } from "./model.js";
 import { unwrapExpression } from "./syntax.js";
-import {
-  getTrackableStructuredLiteralExpression,
-  isTrackablePureExpression,
-  isTrackableReturnObjectStructure,
-} from "./trackable-structures.js";
+import { TRACKING_RETURN_SUMMARY_KIND } from "./vocabulary.js";
+import { TRACKING_COLLECTION_KIND } from "./vocabulary.js";
+import { getTrackableStructuredLiteralExpression, isTrackablePureExpression, isTrackableReturnObjectStructure } from "./trackable-structures.js";
 
 interface ReturnSummaryCollectorOptions {
   project: ProjectContext;
@@ -86,13 +64,15 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     callable: AnalyzableCallableBinding,
     literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
   ): TrackedObjectBinding => {
-    const returnKind = ts.isObjectLiteralExpression(literal) ? "object" : "array";
+    const returnKind = ts.isObjectLiteralExpression(literal)
+      ? TRACKING_COLLECTION_KIND.object
+      : TRACKING_COLLECTION_KIND.array;
     return createTrackedBindingForLiteral(
       `${callable.symbolKey}:return:${returnKind}`,
       literal.getSourceFile(),
       literal,
       `${getAnalyzableCallableName(callable)}()`,
-      "expression",
+      ENTITY_KIND.expression,
       literal,
     );
   };
@@ -102,7 +82,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
   ): CallableReturnSummary => {
     return {
-      kind: "structured",
+      kind: TRACKING_RETURN_SUMMARY_KIND.structured,
       binding: createStructuredReturnBinding(callable, literal),
     };
   };
@@ -244,13 +224,13 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     }
 
     return {
-      kind: "returned-alias",
+      kind: TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
       binding: createTrackedBindingForLiteral(
         getCanonicalSymbolKey(project, symbol),
         declaration.getSourceFile(),
         literal,
         declaration.name.text,
-        "local",
+        ENTITY_KIND.local,
         declaration.name,
       ),
     };
@@ -293,7 +273,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     speculativeSummaries: Map<string, CallableReturnSummary>,
   ): CallableReturnSummary | undefined => {
     const stabilizedSummary = functionReturnSummaries.get(callable.symbolKey);
-    if (stabilizedSummary && stabilizedSummary.kind !== "opaque") {
+    if (stabilizedSummary && stabilizedSummary.kind !== TRACKING_RETURN_SUMMARY_KIND.opaque) {
       return cloneCallableReturnSummary(stabilizedSummary);
     }
 
@@ -451,7 +431,10 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       if (!right) {
         return left;
       }
-      if (left.kind === "value" && right.kind === "value") {
+      if (
+        left.kind === TRACKING_RETURN_SUMMARY_KIND.value
+        && right.kind === TRACKING_RETURN_SUMMARY_KIND.value
+      ) {
         return left;
       }
 
@@ -468,7 +451,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         return joinCallableReturnSummaries(left, right).summary;
       }
 
-      return { kind: "opaque" };
+      return { kind: TRACKING_RETURN_SUMMARY_KIND.opaque };
     }
 
     if (ts.isConditionalExpression(expression)) {
@@ -480,7 +463,10 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       if (!whenFalse) {
         return whenTrue;
       }
-      if (whenTrue.kind === "value" && whenFalse.kind === "value") {
+      if (
+        whenTrue.kind === TRACKING_RETURN_SUMMARY_KIND.value
+        && whenFalse.kind === TRACKING_RETURN_SUMMARY_KIND.value
+      ) {
         return whenTrue;
       }
 
@@ -497,7 +483,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         return joinCallableReturnSummaries(whenTrue, whenFalse).summary;
       }
 
-      return { kind: "opaque" };
+      return { kind: TRACKING_RETURN_SUMMARY_KIND.opaque };
     }
 
     const resolved = resolveTrackedObjectAccess(
@@ -509,7 +495,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     );
     if (resolved && !resolved.dynamic) {
       return {
-        kind: "returned-alias",
+        kind: TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
         binding: extendTrackedBinding(resolved.binding, resolved.segments),
       };
     }
@@ -532,7 +518,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     }
 
     if (isTrackablePureExpression(expression)) {
-      return { kind: "value" };
+      return { kind: TRACKING_RETURN_SUMMARY_KIND.value };
     }
 
     return undefined;

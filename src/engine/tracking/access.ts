@@ -6,6 +6,9 @@ import type {
   TrackedObject,
 } from "../../types.js";
 import { getSymbolKey } from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
+import { TRACKED_OBJECT_NODE_ORIGIN } from "../../shared/path-vocabulary.js";
+import { SKIP_CATEGORY } from "../../shared/skip-category-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import {
   indexSegment,
@@ -51,6 +54,15 @@ import {
 } from "./retained-bindings.js";
 import { visitResolvedSpreadPropertySegments } from "./spread-support.js";
 import { unwrapExpression } from "./syntax.js";
+import {
+  TRACKING_ARRAY_END_REMOVAL_METHODS,
+  TRACKING_ARRAY_INDEX_ACCESS_METHOD,
+  TRACKING_COLLECTION_KIND,
+  TRACKING_METHOD_NAME,
+  TRACKING_PLACE_STATE,
+  TRACKING_RETAINED_BINDING_READ_METHOD,
+  TRACKING_RETURN_SUMMARY_KIND,
+} from "./vocabulary.js";
 
 /**
  * Shared access-resolution helpers for the exact tracking kernel.
@@ -558,7 +570,7 @@ function getCallSiteStructuredReturnBinding(
 
   const remappedBinding = remapCallSiteReturnBinding(binding, trackedBySymbolId, specializedBindings);
 
-  if (summary.kind !== "structured") {
+  if (summary.kind !== TRACKING_RETURN_SUMMARY_KIND.structured) {
     return specializeReturnedAliasBinding(
       node,
       remappedBinding,
@@ -724,7 +736,7 @@ function getConstructedInstanceBinding(
 
   const instanceName = classDeclaration.name?.text ?? node.expression.text;
   const instanceId = `new:${node.getSourceFile().fileName}:${node.getStart()}:${instanceName}`;
-  const rootEntity = makeEntity(project.rootPath, "local", node.getSourceFile(), node, `${instanceName}()`);
+  const rootEntity = makeEntity(project.rootPath, ENTITY_KIND.local, node.getSourceFile(), node, `${instanceName}()`);
   const existing = trackedObjectsById.get(instanceId);
   const trackedObject: TrackedObject = existing ?? {
     id: instanceId,
@@ -758,13 +770,13 @@ function getConstructedInstanceBinding(
   for (const { index, parameter, propertyName } of parameterProperties) {
     const propertyPath = [propertySegment(propertyName)];
     const joinedPath = serializePath(propertyPath);
-    const entity = makeEntity(project.rootPath, "object-key", node.getSourceFile(), parameter.name, propertyName, trackedObject.rootEntity.id);
+    const entity = makeEntity(project.rootPath, ENTITY_KIND.objectKey, node.getSourceFile(), parameter.name, propertyName, trackedObject.rootEntity.id);
     trackedObject.nodes.set(joinedPath, {
       entity,
       fullPath: propertyPath,
-      origin: "property",
+      origin: TRACKED_OBJECT_NODE_ORIGIN.property,
     });
-    trackedObject.placeStates.set(joinedPath, "initialized");
+    trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
     indexTrackedObjectNode(trackedObject, joinedPath, propertyPath);
 
     const argument = node.arguments?.[index];
@@ -866,7 +878,7 @@ function resolveArrayAtIndex(
   argument: ts.Expression,
 ): number | undefined {
   const collection = getCollectionInfo(trackedObject, segments);
-  if (!collection || collection.kind !== "array") {
+  if (!collection || collection.kind !== TRACKING_COLLECTION_KIND.array) {
     return undefined;
   }
 
@@ -1059,12 +1071,12 @@ export function resolveTrackedObjectAccess(
     }
 
     const targetPath = [...nested.binding.prefix, ...nested.segments];
-    const isArrayIndex = getCollectionInfo(nested.binding.trackedObject, targetPath)?.kind === "array";
+    const isArrayIndex = getCollectionInfo(nested.binding.trackedObject, targetPath)?.kind === TRACKING_COLLECTION_KIND.array;
     return {
       binding: nested.binding,
       segments: nested.segments,
       dynamic: true,
-      boundaryCategory: isArrayIndex ? "dynamic-array-index" : "computed-property-access",
+      boundaryCategory: isArrayIndex ? SKIP_CATEGORY.dynamicArrayIndex : SKIP_CATEGORY.computedPropertyAccess,
       boundaryReason: isArrayIndex
         ? "dynamic array index prevents exact element analysis"
         : "computed property access prevents exact path analysis",
@@ -1074,7 +1086,7 @@ export function resolveTrackedObjectAccess(
   if (ts.isCallExpression(node)) {
     if (
       ts.isPropertyAccessExpression(node.expression)
-      && node.expression.name.text === "filter"
+      && node.expression.name.text === TRACKING_METHOD_NAME.filter
       && node.arguments.length >= 1
     ) {
       const receiver = resolveTrackedObjectAccess(
@@ -1086,7 +1098,7 @@ export function resolveTrackedObjectAccess(
       );
       if (receiver && !receiver.dynamic) {
         const receiverPath = [...receiver.binding.prefix, ...receiver.segments];
-        if (getCollectionInfo(receiver.binding.trackedObject, receiverPath)?.kind === "array") {
+        if (getCollectionInfo(receiver.binding.trackedObject, receiverPath)?.kind === TRACKING_COLLECTION_KIND.array) {
           return {
             binding: receiver.binding,
             segments: receiver.segments,
@@ -1100,7 +1112,7 @@ export function resolveTrackedObjectAccess(
 
     if (
       ts.isPropertyAccessExpression(node.expression)
-      && (node.expression.name.text === "pop" || node.expression.name.text === "shift")
+      && TRACKING_ARRAY_END_REMOVAL_METHODS.has(node.expression.name.text)
       && node.arguments.length === 0
     ) {
       const receiver = resolveTrackedObjectAccess(
@@ -1120,12 +1132,12 @@ export function resolveTrackedObjectAccess(
 
       const receiverPath = [...receiver.binding.prefix, ...receiver.segments];
       const collection = getCollectionInfo(receiver.binding.trackedObject, receiverPath);
-      if (collection?.kind !== "array") {
+      if (collection?.kind !== TRACKING_COLLECTION_KIND.array) {
         return undefined;
       }
 
       const arrayLength = getTrackedArrayLength(receiver.binding.trackedObject, receiverPath);
-      const targetIndex = node.expression.name.text === "pop"
+      const targetIndex = node.expression.name.text === TRACKING_METHOD_NAME.pop
         ? (arrayLength !== undefined && arrayLength > 0 ? arrayLength - 1 : undefined)
         : arrayLength === 1
           ? 0
@@ -1152,7 +1164,7 @@ export function resolveTrackedObjectAccess(
 
     if (
       ts.isPropertyAccessExpression(node.expression)
-      && node.expression.name.text === "at"
+      && node.expression.name.text === TRACKING_ARRAY_INDEX_ACCESS_METHOD
       && node.arguments.length === 1
     ) {
       const receiver = resolveTrackedObjectAccess(project, node.expression.expression, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
@@ -1166,7 +1178,7 @@ export function resolveTrackedObjectAccess(
 
       const receiverPath = [...receiver.binding.prefix, ...receiver.segments];
       const collection = getCollectionInfo(receiver.binding.trackedObject, receiverPath);
-      if (collection?.kind !== "array") {
+      if (collection?.kind !== TRACKING_COLLECTION_KIND.array) {
         return undefined;
       }
 
@@ -1176,7 +1188,7 @@ export function resolveTrackedObjectAccess(
           binding: receiver.binding,
           segments: receiver.segments,
           dynamic: true,
-          boundaryCategory: "array-at-call",
+          boundaryCategory: SKIP_CATEGORY.arrayAtCall,
           boundaryReason: "non-literal .at(...) prevents exact array slot analysis",
           viaAliasObjectId: receiver.viaAliasObjectId,
           viaAliasPath: receiver.viaAliasPath,
@@ -1201,7 +1213,7 @@ export function resolveTrackedObjectAccess(
 
     if (
       ts.isPropertyAccessExpression(node.expression)
-      && node.expression.name.text === "get"
+      && node.expression.name.text === TRACKING_RETAINED_BINDING_READ_METHOD
       && node.arguments.length === 1
       && isLocallyOwnedRetainedBindingContainer(project, node.expression.expression)
     ) {
@@ -1505,7 +1517,7 @@ export function resolveProjectionAccess(
             projection: receiverProjection,
             suffix: [],
             dynamic: true,
-            boundaryCategory: "dynamic-array-index",
+            boundaryCategory: SKIP_CATEGORY.dynamicArrayIndex,
             boundaryReason: "callback index cannot yet be correlated across different tracked arrays",
           };
     }
@@ -1529,12 +1541,12 @@ export function resolveProjectionAccess(
     }
 
     const concreteTargets = getConcreteProjectionPaths(nested.projection, nested.suffix);
-    const isArrayIndex = concreteTargets.some((path) => getCollectionInfo(nested.projection.trackedObject, path)?.kind === "array");
+    const isArrayIndex = concreteTargets.some((path) => getCollectionInfo(nested.projection.trackedObject, path)?.kind === TRACKING_COLLECTION_KIND.array);
     return {
       projection: nested.projection,
       suffix: nested.suffix,
       dynamic: true,
-      boundaryCategory: isArrayIndex ? "dynamic-array-index" : "computed-property-access",
+      boundaryCategory: isArrayIndex ? SKIP_CATEGORY.dynamicArrayIndex : SKIP_CATEGORY.computedPropertyAccess,
       boundaryReason: isArrayIndex
         ? "dynamic array index prevents exact element analysis"
         : "computed property access prevents exact path analysis",
@@ -1544,7 +1556,7 @@ export function resolveProjectionAccess(
   if (
     ts.isCallExpression(node)
     && ts.isPropertyAccessExpression(node.expression)
-    && node.expression.name.text === "at"
+    && node.expression.name.text === TRACKING_ARRAY_INDEX_ACCESS_METHOD
     && node.arguments.length === 1
   ) {
     const receiver = resolveProjectionAccess(project, node.expression.expression, context);
@@ -1568,7 +1580,7 @@ export function resolveProjectionAccess(
         projection: receiver.projection,
         suffix: receiver.suffix,
         dynamic: true,
-        boundaryCategory: "array-at-call",
+        boundaryCategory: SKIP_CATEGORY.arrayAtCall,
         boundaryReason: "non-literal .at(...) prevents exact array slot analysis",
       };
     }

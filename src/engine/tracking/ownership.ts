@@ -6,8 +6,35 @@ export const TRACKING_RETURN_SUMMARY_OWNER = "return-summary-convergence";
 export const TRACKING_ALIAS_OWNER = "alias-state";
 export const TRACKING_BOUNDARY_OWNER = "boundary-state";
 
+export const TRACKING_CONTRACT_DIAGNOSTIC_CODE = {
+  convergenceWarning: "convergence-warning",
+  convergenceGuardExceeded: "convergence-guard-exceeded",
+  contractViolation: "contract-violation",
+} as const;
+
+type TrackingContractDiagnosticCode = (typeof TRACKING_CONTRACT_DIAGNOSTIC_CODE)[keyof typeof TRACKING_CONTRACT_DIAGNOSTIC_CODE];
+
+export const TRACKING_STRUCTURAL_ROLE = {
+  record: "record",
+  stateHolder: "state-holder",
+  structuralRecord: "structural-record",
+  structuralRecordArray: "structural-record-array",
+} as const;
+
+type TrackingStructuralRole = (typeof TRACKING_STRUCTURAL_ROLE)[keyof typeof TRACKING_STRUCTURAL_ROLE];
+
+const TRACKING_PROTECTED_STRUCTURAL_ROLES = new Set<TrackingStructuralRole>([
+  TRACKING_STRUCTURAL_ROLE.structuralRecord,
+  TRACKING_STRUCTURAL_ROLE.structuralRecordArray,
+  TRACKING_STRUCTURAL_ROLE.stateHolder,
+]);
+
+export function isTrackingProtectedStructuralRole(role: TrackingStructuralRole | undefined): boolean {
+  return role !== undefined && TRACKING_PROTECTED_STRUCTURAL_ROLES.has(role);
+}
+
 export type TrackingContractDiagnostic = {
-  code: "convergence-warning" | "convergence-guard-exceeded" | "contract-violation";
+  code: TrackingContractDiagnosticCode;
   message: string;
   stage?: string;
   details?: TrackingContractDiagnosticDetails;

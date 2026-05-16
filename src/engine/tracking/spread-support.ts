@@ -1,8 +1,10 @@
 import type {
   PathSegment,
 } from "../../types.js";
+import { PATH_SEGMENT_KIND } from "../../shared/path-vocabulary.js";
 import type { TrackedObjectBinding } from "./model.js";
 import { getCollectionInfo } from "./state.js";
+import { TRACKING_COLLECTION_KIND } from "./vocabulary.js";
 
 /**
  * Returns the exact property segments that remain visible through a resolved object spread binding.
@@ -12,7 +14,7 @@ export function visitResolvedSpreadPropertySegments(
   visit: (segment: PathSegment) => void,
 ): boolean {
   const collection = getCollectionInfo(binding.trackedObject, binding.prefix);
-  if (!collection || collection.kind !== "object") {
+  if (!collection || collection.kind !== TRACKING_COLLECTION_KIND.object) {
     return false;
   }
 
@@ -25,7 +27,7 @@ export function visitResolvedSpreadPropertySegments(
     }
 
     const segment = childPath[binding.prefix.length];
-    if (!segment || segment.kind !== "property") {
+    if (!segment || segment.kind !== PATH_SEGMENT_KIND.property) {
       return false;
     }
 

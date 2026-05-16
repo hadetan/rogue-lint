@@ -5,6 +5,7 @@ import type {
   ProjectContext,
   TrackedObject,
 } from "../../types.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import type {
   CallableReturnSummary,
@@ -43,12 +44,14 @@ import type {
 } from "./contracts.js";
 import {
   OBJECT_PATHS_TRACKING_STAGE,
+  TRACKING_CONTRACT_DIAGNOSTIC_CODE,
   TRACKING_ALIAS_OWNER,
   TRACKING_BINDINGS_OWNER,
   TRACKING_BOUNDARY_OWNER,
   TRACKING_RETURN_SUMMARY_OWNER,
   VALUE_LIVENESS_TRACKING_STAGE,
 } from "./contracts.js";
+import { TRACKING_STRUCTURAL_ROLE } from "./ownership.js";
 import {
   runTrackingConvergence,
   type TrackingConvergenceOptions,
@@ -64,6 +67,10 @@ import {
 } from "./trackable-structures.js";
 import { materializeTrackedLiteralAtPath } from "./literal-materialization.js";
 import { createReturnSummaryCollector } from "./return-summaries.js";
+import {
+  TRACKING_COLLECTION_KIND,
+  TRACKING_RETAINED_BINDING_WRITE_METHOD,
+} from "./vocabulary.js";
 
 /**
  * Shared structural graph helpers for the exact tracking kernel.
@@ -116,7 +123,7 @@ function classifyHelperMetadataArrayRole(
   }
 
   return [...typeTexts].some((typeText) => HELPER_METADATA_ARRAY_TYPE_TEXTS.has(typeText))
-    ? "structural-record-array"
+    ? TRACKING_STRUCTURAL_ROLE.structuralRecordArray
     : undefined;
 }
 
@@ -245,7 +252,7 @@ export function buildTrackedObjects(
 
     const binding = new TrackedObjectBindingRecord(trackedObject, []);
 
-    if (kind === "local") {
+    if (kind === ENTITY_KIND.local) {
       trackedLiteralBindings.set(symbolKey, binding);
     } else {
       trackedReturnLiteralBindings.set(symbolKey, binding);
@@ -293,12 +300,16 @@ export function buildTrackedObjects(
               : undefined;
             const binding = createTrackedBindingForLiteral(
               returnedAliasCallable && returnedAliasLiteral
-                ? `${returnedAliasCallable.symbolKey}:return:${ts.isObjectLiteralExpression(returnedAliasLiteral) ? "object" : "array"}`
+                ? `${returnedAliasCallable.symbolKey}:return:${ts.isObjectLiteralExpression(returnedAliasLiteral) ? TRACKING_COLLECTION_KIND.object : TRACKING_COLLECTION_KIND.array}`
                 : symbolKey,
               sourceFile,
               returnedAliasLiteral ?? node.initializer,
               returnedAliasCallable ? `${getAnalyzableCallableName(returnedAliasCallable)}()` : node.name.text,
-              returnedAliasCallable ? "expression" : isExportedVariableDeclaration(node) ? "export" : "local",
+              returnedAliasCallable
+                ? ENTITY_KIND.expression
+                : isExportedVariableDeclaration(node)
+                  ? ENTITY_KIND.export
+                  : ENTITY_KIND.local,
               returnedAliasLiteral ?? node.name,
             );
 
@@ -402,7 +413,7 @@ export function buildTrackedObjects(
                 sourceFile,
                 structuredLiteral,
                 parameter.name.text,
-                "expression",
+                ENTITY_KIND.expression,
                 argument,
               );
               mergeTrackedBinding(
@@ -416,7 +427,7 @@ export function buildTrackedObjects(
 
           if (
             ts.isPropertyAccessExpression(node.expression)
-            && node.expression.name.text === "set"
+            && node.expression.name.text === TRACKING_RETAINED_BINDING_WRITE_METHOD
             && node.arguments.length >= 2
             && isLocallyOwnedRetainedBindingContainer(project, node.expression.expression)
           ) {
@@ -629,7 +640,7 @@ export function buildTrackedObjects(
       }
 
       const diagnostic: TrackingContractDiagnostic = {
-        code: "contract-violation",
+        code: TRACKING_CONTRACT_DIAGNOSTIC_CODE.contractViolation,
         message: `tracking stage '${stage}' is outside the declared tracking-kernel contract`,
       };
       snapshot.solverState.diagnostics.push(diagnostic);

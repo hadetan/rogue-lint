@@ -3,6 +3,7 @@ import ts from "typescript";
 import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { summarizeNonDeclarationReferences } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
@@ -31,7 +32,7 @@ function analyzeImportBinding(
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): void {
-  const entity = makeEntity(project.rootPath, "import", sourceFile, nameNode, nameNode.text);
+  const entity = makeEntity(project.rootPath, ENTITY_KIND.import, sourceFile, nameNode, nameNode.text);
   const suppression = getSuppressionAudit(project, suppressionContext, entity, declarationNode);
   if (addAudit(state.kept, suppression)) {
     return;

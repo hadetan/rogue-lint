@@ -1,29 +1,13 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, TrackedObject } from "../../../types.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
-import {
-  getBindingSymbolKey,
-  resolveAnalyzableCallableBinding,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  sameTrackedBinding,
-} from "../bindings.js";
+import { getBindingSymbolKey, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
 import { getAnalyzableCallableBindingFromDeclaration } from "../callables.js";
-import type {
-  CallableReturnSummary,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  getCollectionInfo,
-  resolveExactPathAlias,
-} from "../state.js";
+import type { CallableReturnSummary, TrackedObjectBinding } from "../model.js";
+import { getCollectionInfo, resolveExactPathAlias } from "../state.js";
+import { TRACKING_COLLECTION_KIND } from "../vocabulary.js";
 import type { FiniteLookupCandidate } from "./types.js";
 import { extractFinitePropertyUnionSegments } from "./policy.js";
 
@@ -74,7 +58,7 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
     }
 
     const collapsedBinding = collapseExactBindingPrefix(extendTrackedBinding(nested.binding, nested.segments));
-    if (getCollectionInfo(collapsedBinding.trackedObject, collapsedBinding.prefix)?.kind === "array") {
+    if (getCollectionInfo(collapsedBinding.trackedObject, collapsedBinding.prefix)?.kind === TRACKING_COLLECTION_KIND.array) {
       return undefined;
     }
 

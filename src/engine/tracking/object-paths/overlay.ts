@@ -1,26 +1,9 @@
-import type {
-  CollectionBoundaryRecord,
-  EscapedPathRecord,
-  InvalidatedPathRecord,
-  PathSegment,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
-import {
-  isSerializedPathWithin,
-  serializePath,
-} from "../../../shared/path-utils.js";
+import type { CollectionBoundaryRecord, EscapedPathRecord, InvalidatedPathRecord, PathSegment, SkipCategory, TrackedObject } from "../../../types.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
+import { isSerializedPathWithin, serializePath } from "../../../shared/path-utils.js";
 import { extendTrackedBinding } from "../bindings.js";
-import type {
-  ArrayProjectionBinding,
-  ResolvedTrackedObjectAccess,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  getCollectionInfo,
-  hasTrackedChildren,
-  resolveExactPathAlias,
-} from "../state.js";
+import type { ArrayProjectionBinding, ResolvedTrackedObjectAccess, TrackedObjectBinding } from "../model.js";
+import { getCollectionInfo, hasTrackedChildren, resolveExactPathAlias } from "../state.js";
 
 type PathSetByObjectId = Map<string, Set<string>>;
 type PathRecordMapByObjectId<TRecord> = Map<string, Map<string, TRecord>>;
@@ -543,7 +526,7 @@ export function markObjectPathEscaped(
   reason: string,
 ): void {
   ensurePathRecordMap(overlayState.escapedPathsByObjectId, trackedObject.id).set(serializePath(segments), { category, reason });
-  if (!(category === "opaque-object-call" && segments.length === 0)) {
+  if (!(category === SKIP_CATEGORY.opaqueObjectCall && segments.length === 0)) {
     clearTrackedObjectExactAliasesWithin(trackedObject, segments);
   }
 }

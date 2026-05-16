@@ -1,47 +1,16 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
-import {
-  getAccessPath,
-  getBindingSymbolKey,
-  resolveProjectionAccess,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  getBindingByNode,
-  sameTrackedBinding,
-} from "../bindings.js";
-import type {
-  ArrayProjectionBinding,
-  CallableReturnSummary,
-  ProjectedArrayUsageContext,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  getSupportedArrayCallbackIndexParamIndex,
-  getSupportedArrayCallbackParamIndex,
-  isExactArrayCallbackMethod,
-} from "../projection-support.js";
-import {
-  ARRAY_APPEND_METHODS,
-  ARRAY_REORDER_METHODS,
-  ARRAY_REPLACEMENT_METHODS,
-  ARRAY_TRUNCATE_METHODS,
-  WHOLE_ARRAY_CONSUMPTION_METHODS,
-} from "../semantics.js";
+import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
+import { PATH_SEGMENT_KIND } from "../../../shared/path-vocabulary.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
+import { getAccessPath, getBindingSymbolKey, resolveProjectionAccess, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, getBindingByNode, sameTrackedBinding } from "../bindings.js";
+import type { ArrayProjectionBinding, CallableReturnSummary, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
+import { getSupportedArrayCallbackIndexParamIndex, getSupportedArrayCallbackParamIndex, isExactArrayCallbackMethod } from "../projection-support.js";
+import { ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS, WHOLE_ARRAY_CONSUMPTION_METHODS } from "../semantics.js";
+import { TRACKING_ARRAY_EXACT_APPEND_METHODS, TRACKING_COLLECTION_KIND, TRACKING_VALUE_FATE } from "../vocabulary.js";
 import { unwrapExpression } from "../syntax.js";
-import {
-  addValueFate,
-  getCollectionInfo,
-  getProjectionBinding,
-  resolveExactPathAlias,
-} from "../state.js";
+import { addValueFate, getCollectionInfo, getProjectionBinding, resolveExactPathAlias } from "../state.js";
 
 interface CollectionOperationHandlerOptions {
   project: ProjectContext;
@@ -271,8 +240,8 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
     if (
       publicReturnBinding
       && sameTrackedBinding(publicReturnBinding, receiverBinding)
-      && targetCollection?.kind === "array"
-      && (methodName === "push" || methodName === "unshift")
+      && targetCollection?.kind === TRACKING_COLLECTION_KIND.array
+      && TRACKING_ARRAY_EXACT_APPEND_METHODS.has(methodName)
     ) {
       for (const argument of node.arguments) {
         const aggregateArgument = unwrapExpression(argument);
@@ -282,19 +251,19 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
       }
     }
     if (
-      targetCollection?.kind === "array"
+      targetCollection?.kind === TRACKING_COLLECTION_KIND.array
       && (
         ARRAY_APPEND_METHODS.has(methodName)
         || ARRAY_TRUNCATE_METHODS.has(methodName)
         || ARRAY_REPLACEMENT_METHODS.has(methodName)
         || ARRAY_REORDER_METHODS.has(methodName)
       )
-      && !(valueFateHandledIndices.size === node.arguments.length && (methodName === "push" || methodName === "unshift"))
+      && !(valueFateHandledIndices.size === node.arguments.length && TRACKING_ARRAY_EXACT_APPEND_METHODS.has(methodName))
     ) {
       handleTrackedArrayMutation(project, tracked.trackedObject, sourceFile, node, targetPath, methodName);
     }
     if (
-      targetCollection?.kind === "array"
+      targetCollection?.kind === TRACKING_COLLECTION_KIND.array
       && isExactArrayCallbackMethod(methodName)
       && node.arguments[0]
       && (ts.isArrowFunction(node.arguments[0]) || ts.isFunctionExpression(node.arguments[0]))
@@ -340,7 +309,7 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
       markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
       addValueFate(
         resolved.binding.trackedObject,
-        "shallow-cloned",
+        TRACKING_VALUE_FATE.shallowCloned,
         fullPath,
         "object spread reads this value to create a shallow-cloned object",
       );
@@ -355,7 +324,7 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
     if (ts.isCallExpression(node.parent)) {
       const calleeAccessPath = getAccessPath(node.parent.expression);
       const methodName = calleeAccessPath && !calleeAccessPath.dynamic && calleeAccessPath.segments.length > 0
-        && calleeAccessPath.segments.at(-1)?.kind === "property"
+        && calleeAccessPath.segments.at(-1)?.kind === PATH_SEGMENT_KIND.property
         ? calleeAccessPath.segments.at(-1)?.value
         : undefined;
       const trackedReceiver = calleeAccessPath
@@ -370,8 +339,9 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
       if (
         trackedReceiver
         && receiverPath
-        && receiverCollection?.kind === "array"
-        && (methodName === "push" || methodName === "unshift")
+        && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
+        && typeof methodName === "string"
+        && TRACKING_ARRAY_EXACT_APPEND_METHODS.has(methodName)
       ) {
         recordArrayBoundary(
           project,
@@ -400,7 +370,7 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
         markObservedSubtree(resolved.binding.trackedObject, fullPath, trackedObjectsById);
         addValueFate(
           resolved.binding.trackedObject,
-          "shallow-cloned",
+          TRACKING_VALUE_FATE.shallowCloned,
           fullPath,
           "array spread reads this value to create a shallow-cloned array",
         );
@@ -408,7 +378,7 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
         markEscaped(
           resolved.binding.trackedObject,
           resolved.binding.prefix,
-          "spread-escape",
+          SKIP_CATEGORY.spreadEscape,
           "spread element escapes exact local analysis",
         );
       }

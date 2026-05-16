@@ -1,43 +1,18 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, TrackedObject } from "../../../types.js";
 import { isReadLikeUse } from "../../../compiler/ast-utils.js";
-import {
-  getBindingSymbolKey,
-  resolveProjectionAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  sameTrackedBinding,
-} from "../bindings.js";
-import type {
-  ArrayProjectionBinding,
-  ProjectedArrayUsageContext,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  getSupportedArrayCallbackIndexParamIndex,
-  getSupportedArrayCallbackParamIndex,
-  isExactArrayCallbackMethod,
-} from "../projection-support.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
+import { getBindingSymbolKey, resolveProjectionAccess } from "../access.js";
+import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import type { ArrayProjectionBinding, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
+import { getSupportedArrayCallbackIndexParamIndex, getSupportedArrayCallbackParamIndex, isExactArrayCallbackMethod } from "../projection-support.js";
 import { classifySupportedCallArgumentUse } from "../semantics.js";
-import {
-  getCollectionInfo,
-  getConcreteProjectionPaths,
-  getProjectionBinding,
-  hasTrackedChildren,
-  resolveExactPathAlias,
-} from "../state.js";
+import { getCollectionInfo, getConcreteProjectionPaths, getProjectionBinding, hasTrackedChildren, resolveExactPathAlias } from "../state.js";
 import { maybeInvalidateReplacedTrackedPath, recordArrayBoundary } from "./effects.js";
 import {
-  markObjectPathProjectionChildReads as markProjectionChildReads,
-  markObjectPathProjectionReads as markProjectionReads,
-  markObjectPathProjectionWrites as markProjectionWrites,
-  type ObjectPathOverlayState,
+  markObjectPathProjectionChildReads as markProjectionChildReads, markObjectPathProjectionReads as markProjectionReads,
+  markObjectPathProjectionWrites as markProjectionWrites, type ObjectPathOverlayState,
 } from "./overlay.js";
 
 function getProjectedNestedArrayBinding(
@@ -126,7 +101,7 @@ export function visitProjectedArrayUsage(
             current.expression,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            projected.boundaryCategory ?? "array-callback-escape",
+            projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
             projected.boundaryReason ?? "array projection escapes exact local analysis",
             true,
           );
@@ -155,7 +130,7 @@ export function visitProjectedArrayUsage(
               current.expression.expression,
               projectedReceiver.projection.sourcePath,
               projectedReceiver.projection.sourcePath,
-              projectedReceiver.boundaryCategory ?? "array-callback-escape",
+              projectedReceiver.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
               projectedReceiver.boundaryReason ?? "array callback escapes exact local analysis",
               true,
             );
@@ -211,7 +186,7 @@ export function visitProjectedArrayUsage(
             argument,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            projected.boundaryCategory ?? "array-callback-escape",
+            projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
             projected.boundaryReason ?? "array callback escapes exact local analysis",
             true,
           );
@@ -248,7 +223,7 @@ export function visitProjectedArrayUsage(
             argument,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            "array-callback-escape",
+            SKIP_CATEGORY.arrayCallbackEscape,
             "array callback escapes exact local analysis",
             true,
           );
@@ -283,7 +258,7 @@ export function visitProjectedArrayUsage(
             current,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            projected.boundaryCategory ?? "array-callback-escape",
+            projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
             projected.boundaryReason ?? "array callback escapes exact local analysis",
             true,
           );
@@ -305,7 +280,7 @@ export function visitProjectedArrayUsage(
             current,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            projected.boundaryCategory ?? "array-callback-escape",
+            projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
             projected.boundaryReason ?? "array callback escapes exact local analysis",
             true,
           );

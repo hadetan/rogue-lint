@@ -4,6 +4,7 @@ import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { summarizeNonDeclarationReferences } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName, hasModifier } from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import {
   addAudit,
@@ -13,6 +14,11 @@ import {
   type AnalysisState,
 } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import {
+  ANALYSIS_CAPABILITY_ID,
+  ANALYSIS_CAPABILITY_OBLIGATION_FAMILY,
+  ANALYSIS_CAPABILITY_OUTCOME,
+} from "../capabilities/vocabulary.js";
 import { buildPublicSurfaceAudit, createReferenceKey } from "./support.js";
 
 /**
@@ -33,7 +39,7 @@ export function analyzeInterfaceMembers(
     const visit = (node: ts.Node): void => {
       if (ts.isInterfaceDeclaration(node) && node.name) {
         const isExported = hasModifier(node, ts.SyntaxKind.ExportKeyword);
-        const interfaceEntity = makeEntity(project.rootPath, "type", sourceFile, node.name, node.name.text);
+        const interfaceEntity = makeEntity(project.rootPath, ENTITY_KIND.type, sourceFile, node.name, node.name.text);
         const isPublicSurface = project.config.value.mode === "library" && artifacts.publicSurfaceIds.has(interfaceEntity.id);
 
         for (const member of node.members) {
@@ -59,9 +65,9 @@ export function analyzeInterfaceMembers(
           if (isExported) {
             registerCapabilityObligation(
               state,
-              "internal-exported-interface-member",
+              ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
               entity,
-              "library-public-surface-aliasing",
+              ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
             );
           }
 
@@ -69,10 +75,10 @@ export function analyzeInterfaceMembers(
             addAudit(state.kept, buildPublicSurfaceAudit(entity));
             resolveCapabilityObligation(
               state,
-              "internal-exported-interface-member",
+              ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
               entity,
-              "kept",
-              "library-public-surface-aliasing",
+              ANALYSIS_CAPABILITY_OUTCOME.kept,
+              ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
             );
             continue;
           }
@@ -81,10 +87,10 @@ export function analyzeInterfaceMembers(
           if (addAudit(state.kept, suppression)) {
             resolveCapabilityObligation(
               state,
-              "internal-exported-interface-member",
+              ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
               entity,
-              "kept",
-              "library-public-surface-aliasing",
+              ANALYSIS_CAPABILITY_OUTCOME.kept,
+              ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
             );
             continue;
           }
@@ -109,10 +115,10 @@ export function analyzeInterfaceMembers(
           if (hasLiveReferences) {
             resolveCapabilityObligation(
               state,
-              "internal-exported-interface-member",
+              ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
               entity,
-              "live",
-              "library-public-surface-aliasing",
+              ANALYSIS_CAPABILITY_OUTCOME.live,
+              ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
             );
             continue;
           }
@@ -130,10 +136,10 @@ export function analyzeInterfaceMembers(
           );
           resolveCapabilityObligation(
             state,
-            "internal-exported-interface-member",
+            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
             entity,
-            "finding",
-            "library-public-surface-aliasing",
+            ANALYSIS_CAPABILITY_OUTCOME.finding,
+            ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
           );
         }
       }

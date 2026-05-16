@@ -1,19 +1,9 @@
 import type ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SuppressionContext,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, SuppressionContext, TrackedObject } from "../../../types.js";
 import type { AnalysisState } from "../../analysis-state.js";
-import type {
-  ArrayProjectionBinding,
-  CallableReturnSummary,
-  ExactAppendSlotPlan,
-  HelperParameterSummary,
-  TrackedObjectBinding,
-} from "../model.js";
+import type { ArrayProjectionBinding, CallableReturnSummary, ExactAppendSlotPlan, HelperParameterSummary, TrackedObjectBinding } from "../model.js";
+import type { TrackingAppendMethodName } from "../vocabulary.js";
 import type { ObjectPathOverlayState } from "./overlay.js";
 
 /**
@@ -30,7 +20,7 @@ export interface FiniteLookupCandidate {
 export interface HelperExactAppendPlan {
   call: ts.CallExpression;
   sourceFile: ts.SourceFile;
-  methodName: "push" | "unshift";
+  methodName: TrackingAppendMethodName;
   relativeCollectionPath: PathSegment[];
   slotPlans: ExactAppendSlotPlan[];
 }

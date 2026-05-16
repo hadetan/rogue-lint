@@ -1,36 +1,17 @@
 import { getSuppressionAudit } from "../../../suppressions.js";
-import type {
-  CollectionBoundaryRecord,
-  PathSegment,
-  ProjectContext,
-  SuppressionContext,
-  TrackedObject,
-} from "../../../types.js";
+import type { CollectionBoundaryRecord, PathSegment, ProjectContext, SuppressionContext, TrackedObject } from "../../../types.js";
+import { ENTITY_KIND } from "../../../shared/entity-vocabulary.js";
+import { FINDING_KIND } from "../../../shared/finding-vocabulary.js";
 import { kindToFinding } from "../../../shared/entity-utils.js";
 import { renderPathWithRoot, serializePath } from "../../../shared/path-utils.js";
-import {
-  addAudit,
-  addFinding,
-  addSkipped,
-  registerCapabilityObligation,
-  resolveCapabilityObligation,
-  type AnalysisState,
-} from "../../analysis-state.js";
-import {
-  getCollectionInfo,
-  hasTrackedChildren,
-} from "../state.js";
+import { addAudit, addFinding, addSkipped, registerCapabilityObligation, resolveCapabilityObligation, type AnalysisState } from "../../analysis-state.js";
+import { ANALYSIS_CAPABILITY_ID, ANALYSIS_CAPABILITY_OBLIGATION_FAMILY, ANALYSIS_CAPABILITY_OUTCOME } from "../../capabilities/vocabulary.js";
+import { getCollectionInfo, hasTrackedChildren } from "../state.js";
 import type { TrackedObjectBinding } from "../model.js";
 import { shouldSuppressStructuralPath, shouldSuppressStructuralRoot } from "../syntax.js";
 import {
-  getObjectPathOverlayBoundaryRecords,
-  getObjectPathOverlayEscapedReason,
-  getObjectPathOverlayObservedAliases,
-  getObjectPathOverlayObservedSubtrees,
-  getObjectPathOverlayReads,
-  getObjectPathOverlayWrites,
-  isObjectPathOverlayCollectionPathInvalidated,
-  type ObjectPathOverlayState,
+  getObjectPathOverlayBoundaryRecords, getObjectPathOverlayEscapedReason, getObjectPathOverlayObservedAliases, type ObjectPathOverlayState,
+  getObjectPathOverlayObservedSubtrees, getObjectPathOverlayReads, getObjectPathOverlayWrites, isObjectPathOverlayCollectionPathInvalidated,
 } from "./overlay.js";
 
 function getReportingReads(
@@ -71,7 +52,7 @@ function getReportingOwnerId(
 
   if (
     trackedBindingsBySymbolId
-    && (tracked.rootEntity.kind === "local" || tracked.rootEntity.kind === "export")
+    && (tracked.rootEntity.kind === ENTITY_KIND.local || tracked.rootEntity.kind === ENTITY_KIND.export)
   ) {
     const currentBinding = trackedBindingsBySymbolId.get(tracked.canonicalSymbolKey);
     if (currentBinding && currentBinding.trackedObject.id !== tracked.id) {
@@ -115,7 +96,7 @@ function isReturnedContractMemberCandidate(tracked: TrackedObject, joinedPath: s
   return Boolean(
     node
     && node.origin === "method"
-    && tracked.rootEntity.kind === "expression"
+    && tracked.rootEntity.kind === ENTITY_KIND.expression
     && tracked.rootName.endsWith("()"),
   );
 }
@@ -182,7 +163,7 @@ export function finalizeObjectPathFindings(
           addFinding(
             state,
             tracked.rootEntity,
-            "write-only-state",
+            FINDING_KIND.writeOnlyState,
             "tracked values are accumulated here but never meaningfully observed through an exact supported path",
             `Write-only accumulation in ${tracked.rootName}`,
             "review",
@@ -200,9 +181,9 @@ export function finalizeObjectPathFindings(
       if (isReturnedContractMember) {
         registerCapabilityObligation(
           state,
-          "returned-contract-member",
+          ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
           objectNode.entity,
-          "returned-structure-transport",
+          ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
           tracked.rootName,
         );
       }
@@ -211,10 +192,10 @@ export function finalizeObjectPathFindings(
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            "returned-contract-member",
+            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
             objectNode.entity,
-            "kept",
-            "returned-structure-transport",
+            ANALYSIS_CAPABILITY_OUTCOME.kept,
+            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
           );
         }
         continue;
@@ -225,10 +206,10 @@ export function finalizeObjectPathFindings(
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            "returned-contract-member",
+            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
             objectNode.entity,
-            "skipped",
-            "returned-structure-transport",
+            ANALYSIS_CAPABILITY_OUTCOME.skipped,
+            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
           );
         }
         continue;
@@ -239,10 +220,10 @@ export function finalizeObjectPathFindings(
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            "returned-contract-member",
+            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
             objectNode.entity,
-            "skipped",
-            "returned-structure-transport",
+            ANALYSIS_CAPABILITY_OUTCOME.skipped,
+            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
           );
         }
         addSkipped(state, objectNode.entity, escapedReason.category, escapedReason.reason);
@@ -254,10 +235,10 @@ export function finalizeObjectPathFindings(
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            "returned-contract-member",
+            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
             objectNode.entity,
-            "kept",
-            "returned-structure-transport",
+            ANALYSIS_CAPABILITY_OUTCOME.kept,
+            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
           );
         }
         continue;
@@ -277,17 +258,17 @@ export function finalizeObjectPathFindings(
           objectNode.entity,
           findingKind,
           "eligible object path is declared or written but never read",
-          objectNode.entity.kind === "array-element"
+          objectNode.entity.kind === ENTITY_KIND.arrayElement
             ? `Unused array element ${renderPathWithRoot(tracked.rootName, objectNode.fullPath)}`
             : `Unused object path ${renderPathWithRoot(tracked.rootName, objectNode.fullPath)}`,
         );
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            "returned-contract-member",
+            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
             objectNode.entity,
-            "finding",
-            "returned-structure-transport",
+            ANALYSIS_CAPABILITY_OUTCOME.finding,
+            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
           );
         }
         continue;
@@ -296,10 +277,10 @@ export function finalizeObjectPathFindings(
       if (isReturnedContractMember) {
         resolveCapabilityObligation(
           state,
-          "returned-contract-member",
+          ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
           objectNode.entity,
-          "live",
-          "returned-structure-transport",
+          ANALYSIS_CAPABILITY_OUTCOME.live,
+          ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
         );
       }
     }

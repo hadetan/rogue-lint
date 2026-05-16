@@ -8,6 +8,7 @@ import type {
   TrackingReturnSummarySurface,
   TrackingRuntimeSummary,
 } from "./ownership.js";
+import { TRACKING_CONTRACT_DIAGNOSTIC_CODE } from "./ownership.js";
 
 export const VALUE_LIVENESS_TRACKING_STAGE = "value-liveness";
 export const OBJECT_PATHS_TRACKING_STAGE = "object-paths";
@@ -44,7 +45,7 @@ export function createConvergenceWarning(
   details?: TrackingContractDiagnosticDetails,
 ): TrackingContractDiagnostic {
   const diagnostic: TrackingContractDiagnostic = {
-    code: "convergence-warning",
+    code: TRACKING_CONTRACT_DIAGNOSTIC_CODE.convergenceWarning,
     message,
     details,
   };
@@ -60,7 +61,7 @@ export function createConvergenceGuardExceeded(
   details?: TrackingContractDiagnosticDetails,
 ): TrackingContractDiagnostic {
   const diagnostic: TrackingContractDiagnostic = {
-    code: "convergence-guard-exceeded",
+    code: TRACKING_CONTRACT_DIAGNOSTIC_CODE.convergenceGuardExceeded,
     message,
     details,
   };
@@ -72,6 +73,7 @@ export function createConvergenceGuardExceeded(
 }
 
 export {
+  TRACKING_CONTRACT_DIAGNOSTIC_CODE,
   TRACKING_ALIAS_OWNER,
   TRACKING_BINDINGS_OWNER,
   TRACKING_BOUNDARY_OWNER,

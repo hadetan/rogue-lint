@@ -4,6 +4,7 @@ import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { summarizeReferenceUsage } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 import { addAudit, addFinding, addSkipped, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
@@ -40,7 +41,7 @@ export function analyzeClassMembers(
 
           const entity = makeEntity(
             project.rootPath,
-            "class-member",
+            ENTITY_KIND.classMember,
             sourceFile,
             memberNameNode,
             memberName,

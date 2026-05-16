@@ -1,50 +1,23 @@
 import ts from "typescript";
 
 import type { PathSegment, ProjectContext } from "../../types.js";
-import {
-  getSymbolKey,
-  hasModifier,
-  isReadLikeUse,
-} from "../../compiler/ast-utils.js";
+import { getSymbolKey, hasModifier, isReadLikeUse } from "../../compiler/ast-utils.js";
 import { toRelative } from "../../shared/path-utils.js";
-import {
-  indexSegment,
-  propertySegment,
-  serializePath,
-} from "../../shared/path-utils.js";
-import {
-  HelperParameterSummaryState,
-} from "./model.js";
-import type {
-  CallableReturnSummary,
-  HelperParameterEffectKind,
-  HelperParameterSummary,
-  ValueAnalysisCaches,
-} from "./model.js";
-import {
-  getCanonicalSymbol,
-  getCanonicalSymbolKey,
-  getStaticGlobalThisPropertyName,
-} from "./bindings.js";
-import {
-  isExactArrayCallbackMethod,
-} from "./projection-support.js";
-import {
-  getObjectBackedRetainedBindingSlotKeyFromAccess,
-  isSupportedRetainedBindingContainerType,
-} from "./retained-bindings.js";
-import {
-  getAnalyzableCallableBinding,
-  getAnalyzableCallableBindingFromDeclaration,
-  resolveAnalyzableFunctionDeclaration,
-} from "./callables.js";
+import { indexSegment, propertySegment, serializePath } from "../../shared/path-utils.js";
+import { HelperParameterSummaryState } from "./model.js";
+import type { CallableReturnSummary, HelperParameterEffectKind, HelperParameterSummary, ValueAnalysisCaches } from "./model.js";
+import { getCanonicalSymbol, getCanonicalSymbolKey, getStaticGlobalThisPropertyName } from "./bindings.js";
+import { isExactArrayCallbackMethod } from "./projection-support.js";
+import { getObjectBackedRetainedBindingSlotKeyFromAccess, isSupportedRetainedBindingContainerType } from "./retained-bindings.js";
+import { getAnalyzableCallableBinding, getAnalyzableCallableBindingFromDeclaration, resolveAnalyzableFunctionDeclaration } from "./callables.js";
 import { isTrackablePureExpression } from "./trackable-structures.js";
+import { ASSIGNMENT_OPERATORS, getStaticObjectLiteralPropertyName, isPureObjectConstructorExpression, unwrapExpression } from "./syntax.js";
 import {
-  ASSIGNMENT_OPERATORS,
-  getStaticObjectLiteralPropertyName,
-  isPureObjectConstructorExpression,
-  unwrapExpression,
-} from "./syntax.js";
+  ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS, TRACKING_RETAINED_BINDING_WRITE_METHOD, TRACKING_RETAINED_BINDING_OBSERVER_METHODS,
+  TRACKING_ACCESS_KIND, TRACKING_HELPER_PARAMETER_EFFECT_KIND, TRACKING_ARRAY_INDEX_ACCESS_METHOD, WHOLE_ARRAY_CONSUMPTION_METHODS,
+} from "./vocabulary.js";
+
+export { ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS, WHOLE_ARRAY_CONSUMPTION_METHODS } from "./vocabulary.js";
 
 /**
  * Shared exactness semantics for helper lifecycles and call/mutation classification.
@@ -52,18 +25,6 @@ import {
  * This module centralizes the exactness-sensitive rules that both heavy stages reuse
  * when deciding whether calls, helper forwarding, and ignored results remain analyzable.
  */
-
-export const WHOLE_ARRAY_CONSUMPTION_METHODS = new Set([
-  "entries",
-  "includes",
-  "indexOf",
-  "join",
-  "keys",
-  "lastIndexOf",
-  "slice",
-  "with",
-  "values",
-]);
 
 const OBSERVATION_ONLY_CALLS = new Set([
   "console.log",
@@ -86,11 +47,6 @@ interface SupportedCallArgumentUse {
   kind: SupportedCallArgumentUseKind;
   reason: string;
 }
-
-export const ARRAY_APPEND_METHODS = new Set(["push"]);
-export const ARRAY_TRUNCATE_METHODS = new Set(["pop"]);
-export const ARRAY_REPLACEMENT_METHODS = new Set(["fill"]);
-export const ARRAY_REORDER_METHODS = new Set(["copyWithin", "reverse", "shift", "sort", "splice", "unshift"]);
 
 export function classifySupportedCallArgumentUse(
   calleeText: string,
@@ -258,9 +214,9 @@ function trySummarizeAggregateLiteralForwarding(
     return undefined;
   }
 
-  addHelperParameterEffect(remapped, "read");
-  if (nestedSummary.effectKinds.has("returned-alias")) {
-    addHelperParameterEffect(remapped, "returned-alias");
+  addHelperParameterEffect(remapped, TRACKING_HELPER_PARAMETER_EFFECT_KIND.read);
+  if (nestedSummary.effectKinds.has(TRACKING_HELPER_PARAMETER_EFFECT_KIND.returnedAlias)) {
+    addHelperParameterEffect(remapped, TRACKING_HELPER_PARAMETER_EFFECT_KIND.returnedAlias);
   }
 
   return remapped;
@@ -271,7 +227,7 @@ function markHelperParameterBoundary(
   node: ts.Node,
   reason: string,
 ): void {
-  addHelperParameterEffect(summary, "opaque-escape");
+  addHelperParameterEffect(summary, TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape);
   if (!summary.boundaryReason) {
     summary.boundaryNode = node;
     summary.boundaryReason = reason;
@@ -375,7 +331,7 @@ function getExactHelperReadPaths(project: ProjectContext, node: ts.Identifier): 
     && parent.expression === current
     && ts.isCallExpression(parent.parent)
     && parent.parent.expression === parent
-    && ["get", "has", "entries", "keys", "values"].includes(parent.name.text)
+    && TRACKING_RETAINED_BINDING_OBSERVER_METHODS.has(parent.name.text)
     && isSupportedRetainedBindingContainerType(project, current)
   ) {
     return paths;
@@ -675,7 +631,7 @@ export function getCallArgumentUse(
   project: ProjectContext,
   node: ts.Identifier,
   caches: ValueAnalysisCaches,
-): "read" | "ignore" | undefined {
+): typeof TRACKING_ACCESS_KIND.read | "ignore" | undefined {
   const parent = node.parent;
   if (!(ts.isCallExpression(parent) || ts.isNewExpression(parent))) {
     return undefined;
@@ -688,15 +644,15 @@ export function getCallArgumentUse(
 
   const callable = resolveAnalyzableFunctionDeclaration(project, parent.expression);
   if (!callable) {
-    return "read";
+    return TRACKING_ACCESS_KIND.read;
   }
 
   const parameter = callable.parameters[argumentIndex];
   if (!parameter || !ts.isIdentifier(parameter.name)) {
-    return "read";
+    return TRACKING_ACCESS_KIND.read;
   }
 
-  return hasMeaningfulParameterUse(project, callable, parameter.name, caches) ? "read" : "ignore";
+  return hasMeaningfulParameterUse(project, callable, parameter.name, caches) ? TRACKING_ACCESS_KIND.read : "ignore";
 }
 
 function hasMeaningfulParameterUse(
@@ -982,7 +938,7 @@ export function summarizeHelperParameterUse(
           if (
             ts.isCallExpression(parent)
             && ts.isPropertyAccessExpression(parent.expression)
-            && parent.expression.name.text === "set"
+            && parent.expression.name.text === TRACKING_RETAINED_BINDING_WRITE_METHOD
             && argumentIndex === 1
             && isSupportedRetainedBindingContainerType(project, parent.expression.expression)
           ) {
@@ -1025,7 +981,7 @@ export function summarizeHelperParameterUse(
           || ARRAY_TRUNCATE_METHODS.has(methodName)
           || ARRAY_REPLACEMENT_METHODS.has(methodName)
           || ARRAY_REORDER_METHODS.has(methodName)
-          || methodName === "at"
+          || methodName === TRACKING_ARRAY_INDEX_ACCESS_METHOD
         ) {
           addHelperParameterEffect(summary, WHOLE_ARRAY_CONSUMPTION_METHODS.has(methodName) ? "read" : "mutation");
           return;
@@ -1058,10 +1014,10 @@ export function summarizeHelperParameterUse(
         parameterMeaningfulUse: cache,
         callablePurity: new Map(),
       });
-      if (callArgumentUse === "read") {
+      if (callArgumentUse === TRACKING_ACCESS_KIND.read) {
         addHelperParameterEffect(summary, "read");
       } else if (isUpdateRead(node) || isReadLikeUse(node)) {
-        addHelperParameterEffect(summary, "read");
+        addHelperParameterEffect(summary, TRACKING_HELPER_PARAMETER_EFFECT_KIND.read);
       }
     }
 
@@ -1087,7 +1043,7 @@ export function summarizeHelperParameterUse(
       || summary.boundaryReason === "helper stores this value in an unsupported retained location"
     )
   ) {
-    addHelperParameterEffect(summary, "opaque-escape");
+    addHelperParameterEffect(summary, TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape);
     summary.boundaryNode = directStorageNode;
     summary.boundaryReason = "helper stores this value by reference beyond exact local analysis";
   }

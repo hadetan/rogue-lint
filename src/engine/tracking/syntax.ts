@@ -1,10 +1,9 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  TrackedObject,
-  TrackedObjectStructuralRole,
-} from "../../types.js";
+import type { PathSegment, TrackedObject, TrackedObjectStructuralRole } from "../../types.js";
+import { PATH_SEGMENT_KIND } from "../../shared/path-vocabulary.js";
+import { TRACKING_STRUCTURAL_ROLE } from "./ownership.js";
+import { TRACKING_PURE_OBJECT_CONSTRUCTOR_TYPE_NAMES } from "./vocabulary.js";
 
 /**
  * Syntax and control-flow helpers shared across the tracking kernel.
@@ -191,7 +190,7 @@ export function isPureObjectConstructorExpression(expression: ts.Expression): bo
   if (!ts.isNewExpression(node) || !ts.isIdentifier(node.expression)) {
     return false;
   }
-  if (!["Map", "Set", "WeakMap", "WeakSet"].includes(node.expression.text)) {
+  if (!TRACKING_PURE_OBJECT_CONSTRUCTOR_TYPE_NAMES.has(node.expression.text)) {
     return false;
   }
   return (node.arguments ?? []).every((argument) => isStructurallySimpleExpression(argument));
@@ -280,11 +279,11 @@ export function classifyTrackedObjectStructuralRole(
     }
 
     if (fieldNames.some((fieldName) => STRUCTURAL_STATE_FIELD_NAMES.has(fieldName))) {
-      return "state-holder";
+      return TRACKING_STRUCTURAL_ROLE.stateHolder;
     }
 
     if (fieldNames.every((fieldName) => STRUCTURAL_HELPER_FIELD_NAMES.has(fieldName))) {
-      return "structural-record";
+      return TRACKING_STRUCTURAL_ROLE.structuralRecord;
     }
 
     if (
@@ -292,7 +291,7 @@ export function classifyTrackedObjectStructuralRole(
       || fieldNames.includes("state")
       || (fieldNames.length <= 4 && allSimple)
     ) {
-      return "record";
+      return TRACKING_STRUCTURAL_ROLE.record;
     }
 
     return undefined;
@@ -310,8 +309,12 @@ export function classifyTrackedObjectStructuralRole(
   const elementRoles = concreteElements.map((element) =>
     ts.isObjectLiteralExpression(element) ? classifyObjectLiteralRole(element) : undefined,
   );
-  if (elementRoles.every((role) => role === "structural-record" || role === "state-holder")) {
-    return "structural-record-array";
+  if (
+    elementRoles.every((role) =>
+      role === TRACKING_STRUCTURAL_ROLE.structuralRecord || role === TRACKING_STRUCTURAL_ROLE.stateHolder,
+    )
+  ) {
+    return TRACKING_STRUCTURAL_ROLE.structuralRecordArray;
   }
 
   return undefined;
@@ -319,12 +322,12 @@ export function classifyTrackedObjectStructuralRole(
 
 function getLeadingStructuralFieldName(segments: PathSegment[]): string | undefined {
   const [firstSegment] = segments;
-  return firstSegment?.kind === "property" ? firstSegment.value : undefined;
+  return firstSegment?.kind === PATH_SEGMENT_KIND.property ? firstSegment.value : undefined;
 }
 
 export function shouldSuppressStructuralPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
-  if (trackedObject.structuralRole === "structural-record-array") {
-    return segments[0]?.kind === "index";
+  if (trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.structuralRecordArray) {
+    return segments[0]?.kind === PATH_SEGMENT_KIND.index;
   }
 
   const fieldName = getLeadingStructuralFieldName(segments);
@@ -332,15 +335,15 @@ export function shouldSuppressStructuralPath(trackedObject: TrackedObject, segme
     return false;
   }
 
-  if (trackedObject.structuralRole === "structural-record") {
+  if (trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.structuralRecord) {
     return STRUCTURAL_HELPER_FIELD_NAMES.has(fieldName);
   }
 
-  if (trackedObject.structuralRole === "record") {
+  if (trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.record) {
     return STRUCTURAL_RECORD_FIELD_NAMES.has(fieldName);
   }
 
-  if (trackedObject.structuralRole === "state-holder") {
+  if (trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.stateHolder) {
     return STRUCTURAL_STATE_FIELD_NAMES.has(fieldName);
   }
 
@@ -348,9 +351,9 @@ export function shouldSuppressStructuralPath(trackedObject: TrackedObject, segme
 }
 
 export function shouldSuppressStructuralRoot(trackedObject: TrackedObject): boolean {
-  return trackedObject.structuralRole === "structural-record"
-    || trackedObject.structuralRole === "structural-record-array"
-    || trackedObject.structuralRole === "state-holder";
+  return trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.structuralRecord
+    || trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.structuralRecordArray
+    || trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.stateHolder;
 }
 
 export function getFunctionDepth(node: ts.Node): number {

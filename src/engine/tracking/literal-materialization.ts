@@ -5,7 +5,10 @@ import type {
   ProjectContext,
   TrackedObject,
 } from "../../types.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
+import { TRACKED_OBJECT_NODE_ORIGIN } from "../../shared/path-vocabulary.js";
+import { SKIP_CATEGORY } from "../../shared/skip-category-vocabulary.js";
 import {
   indexSegment,
   propertySegment,
@@ -28,6 +31,10 @@ import type {
 import { visitResolvedSpreadPropertySegments } from "./spread-support.js";
 import { classifyTrackedObjectStructuralRole, unwrapExpression } from "./syntax.js";
 import {
+  TRACKING_COLLECTION_KIND,
+  TRACKING_PLACE_STATE,
+} from "./vocabulary.js";
+import {
   ensureCollectionChildPath,
   getCollectionInfo,
   indexTrackedObjectNode,
@@ -36,6 +43,7 @@ import {
   setCollectionInfo,
   setTrackedArrayLength,
 } from "./state.js";
+import { TRACKING_STRUCTURAL_ROLE } from "./ownership.js";
 
 function getKnownSpreadPropertyNames(expression: ts.Expression): string[] | undefined {
   const node = unwrapExpression(expression);
@@ -147,20 +155,20 @@ function addTrackedObjectNode(
 
   if (ts.isObjectLiteralExpression(node)) {
     if (!getCollectionInfo(trackedObject, segments)) {
-      setCollectionInfo(trackedObject, segments, "object");
+      setCollectionInfo(trackedObject, segments, TRACKING_COLLECTION_KIND.object);
     }
 
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
         const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
         if (!spreadPropertyNames) {
-          markEscaped(trackedObject, segments, "object-spread", "object spread introduces opaque properties");
+          markEscaped(trackedObject, segments, SKIP_CATEGORY.objectSpread, "object spread introduces opaque properties");
         } else {
           for (const propertyName of spreadPropertyNames) {
             markEscaped(
               trackedObject,
               [...segments, propertySegment(propertyName)],
-              "object-spread",
+              SKIP_CATEGORY.objectSpread,
               "object spread may overwrite this property",
             );
           }
@@ -192,7 +200,7 @@ function addTrackedObjectNode(
         ensureCollectionChildPath(trackedObject, segments, fullPath);
         const entity = makeEntity(
           project.rootPath,
-          fullPath.length === 1 ? "object-key" : "nested-path",
+          fullPath.length === 1 ? ENTITY_KIND.objectKey : ENTITY_KIND.nestedPath,
           sourceFile,
           property.name,
           fullPath.length === 1 ? propertyName : renderPath(fullPath),
@@ -201,9 +209,9 @@ function addTrackedObjectNode(
         trackedObject.nodes.set(joinedPath, {
           entity,
           fullPath,
-          origin: "method",
+          origin: TRACKED_OBJECT_NODE_ORIGIN.method,
         });
-        trackedObject.placeStates.set(joinedPath, "initialized");
+        trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
         indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
         continue;
       }
@@ -243,7 +251,7 @@ function addTrackedObjectNode(
       ensureCollectionChildPath(trackedObject, segments, fullPath);
       const entity = makeEntity(
         project.rootPath,
-        fullPath.length === 1 ? "object-key" : "nested-path",
+        fullPath.length === 1 ? ENTITY_KIND.objectKey : ENTITY_KIND.nestedPath,
         sourceFile,
         property.name,
         fullPath.length === 1 ? propertyName : renderPath(fullPath),
@@ -252,9 +260,9 @@ function addTrackedObjectNode(
       trackedObject.nodes.set(joinedPath, {
         entity,
         fullPath,
-        origin: "property",
+        origin: TRACKED_OBJECT_NODE_ORIGIN.property,
       });
-      trackedObject.placeStates.set(joinedPath, "initialized");
+      trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
       indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
 
       const initializer = ts.isShorthandPropertyAssignment(property) ? undefined : property.initializer;
@@ -266,8 +274,9 @@ function addTrackedObjectNode(
       }
     }
   } else {
-    const collection = getCollectionInfo(trackedObject, segments) ?? setCollectionInfo(trackedObject, segments, "array", node.elements.length);
-    if (collection.kind === "array") {
+    const collection = getCollectionInfo(trackedObject, segments)
+      ?? setCollectionInfo(trackedObject, segments, TRACKING_COLLECTION_KIND.array, node.elements.length);
+    if (collection.kind === TRACKING_COLLECTION_KIND.array) {
       setTrackedArrayLength(
         trackedObject,
         segments,
@@ -277,7 +286,7 @@ function addTrackedObjectNode(
 
     node.elements.forEach((element, index) => {
       if (!element || ts.isSpreadElement(element)) {
-        markEscaped(trackedObject, segments, "array-spread", "array spread introduces opaque values");
+        markEscaped(trackedObject, segments, SKIP_CATEGORY.arraySpread, "array spread introduces opaque values");
         return;
       }
 
@@ -286,7 +295,7 @@ function addTrackedObjectNode(
       ensureCollectionChildPath(trackedObject, segments, fullPath);
       const entity = makeEntity(
         project.rootPath,
-        fullPath.length === 1 ? "array-element" : "nested-path",
+        fullPath.length === 1 ? ENTITY_KIND.arrayElement : ENTITY_KIND.nestedPath,
         sourceFile,
         element,
         renderPath(fullPath),
@@ -295,9 +304,9 @@ function addTrackedObjectNode(
       trackedObject.nodes.set(joinedPath, {
         entity,
         fullPath,
-        origin: "array-element",
+        origin: TRACKED_OBJECT_NODE_ORIGIN.arrayElement,
       });
-      trackedObject.placeStates.set(joinedPath, "initialized");
+      trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
       indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
 
       if (ts.isObjectLiteralExpression(element)) {
@@ -350,13 +359,13 @@ function registerTrackedLiteralAliases(
 
         const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
         if (!spreadPropertyNames) {
-          markEscaped(trackedObject, segments, "object-spread", "object spread introduces opaque properties");
+          markEscaped(trackedObject, segments, SKIP_CATEGORY.objectSpread, "object spread introduces opaque properties");
         } else {
           for (const propertyName of spreadPropertyNames) {
             markEscaped(
               trackedObject,
               [...segments, propertySegment(propertyName)],
-              "object-spread",
+              SKIP_CATEGORY.objectSpread,
               "object spread may overwrite this property",
             );
           }
@@ -474,11 +483,14 @@ export function materializeTrackedLiteralAtPath(
 ): void {
   if (segments.length === 1 && segments[0]?.kind === "index") {
     const literalRole = classifyTrackedObjectStructuralRole(node);
-    if (literalRole === "structural-record" || literalRole === "state-holder") {
-      if (!trackedObject.structuralRole || trackedObject.structuralRole === "structural-record-array") {
-        trackedObject.structuralRole = "structural-record-array";
+    if (
+      literalRole === TRACKING_STRUCTURAL_ROLE.structuralRecord
+      || literalRole === TRACKING_STRUCTURAL_ROLE.stateHolder
+    ) {
+      if (!trackedObject.structuralRole || trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.structuralRecordArray) {
+        trackedObject.structuralRole = TRACKING_STRUCTURAL_ROLE.structuralRecordArray;
       }
-    } else if (trackedObject.structuralRole === "structural-record-array") {
+    } else if (trackedObject.structuralRole === TRACKING_STRUCTURAL_ROLE.structuralRecordArray) {
       trackedObject.structuralRole = undefined;
     }
   }

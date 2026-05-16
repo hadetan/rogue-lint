@@ -1,27 +1,15 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { isSerializedPathWithin, serializePath } from "../../../shared/path-utils.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { resolveTrackedObjectAccess } from "../access.js";
-import {
-  extendTrackedBinding,
-  sameTrackedBinding,
-} from "../bindings.js";
-import {
-  getAnalyzableCallableBindingFromDeclaration,
-  getCallableReturnBinding,
-} from "../callables.js";
-import type {
-  CallableReturnSummary,
-  TrackedObjectBinding,
-} from "../model.js";
+import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import { getAnalyzableCallableBindingFromDeclaration, getCallableReturnBinding } from "../callables.js";
+import type { CallableReturnSummary, TrackedObjectBinding } from "../model.js";
 import { isTrackablePureExpression } from "../trackable-structures.js";
 import { unwrapExpression } from "../syntax.js";
+import { TRACKING_RETURN_SUMMARY_KIND } from "../vocabulary.js";
 
 interface ReturnedStructureHandlerOptions {
   project: ProjectContext;
@@ -409,7 +397,7 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
     }
 
     const summary = functionReturnSummaries.get(callable.symbolKey);
-    if (summary?.kind !== "structured") {
+    if (summary?.kind !== TRACKING_RETURN_SUMMARY_KIND.structured) {
       return false;
     }
 
@@ -595,7 +583,7 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
       if (!publicCallable && !returnedStructureStaysExact) {
         markEscapedAggregateLiteralBindings(
           returnedExpression,
-          "returned-object",
+          SKIP_CATEGORY.returnedObject,
           "stored inside returned aggregate literal beyond exact local analysis",
         );
       }
@@ -605,7 +593,7 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
       markEscaped(
         returnBinding.trackedObject,
         returnBinding.prefix,
-        "returned-object",
+        SKIP_CATEGORY.returnedObject,
         "returned object escapes local analysis",
       );
     }

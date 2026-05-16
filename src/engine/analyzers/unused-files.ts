@@ -3,12 +3,13 @@ import path from "node:path";
 import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
 import { getSuppressionAudit } from "../../suppressions.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { toRelative } from "../../shared/path-utils.js";
 
 function buildFileEntity(project: ProjectContext, sourceFile: ProjectContext["sourceFiles"][number]) {
   return {
     id: `file:${toRelative(project.rootPath, sourceFile.fileName)}`,
-    kind: "file" as const,
+    kind: ENTITY_KIND.file,
     name: path.basename(sourceFile.fileName),
     location: {
       file: toRelative(project.rootPath, sourceFile.fileName),

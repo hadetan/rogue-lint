@@ -1,41 +1,18 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  TrackedObject,
-} from "../../../types.js";
-import {
-  getSymbolKey,
-  isReadLikeUse,
-} from "../../../compiler/ast-utils.js";
+import type { PathSegment, ProjectContext, TrackedObject } from "../../../types.js";
+import { getSymbolKey, isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
-import {
-  getBindingSymbolKey,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  getCanonicalSymbolKey,
-} from "../bindings.js";
-import {
-  getAnalyzableCallableBinding,
-  resolveAnalyzableFunctionDeclaration,
-} from "../callables.js";
-import type {
-  CallableReturnSummary,
-  ExactAppendSlotPlan,
-  HelperParameterSummary,
-  TrackedObjectBinding,
-} from "../model.js";
+import { getBindingSymbolKey, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, getCanonicalSymbolKey } from "../bindings.js";
+import { getAnalyzableCallableBinding, resolveAnalyzableFunctionDeclaration } from "../callables.js";
+import type { CallableReturnSummary, ExactAppendSlotPlan, HelperParameterSummary, TrackedObjectBinding } from "../model.js";
+import type { TrackingAppendMethodName } from "../vocabulary.js";
+import { TRACKING_ARRAY_EXACT_APPEND_METHODS, TRACKING_COLLECTION_KIND, TRACKING_METHOD_NAME } from "../vocabulary.js";
 import { summarizeHelperParameterUse } from "../semantics.js";
 import { unwrapExpression } from "../syntax.js";
 import { getCollectionInfo } from "../state.js";
-import type {
-  HelperExactAppendPlan,
-  HelperProjectedUsagePlan,
-  HigherOrderCallableReturnSummary,
-} from "./types.js";
+import type { HelperExactAppendPlan, HelperProjectedUsagePlan, HigherOrderCallableReturnSummary } from "./types.js";
 
 interface HelperPlanningOptions {
   project: ProjectContext;
@@ -253,7 +230,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       if (
         !ts.isCallExpression(current)
         || !ts.isPropertyAccessExpression(current.expression)
-        || current.expression.name.text !== "map"
+        || current.expression.name.text !== TRACKING_METHOD_NAME.map
       ) {
         return false;
       }
@@ -444,7 +421,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       if (
         ts.isCallExpression(candidate)
         && ts.isPropertyAccessExpression(candidate.expression)
-        && (candidate.expression.name.text === "push" || candidate.expression.name.text === "unshift")
+        && TRACKING_ARRAY_EXACT_APPEND_METHODS.has(candidate.expression.name.text)
       ) {
         const resolvedReceiver = resolveTrackedObjectAccess(
           project,
@@ -460,7 +437,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
           if (
             receiverBinding.trackedObject.id === baseBinding.trackedObject.id
             && receiverPrefix === basePrefix
-            && receiverCollection?.kind === "array"
+            && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
           ) {
             const slotPlans: ExactAppendSlotPlan[] = [];
             let exactStructuredAppend = candidate.arguments.length > 0;
@@ -484,7 +461,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
               plans.push({
                 call: candidate,
                 sourceFile: helperSourceFile,
-                methodName: candidate.expression.name.text,
+                methodName: candidate.expression.name.text as TrackingAppendMethodName,
                 relativeCollectionPath: receiverBinding.prefix.slice(baseBinding.prefix.length),
                 slotPlans,
               });
@@ -546,7 +523,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
           if (
             receiverBinding.trackedObject.id === baseBinding.trackedObject.id
             && receiverPrefix === basePrefix
-            && receiverCollection?.kind === "array"
+            && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
           ) {
             plans.push({
               statement: candidate.statement,

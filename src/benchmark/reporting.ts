@@ -1,17 +1,22 @@
 import type { AuditRecord, DiagnosticRecord, FindingRecord } from "../types.js";
 import { renderResult } from "../output/render-result.js";
+import { ENTITY_KIND } from "../shared/entity-vocabulary.js";
 import type {
   AnalyzedBenchmarkTarget,
   BenchmarkCapabilityPriorityEntry,
   BenchmarkDiagnosticMatcher,
   BenchmarkFindingMatcher,
   BenchmarkGapPriorityEntry,
-  BenchmarkGapPriorityScope,
   BenchmarkSkipMatcher,
   BenchmarkWorkspaceRun,
   ExpectationCountViolation,
   MatcherRecords,
 } from "./types.js";
+import {
+  BENCHMARK_TARGET_STATE,
+  formatBenchmarkGapPriorityScope,
+  getBenchmarkGapPriorityRank,
+} from "./vocabulary.js";
 
 const REPORT_KIND_WIDTH = 28;
 const COARSE_MATCHER_NOTE = "coarse matcher: same-file churn is surfaced only in the raw records below";
@@ -40,7 +45,7 @@ function qualifyLabel(owner: string | undefined, name: string): string {
 }
 
 function formatFinding(record: FindingRecord): string {
-  const label = record.entity.kind === "file"
+  const label = record.entity.kind === ENTITY_KIND.file
     ? record.entity.name
     : qualifyLabel(record.entity.owner, record.entity.name);
 
@@ -178,44 +183,6 @@ function formatTargetStatus(target: AnalyzedBenchmarkTarget): string {
   return target.exitCode === 0 ? "PASS" : "FAIL";
 }
 
-function gapPriorityRank(scope: BenchmarkGapPriorityScope): number {
-  switch (scope) {
-    case "accepted-finding-growth":
-    case "known-skip-growth":
-      return 0;
-    case "unexpected-finding":
-    case "unexpected-diagnostic":
-    case "unexpected-skip":
-      return 1;
-    case "accepted-finding":
-    case "known-skip":
-      return 2;
-    default:
-      return 3;
-  }
-}
-
-function formatGapPriorityScope(scope: BenchmarkGapPriorityScope): string {
-  switch (scope) {
-    case "accepted-finding":
-      return "accepted finding";
-    case "accepted-finding-growth":
-      return "accepted finding growth";
-    case "known-skip":
-      return "known skip";
-    case "known-skip-growth":
-      return "known skip growth";
-    case "unexpected-finding":
-      return "unexpected finding";
-    case "unexpected-diagnostic":
-      return "unexpected diagnostic";
-    case "unexpected-skip":
-      return "unexpected skip";
-    default:
-      return scope;
-  }
-}
-
 function collectWorkspaceGapPriority(targets: AnalyzedBenchmarkTarget[]): Array<BenchmarkGapPriorityEntry & { targetCount: number }> {
   const grouped = new Map<string, { entry: BenchmarkGapPriorityEntry; targetIds: Set<string> }>();
 
@@ -242,7 +209,7 @@ function collectWorkspaceGapPriority(targets: AnalyzedBenchmarkTarget[]): Array<
       targetCount: targetIds.size,
     }))
     .sort((left, right) => {
-      const rankDelta = gapPriorityRank(left.scope) - gapPriorityRank(right.scope);
+      const rankDelta = getBenchmarkGapPriorityRank(left.scope) - getBenchmarkGapPriorityRank(right.scope);
       if (rankDelta !== 0) {
         return rankDelta;
       }
@@ -523,9 +490,9 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
 }
 
 export function renderBenchmarkReport(result: BenchmarkWorkspaceRun): string {
-  const missingTargets = result.targets.filter((target) => target.state === "missing-corpus");
-  const invalidTargets = result.targets.filter((target) => target.state === "invalid-target");
-  const analyzedTargets = result.targets.filter((target) => target.state === "analyzed");
+  const missingTargets = result.targets.filter((target) => target.state === BENCHMARK_TARGET_STATE.missingCorpus);
+  const invalidTargets = result.targets.filter((target) => target.state === BENCHMARK_TARGET_STATE.invalidTarget);
+  const analyzedTargets = result.targets.filter((target) => target.state === BENCHMARK_TARGET_STATE.analyzed);
 
   const lines = [
     "rogue-lint benchmark",
@@ -586,7 +553,7 @@ export function renderBenchmarkReport(result: BenchmarkWorkspaceRun): string {
       "See per-target Accepted Findings, Known Skips, and Unexpected sections below for raw records.",
       `Coarse accepted and known matchers are labeled as '${COARSE_MATCHER_NOTE}'.`,
       ...worklist.map((entry) =>
-        `- ${formatGapPriorityScope(entry.scope)} ${entry.label}: ${entry.count} `
+        `- ${formatBenchmarkGapPriorityScope(entry.scope)} ${entry.label}: ${entry.count} `
         + `record${entry.count === 1 ? "" : "s"} across ${entry.targetCount} `
         + `target${entry.targetCount === 1 ? "" : "s"}`),
     );

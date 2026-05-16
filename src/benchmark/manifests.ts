@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type {
+  BenchmarkCoverageClass,
   BenchmarkDiagnosticMatcher,
   BenchmarkExpectations,
   BenchmarkFindingMatcher,
@@ -13,8 +14,17 @@ import {
   BENCHMARK_DOC_PATH,
   EMPTY_BENCHMARK_CONFIG,
   isAnalysisMode,
-  isBenchmarkCoverageClass,
 } from "./types.js";
+import {
+  BENCHMARK_COVERAGE_CLASS,
+  formatBenchmarkCoverageClassOptions,
+} from "./vocabulary.js";
+
+const BENCHMARK_COVERAGE_CLASS_VALUES = Object.values(BENCHMARK_COVERAGE_CLASS) as BenchmarkCoverageClass[];
+
+function isBenchmarkCoverageClass(value: unknown): value is BenchmarkCoverageClass {
+  return typeof value === "string" && BENCHMARK_COVERAGE_CLASS_VALUES.includes(value as BenchmarkCoverageClass);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -281,10 +291,7 @@ function parseManifest(filePath: string): BenchmarkTargetManifest {
   }
 
   if (!isBenchmarkCoverageClass(raw.coverageClass)) {
-    throw new Error(
-      `${filePath}: coverageClass must be one of "application-entrypoint-driven", `
-      + `"library-public-surface", or "workspace-monorepo-subproject"`,
-    );
+    throw new Error(`${filePath}: coverageClass must be one of ${formatBenchmarkCoverageClassOptions()}`);
   }
 
   return {

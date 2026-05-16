@@ -14,6 +14,7 @@ import type {
   CallableReturnSummary,
   TrackedObjectBinding,
 } from "./model.js";
+import { TRACKING_RETURN_SUMMARY_KIND } from "./vocabulary.js";
 
 /**
  * Callable-binding and return-summary helpers shared across the tracking kernel.
@@ -23,7 +24,11 @@ import type {
  */
 
 export function getCallableReturnBinding(summary: CallableReturnSummary | undefined): TrackedObjectBinding | undefined {
-  if (!summary || summary.kind === "value" || summary.kind === "opaque") {
+  if (
+    !summary
+    || summary.kind === TRACKING_RETURN_SUMMARY_KIND.value
+    || summary.kind === TRACKING_RETURN_SUMMARY_KIND.opaque
+  ) {
     return undefined;
   }
 
@@ -57,7 +62,10 @@ function sameCallableReturnBinding(left: TrackedObjectBinding, right: TrackedObj
 }
 
 export function cloneCallableReturnSummary(summary: CallableReturnSummary): CallableReturnSummary {
-  if (summary.kind === "value" || summary.kind === "opaque") {
+  if (
+    summary.kind === TRACKING_RETURN_SUMMARY_KIND.value
+    || summary.kind === TRACKING_RETURN_SUMMARY_KIND.opaque
+  ) {
     return { kind: summary.kind };
   }
 
@@ -97,15 +105,15 @@ export function joinCallableReturnSummaries(
   }
 
   if (!next) {
-    if (current.kind === "opaque") {
+    if (current.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
       return {
-        summary: { kind: "opaque" },
+        summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
         widened: false,
       };
     }
 
     return {
-      summary: { kind: "opaque" },
+      summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
       widened: true,
       reason: "missing follow-up summary widened to opaque",
     };
@@ -118,24 +126,27 @@ export function joinCallableReturnSummaries(
     };
   }
 
-  if (current.kind === "opaque") {
+  if (current.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
     return {
-      summary: { kind: "opaque" },
+      summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
       widened: false,
     };
   }
 
-  if (next.kind === "opaque") {
+  if (next.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
     return {
-      summary: { kind: "opaque" },
+      summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
       widened: true,
       reason: "unsupported summary widened to opaque",
     };
   }
 
-  if (current.kind === "value" && next.kind === "value") {
+  if (
+    current.kind === TRACKING_RETURN_SUMMARY_KIND.value
+    && next.kind === TRACKING_RETURN_SUMMARY_KIND.value
+  ) {
     return {
-      summary: { kind: "value" },
+      summary: { kind: TRACKING_RETURN_SUMMARY_KIND.value },
       widened: false,
     };
   }
@@ -157,13 +168,18 @@ export function joinCallableReturnSummaries(
   }
 
   if (currentBinding && nextBinding && sameCallableReturnBinding(currentBinding, nextBinding)) {
-    if (current.kind === "returned-alias" || next.kind === "returned-alias") {
+    if (
+      current.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+      || next.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+    ) {
       return {
         summary: {
-          kind: "returned-alias",
+          kind: TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
           binding: cloneTrackedBinding(currentBinding),
         },
-        widened: current.kind !== "returned-alias" || next.kind !== "returned-alias",
+        widened:
+          current.kind !== TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+          || next.kind !== TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
         reason: current.kind !== next.kind
           ? "mixed summary kinds for the same binding widened to returned-alias"
           : undefined,
@@ -172,7 +188,7 @@ export function joinCallableReturnSummaries(
 
     return {
       summary: {
-        kind: "structured",
+        kind: TRACKING_RETURN_SUMMARY_KIND.structured,
         binding: cloneTrackedBinding(currentBinding),
       },
       widened: false,
@@ -180,7 +196,7 @@ export function joinCallableReturnSummaries(
   }
 
   return {
-    summary: { kind: "opaque" },
+    summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
     widened: true,
     reason: "conflicting precise summaries widened to opaque",
   };

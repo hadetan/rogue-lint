@@ -17,6 +17,7 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "benchmark": "npm run build && node dist/benchmark-cli.js",
+    "lint:literals": "node tools/validate-literal-ownership.js",
     "lint": "eslint . --max-warnings=0",
     "lint:fix": "npm run lint -- --fix",
     "test": "vitest run",

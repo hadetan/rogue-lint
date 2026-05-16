@@ -70,7 +70,8 @@ When reorganizing code for maintainability:
 
 - move shared helpers and constants into the domain that owns their behavior
 - avoid creating or expanding global `util`, `helpers`, or `const` buckets when the concern has a real owner
-- keep one-off local literals or tiny implementation-only types local when promoting them would reduce readability
+- make owner surfaces runtime-usable and single-sourced so related types, labels, predicates, and maps derive from one canonical value definition
+- treat vendored, archived, generated, and fixture trees as out of scope for this contract unless the change explicitly expands enforcement into them
 
 The goal is clearer ownership, not just fewer lines in a file.
 
