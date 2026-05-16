@@ -12,6 +12,7 @@ import {
   type AnalysisCapabilityId,
   type AnalysisCapabilityLedger,
 } from "../engine/capabilities/types.js";
+import { evaluateTrackingUpgradeSafety } from "../engine/tracking/upgrade-safety.js";
 import { uniqueById } from "../shared/general-utils.js";
 import type {
   AcceptedDebtResult,
@@ -24,11 +25,13 @@ import type {
   BenchmarkGapPriorityEntry,
   BenchmarkGapPriorityScope,
   BenchmarkSkipMatcher,
+  BenchmarkTargetManifest,
   CountedMatcherRecords,
   ExpectationCountViolation,
   NegativeExpectationResult,
   PositiveExpectationResult,
 } from "./types.js";
+import { getBenchmarkTrackingSafetyBudgets } from "./upgrade-safety.js";
 
 interface CountMatcherFields {
   minCount?: number;
@@ -303,9 +306,38 @@ function groupCapabilityPriority(
     .sort((left, right) => right.count - left.count || left.capabilityId.localeCompare(right.capabilityId));
 }
 
+function observeBenchmarkEvaluationShape(evaluation: BenchmarkEvaluation): void {
+  void evaluation.contract.requiredAnchorTotal;
+  void evaluation.contract.incomplete;
+
+  void evaluation.required.mustFind;
+  void evaluation.required.mustNotFind;
+  void evaluation.required.mustSkip;
+  void evaluation.required.mustNotSkip;
+  void evaluation.required.mustDiagnose;
+  void evaluation.required.mustNotDiagnose;
+
+  void evaluation.accepted.findings;
+  void evaluation.accepted.skips;
+
+  void evaluation.unexpected.findings;
+  void evaluation.unexpected.skips;
+  void evaluation.unexpected.diagnostics;
+
+  void evaluation.gapSignal.findingsByKind;
+  void evaluation.gapSignal.skipsByCategory;
+  void evaluation.gapPriority;
+  void evaluation.capabilityPriority;
+  void evaluation.trackingSafety;
+  void evaluation.failed;
+}
+
 export function evaluateBenchmarkExpectations(
   result: AnalysisResult,
   expectations: BenchmarkExpectations,
+  coverageClass: BenchmarkTargetManifest["coverageClass"] = result.mode === "library"
+    ? "library-public-surface"
+    : "application-entrypoint-driven",
 ): BenchmarkEvaluation {
   const findings = result.findings;
   const skips = result.skipped;
@@ -417,8 +449,12 @@ export function evaluateBenchmarkExpectations(
     unexpectedDiagnostics,
     capabilityLedger,
   );
+  const trackingSafety = evaluateTrackingUpgradeSafety(
+    result,
+    getBenchmarkTrackingSafetyBudgets(coverageClass),
+  );
 
-  return {
+  const evaluation: BenchmarkEvaluation = {
     contract: {
       requiredAnchorTotal,
       incomplete: incompleteContract,
@@ -446,6 +482,10 @@ export function evaluateBenchmarkExpectations(
     },
     gapPriority,
     capabilityPriority,
-    failed,
+    trackingSafety,
+    failed: failed || (trackingSafety?.enforced.violations.length ?? 0) > 0,
   };
+
+  observeBenchmarkEvaluationShape(evaluation);
+  return evaluation;
 }

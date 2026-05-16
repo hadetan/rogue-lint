@@ -20,6 +20,7 @@ import type {
   CallableReturnSummary,
   TrackedObjectBinding,
 } from "../model.js";
+import { isTrackablePureExpression } from "../trackable-structures.js";
 import { unwrapExpression } from "../syntax.js";
 
 interface ReturnedStructureHandlerOptions {
@@ -413,6 +414,29 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
     }
 
     const unwrapped = unwrapExpression(expression);
+    if (ts.isConditionalExpression(unwrapped)) {
+      const whenTrueExact = isExactStructuredReturnExpression(callable, unwrapped.whenTrue);
+      const whenFalseExact = isExactStructuredReturnExpression(callable, unwrapped.whenFalse);
+      return (whenTrueExact && whenFalseExact)
+        || (whenTrueExact && isTrackablePureExpression(unwrapped.whenFalse))
+        || (whenFalseExact && isTrackablePureExpression(unwrapped.whenTrue));
+    }
+
+    if (
+      ts.isBinaryExpression(unwrapped)
+      && (
+        unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        || unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken
+        || unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+      )
+    ) {
+      const leftExact = isExactStructuredReturnExpression(callable, unwrapped.left);
+      const rightExact = isExactStructuredReturnExpression(callable, unwrapped.right);
+      return (leftExact && rightExact)
+        || (leftExact && isTrackablePureExpression(unwrapped.right))
+        || (rightExact && isTrackablePureExpression(unwrapped.left));
+    }
+
     if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
       return true;
     }

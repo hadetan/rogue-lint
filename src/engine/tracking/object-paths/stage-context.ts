@@ -8,7 +8,7 @@ import type {
 } from "../../../types.js";
 import type { AnalysisState } from "../../analysis-state.js";
 import type { AnalysisArtifacts } from "../../analysis-artifacts.js";
-import { OBJECT_PATHS_TRACKING_STAGE } from "../contracts.js";
+import { OBJECT_PATHS_TRACKING_STAGE, type TrackingSharedFactsPlane } from "../contracts.js";
 import type {
   ArrayProjectionBinding,
   CallableReturnSummary,
@@ -134,6 +134,26 @@ function cloneCallableReturnSummaryForObjectPathStage(
   return summary;
 }
 
+interface ObjectPathTrackingInput {
+  sharedFacts: Pick<TrackingSharedFactsPlane, "bindings" | "returnSummaries" | "aliases" | "boundaries">;
+}
+
+function createObjectPathTrackingInput(artifacts: AnalysisArtifacts): ObjectPathTrackingInput {
+  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts(OBJECT_PATHS_TRACKING_STAGE);
+
+  const trackingInput: ObjectPathTrackingInput = {
+    sharedFacts: {
+      bindings: trackingStageArtifacts.bindings,
+      returnSummaries: trackingStageArtifacts.returnSummaries,
+      aliases: trackingStageArtifacts.aliases,
+      boundaries: trackingStageArtifacts.boundaries,
+    },
+  };
+
+  void trackingInput.sharedFacts.boundaries;
+  return trackingInput;
+}
+
 /**
  * Clones the shared tracking snapshot into the mutable state used by the object-path stage.
  */
@@ -144,7 +164,7 @@ export function createObjectPathStageContext(
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): ObjectPathStageContext {
-  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts(OBJECT_PATHS_TRACKING_STAGE);
+  const trackingInput = createObjectPathTrackingInput(artifacts);
   const overlayState: ObjectPathOverlayState = {
     readsByObjectId: new Map(),
     writesByObjectId: new Map(),
@@ -155,19 +175,19 @@ export function createObjectPathStageContext(
     boundaryRecordsByObjectId: new Map(),
   };
   const trackedObjectRegistry = new Map(
-    [...trackingStageArtifacts.aliases.trackedObjectsById.entries()].map(([id, trackedObject]) => [
+    [...trackingInput.sharedFacts.aliases.trackedObjectsById.entries()].map(([id, trackedObject]) => [
       id,
       cloneTrackedObjectForObjectPathStage(trackedObject),
     ]),
   );
   const trackedBindingRegistry = new Map(
-    [...trackingStageArtifacts.bindings.bySymbolId.entries()].map(([symbolId, binding]) => [
+    [...trackingInput.sharedFacts.bindings.bySymbolId.entries()].map(([symbolId, binding]) => [
       symbolId,
       cloneTrackedObjectBindingForObjectPathStage(binding, trackedObjectRegistry),
     ]),
   );
   const functionReturnSummaries = new Map(
-    [...trackingStageArtifacts.returnSummaries.byCallableId.entries()].map(([callableId, summary]) => [
+    [...trackingInput.sharedFacts.returnSummaries.byCallableId.entries()].map(([callableId, summary]) => [
       callableId,
       cloneCallableReturnSummaryForObjectPathStage(summary, trackedObjectRegistry),
     ]),

@@ -398,6 +398,7 @@ export function visitObjectPathSourceFile(
     trackedObjectsById,
     handledExactCallbackBodies,
     handledSpreadAppendStarts,
+    projectionContext,
     getPublicReturnBinding: returnedStructureHandler.getPublicReturnBinding,
     markObservedAggregateLiteralBindings: returnedStructureHandler.markObservedAggregateLiteralBindings,
     markObservedSubtree,

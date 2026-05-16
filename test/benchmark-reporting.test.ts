@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import { evaluateBenchmarkExpectations } from "../src/benchmark/evaluate.js";
 import { renderBenchmarkReport } from "../src/benchmark/reporting.js";
 import { attachAnalysisCapabilityLedger } from "../src/engine/capabilities/providers.js";
+import { attachTrackingRuntimeSummary } from "../src/engine/tracking/upgrade-safety.js";
 import {
   createDiagnosticCapabilityRecordId,
   createEmptyAnalysisCapabilityLedger,
 } from "../src/engine/capabilities/types.js";
+import type { TrackingRuntimeSummary } from "../src/engine/tracking/contracts.js";
 import type {
   AnalysisResult,
   AuditRecord,
@@ -71,6 +73,56 @@ function createAnalysisResult(findings: FindingRecord[], skips: AuditRecord[], d
   };
 }
 
+function createTrackingRuntimeSummary(overrides: Partial<{
+  passes: number;
+  warningPassThreshold: number;
+  maxPasses: number;
+  warned: boolean;
+  elapsedMs: number;
+  bindingChanges: number;
+  returnSummaryChanges: number;
+  trackedBindings: number;
+  returnSummaries: number;
+}> = {}): TrackingRuntimeSummary {
+  return {
+    seed: {
+      reachableFileCount: 1,
+      reachableSourceFileCount: 1,
+    },
+    convergence: {
+      passes: overrides.passes ?? 4,
+      warningPassThreshold: overrides.warningPassThreshold ?? 12,
+      maxPasses: overrides.maxPasses ?? 50,
+      warned: overrides.warned ?? false,
+      elapsedMs: overrides.elapsedMs ?? 100,
+      churn: {
+        bindingChanges: overrides.bindingChanges ?? 4,
+        bindingChangedPasses: 2,
+        returnSummaryChanges: overrides.returnSummaryChanges ?? 4,
+        returnSummaryChangedPasses: 2,
+      },
+      widening: {
+        bindingChanges: 0,
+        returnSummaryChanges: 0,
+        reasons: {
+          bindings: [],
+          returnSummaries: [],
+        },
+      },
+      unstableSamples: {
+        bindings: [],
+        returnSummaries: [],
+      },
+    },
+    totals: {
+      trackedBindings: overrides.trackedBindings ?? 2,
+      returnSummaries: overrides.returnSummaries ?? 2,
+      trackedObjects: 2,
+    },
+    stageRequests: {},
+  };
+}
+
 function createManifest(id: string, coverageClass: BenchmarkTargetManifest["coverageClass"]): BenchmarkTargetManifest {
   return {
     id,
@@ -106,7 +158,7 @@ function createAnalyzedTarget(
 ): AnalyzedBenchmarkTarget {
   const manifest = createManifest(id, coverageClass);
   manifest.expectations = expectations;
-  const evaluation = evaluateBenchmarkExpectations(result, expectations);
+  const evaluation = evaluateBenchmarkExpectations(result, expectations, coverageClass);
 
   return {
     state: "analyzed",
@@ -323,6 +375,121 @@ describe("benchmark reporting", () => {
     expect(report).toContain("must-not-skip clean: 0/1");
     expect(report).toContain("Must-Not-Skip Violations:");
     expect(report).toContain("forbidden computed-property skip");
+  });
+
+  it("renders tracking safety metrics, regressions, and advisories separately", () => {
+    const regressionResult = createAnalysisResult([], [], [createDiagnostic({ message: "diagnostic anchor" })]);
+    attachTrackingRuntimeSummary(regressionResult, createTrackingRuntimeSummary({
+      passes: 9,
+      bindingChanges: 32,
+      returnSummaryChanges: 32,
+      trackedBindings: 2,
+      returnSummaries: 2,
+    }));
+    const advisoryResult = createAnalysisResult([], [], [createDiagnostic({ message: "diagnostic anchor" })]);
+    attachTrackingRuntimeSummary(advisoryResult, createTrackingRuntimeSummary({
+      elapsedMs: 3500,
+    }));
+
+    const regressionTarget = createAnalyzedTarget(
+      "safety-regression-target",
+      "library-public-surface",
+      [],
+      [],
+      [createDiagnostic({ message: "diagnostic anchor" })],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [{ label: "diagnostic anchor", kind: "project-warning" }],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+      regressionResult,
+    );
+    const advisoryTarget = createAnalyzedTarget(
+      "safety-advisory-target",
+      "library-public-surface",
+      [],
+      [],
+      [createDiagnostic({ message: "diagnostic anchor" })],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [{ label: "diagnostic anchor", kind: "project-warning" }],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+      advisoryResult,
+    );
+
+    const report = renderBenchmarkReport(createWorkspaceRun([regressionTarget, advisoryTarget]));
+
+    expect(report).toContain("Tracking safety regressions: 1");
+    expect(report).toContain("Tracking safety advisories: 1");
+    expect(report).toContain("Tracking Upgrade Safety:");
+    expect(report).toContain("Tracking Safety Regressions:");
+    expect(report).toContain("Tracking Safety Advisories:");
+    expect(report).toContain("convergence passes: actual 9, budget 8");
+    expect(report).toContain("tracking elapsed ms: actual 3500, budget 3000");
+  });
+
+  it("keeps hard analysis failures separate from completed-run safety regressions", () => {
+    const regressionResult = createAnalysisResult([], [], [createDiagnostic({ message: "diagnostic anchor" })]);
+    attachTrackingRuntimeSummary(regressionResult, createTrackingRuntimeSummary({
+      passes: 9,
+      bindingChanges: 32,
+      returnSummaryChanges: 32,
+      trackedBindings: 2,
+      returnSummaries: 2,
+    }));
+    const regressionTarget = createAnalyzedTarget(
+      "completed-run-regression",
+      "library-public-surface",
+      [],
+      [],
+      [createDiagnostic({ message: "diagnostic anchor" })],
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [{ label: "diagnostic anchor", kind: "project-warning" }],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+      regressionResult,
+    );
+
+    const hardFailureManifest = createManifest("hard-failure-target", "library-public-surface");
+    const report = renderBenchmarkReport({
+      docsPath: "benchmark/README.md",
+      exitCode: 1,
+      manifests: [regressionTarget.manifest, hardFailureManifest],
+      noCorpusInstalled: false,
+      targets: [
+        {
+          state: "invalid-target",
+          manifest: hardFailureManifest,
+          corpusPath: "/tmp/hard-failure-target",
+          targetPath: "/tmp/hard-failure-target",
+          problem: "Benchmark analysis failed due to tracking convergence guard.",
+          error: "tracking convergence exceeded 3 passes while stabilizing tracked bindings and callable return summaries",
+        },
+        regressionTarget,
+      ],
+    });
+
+    expect(report).toContain("Invalid Benchmark Targets:");
+    expect(report).toContain("hard-failure-target: Benchmark analysis failed due to tracking convergence guard.");
+    expect(report).toContain("Tracking Safety Regressions:");
+    expect(report).toContain("Target: completed-run-regression");
   });
 
   it("renders owner-qualified skip labels when reporting owner-scoped skip matches", () => {

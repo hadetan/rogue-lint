@@ -9,6 +9,7 @@ import type {
 import {
   getAccessPath,
   getBindingSymbolKey,
+  resolveProjectionAccess,
   resolveTrackedObjectAccess,
 } from "../access.js";
 import {
@@ -17,6 +18,7 @@ import {
   sameTrackedBinding,
 } from "../bindings.js";
 import type {
+  ArrayProjectionBinding,
   CallableReturnSummary,
   ProjectedArrayUsageContext,
   TrackedObjectBinding,
@@ -38,6 +40,7 @@ import {
   addValueFate,
   getCollectionInfo,
   getProjectionBinding,
+  resolveExactPathAlias,
 } from "../state.js";
 
 interface CollectionOperationHandlerOptions {
@@ -48,6 +51,7 @@ interface CollectionOperationHandlerOptions {
   trackedObjectsById: Map<string, TrackedObject>;
   handledExactCallbackBodies: Set<ts.Node>;
   handledSpreadAppendStarts: Set<number>;
+  projectionContext: ProjectedArrayUsageContext;
   getPublicReturnBinding: (node: ts.Node) => TrackedObjectBinding | undefined;
   markObservedAggregateLiteralBindings: (expression: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression) => void;
   markObservedSubtree: (
@@ -107,6 +111,7 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
     trackedObjectsById,
     handledExactCallbackBodies,
     handledSpreadAppendStarts,
+    projectionContext,
     getPublicReturnBinding,
     markObservedAggregateLiteralBindings,
     markObservedSubtree,
@@ -115,6 +120,64 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
     recordArrayBoundary,
     visitProjectedArrayUsage,
   } = options;
+
+  const getProjectedNestedArrayBinding = (
+    projection: ArrayProjectionBinding,
+    suffix: PathSegment[],
+  ): ArrayProjectionBinding | undefined => {
+    let nestedTrackedObject: TrackedObject | undefined;
+    let nestedSourcePath: PathSegment[] | undefined;
+    const nestedElementPaths: PathSegment[][] = [];
+
+    for (const candidatePath of projection.elementPaths) {
+        let resolvedBinding: TrackedObjectBinding = {
+          trackedObject: projection.trackedObject,
+          prefix: candidatePath,
+        };
+
+        const rootAlias = resolveExactPathAlias(resolvedBinding, [], trackedObjectsById);
+        if (!sameTrackedBinding(rootAlias.binding, resolvedBinding)) {
+          resolvedBinding = rootAlias.binding;
+        }
+
+        for (const segment of suffix) {
+          const aliased = resolveExactPathAlias(resolvedBinding, [segment], trackedObjectsById);
+          if (!sameTrackedBinding(aliased.binding, resolvedBinding)) {
+            resolvedBinding = aliased.binding;
+            continue;
+          }
+
+          resolvedBinding = extendTrackedBinding(resolvedBinding, [segment]);
+        }
+
+        const targetTrackedObject = resolvedBinding.trackedObject;
+        const targetPath = resolvedBinding.prefix;
+      const nestedProjection = getProjectionBinding(targetTrackedObject, targetPath);
+      if (!nestedProjection) {
+        continue;
+      }
+
+      if (!nestedTrackedObject) {
+        nestedTrackedObject = nestedProjection.trackedObject;
+        nestedSourcePath = targetPath;
+      } else if (
+        nestedTrackedObject.id !== nestedProjection.trackedObject.id
+        || !sameTrackedBinding({ trackedObject: nestedTrackedObject, prefix: nestedSourcePath ?? [] }, { trackedObject: nestedProjection.trackedObject, prefix: targetPath })
+      ) {
+        return undefined;
+      }
+
+      nestedElementPaths.push(...nestedProjection.elementPaths);
+    }
+
+    return nestedTrackedObject && nestedSourcePath && nestedElementPaths.length > 0
+      ? {
+          trackedObject: nestedTrackedObject,
+          sourcePath: nestedSourcePath,
+          elementPaths: nestedElementPaths,
+        }
+      : undefined;
+  };
 
   const handleReceiverCall = (
     node: ts.CallExpression,
@@ -160,6 +223,39 @@ export function createCollectionOperationHandler(options: CollectionOperationHan
           trackedObjectsById,
         );
       }
+    }
+    if (!resolvedReceiver || resolvedReceiver.dynamic) {
+      const projectedReceiver = resolveProjectionAccess(project, receiverExpression, projectionContext);
+      if (
+        projectedReceiver
+        && !projectedReceiver.dynamic
+        && isExactArrayCallbackMethod(methodName)
+        && node.arguments[0]
+        && (ts.isArrowFunction(node.arguments[0]) || ts.isFunctionExpression(node.arguments[0]))
+      ) {
+        const callback = node.arguments[0];
+        const paramIndex = getSupportedArrayCallbackParamIndex(methodName);
+        const parameter = paramIndex === undefined ? undefined : callback.parameters[paramIndex];
+        const indexParamIndex = getSupportedArrayCallbackIndexParamIndex(methodName);
+        const indexParameter = indexParamIndex === undefined ? undefined : callback.parameters[indexParamIndex];
+        const symbolKey = parameter ? getBindingSymbolKey(project, parameter) : undefined;
+        const indexSymbolKey = indexParameter ? getBindingSymbolKey(project, indexParameter) : undefined;
+        const nestedProjection = getProjectedNestedArrayBinding(projectedReceiver.projection, projectedReceiver.suffix);
+        if (symbolKey && nestedProjection && callback.body) {
+          handledExactCallbackBodies.add(callback.body);
+          visitProjectedArrayUsage(
+            project,
+            callback.body,
+            {
+              elementBindings: new Map([[symbolKey, nestedProjection]]),
+              receiverBindings: new Map(),
+              indexBindings: indexSymbolKey ? new Map([[indexSymbolKey, nestedProjection]]) : new Map(),
+            },
+            trackedObjectsById,
+          );
+        }
+      }
+      return;
     }
     if (!resolvedReceiver || resolvedReceiver.dynamic) {
       return;

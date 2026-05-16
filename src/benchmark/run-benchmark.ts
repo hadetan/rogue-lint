@@ -12,16 +12,6 @@ import type {
   BenchmarkWorkspaceRun,
 } from "./types.js";
 
-class BenchmarkWorkspaceRunRecord implements BenchmarkWorkspaceRun {
-  constructor(
-    public docsPath: string,
-    public exitCode: 0 | 1,
-    public manifests: BenchmarkTargetManifest[],
-    public noCorpusInstalled: boolean,
-    public targets: BenchmarkTargetRun[],
-  ) {}
-}
-
 function hasConfigOverrides(config: BenchmarkTargetConfig): boolean {
   return Object.values(config).some((value) => value !== undefined);
 }
@@ -63,7 +53,19 @@ function observeTargetShape(target: BenchmarkTargetRun): void {
   void target.exitCode;
 }
 
-async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManifest): Promise<BenchmarkTargetRun> {
+function observeWorkspaceRunShape(result: BenchmarkWorkspaceRun): void {
+  void result.docsPath;
+  void result.exitCode;
+  void result.manifests;
+  void result.noCorpusInstalled;
+  void result.targets;
+}
+
+async function appendManifestTarget(
+  targets: BenchmarkTargetRun[],
+  workspaceRoot: string,
+  manifest: BenchmarkTargetManifest,
+): Promise<void> {
   const corpusPath = path.resolve(workspaceRoot, manifest.localCorpusPath);
   if (!fs.existsSync(corpusPath)) {
     const target: BenchmarkTargetRun = {
@@ -72,7 +74,8 @@ async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManif
       corpusPath,
     };
     observeTargetShape(target);
-    return target;
+    targets.push(target);
+    return;
   }
 
   const targetPath = manifest.targetPath ? path.resolve(corpusPath, manifest.targetPath) : corpusPath;
@@ -85,7 +88,8 @@ async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManif
       problem: "Configured target path does not exist inside the local corpus.",
     };
     observeTargetShape(target);
-    return target;
+    targets.push(target);
+    return;
   }
 
   let cleanup = (): void => {};
@@ -114,10 +118,11 @@ async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManif
         problem: "Benchmark target produced zero analyzed files.",
       };
       observeTargetShape(target);
-      return target;
+      targets.push(target);
+      return;
     }
 
-    const evaluation = evaluateBenchmarkExpectations(result, manifest.expectations);
+    const evaluation = evaluateBenchmarkExpectations(result, manifest.expectations, manifest.coverageClass);
 
     const target: BenchmarkTargetRun = {
       state: "analyzed",
@@ -129,7 +134,8 @@ async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManif
       exitCode: evaluation.failed ? 1 : 0,
     };
     observeTargetShape(target);
-    return target;
+    targets.push(target);
+    return;
   } catch (error) {
     const target: BenchmarkTargetRun = {
       state: "invalid-target",
@@ -140,7 +146,8 @@ async function runManifest(workspaceRoot: string, manifest: BenchmarkTargetManif
       error: error instanceof Error ? error.message : String(error),
     };
     observeTargetShape(target);
-    return target;
+    targets.push(target);
+    return;
   } finally {
     cleanup();
   }
@@ -150,7 +157,7 @@ async function runBenchmarkManifests(workspaceRoot: string, manifests: Benchmark
   const targets: BenchmarkTargetRun[] = [];
 
   for (const manifest of manifests) {
-    targets.push(await runManifest(workspaceRoot, manifest));
+    await appendManifestTarget(targets, workspaceRoot, manifest);
   }
 
   const installedTargets = targets.filter((target) => target.state !== "missing-corpus");
@@ -163,13 +170,16 @@ async function runBenchmarkManifests(workspaceRoot: string, manifests: Benchmark
 
   targets.forEach((target) => observeTargetShape(target));
 
-  return new BenchmarkWorkspaceRunRecord(
-    getBenchmarkDocsPath(workspaceRoot),
+  const benchmarkRun: BenchmarkWorkspaceRun = {
+    docsPath: getBenchmarkDocsPath(workspaceRoot),
     exitCode,
     manifests,
     noCorpusInstalled,
     targets,
-  );
+  };
+
+  observeWorkspaceRunShape(benchmarkRun);
+  return benchmarkRun;
 }
 
 export async function runWorkspaceBenchmark(workspaceRoot: string): Promise<BenchmarkWorkspaceRun> {

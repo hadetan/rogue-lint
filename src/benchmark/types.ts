@@ -10,6 +10,7 @@ import type {
   SkipCategory,
 } from "../types.js";
 import type { AnalysisCapabilityId } from "../engine/capabilities/types.js";
+import type { TrackingSafetyEvaluation } from "../engine/tracking/upgrade-safety.js";
 
 interface BenchmarkRepositoryRef {
   url: string;
@@ -172,6 +173,7 @@ export interface BenchmarkEvaluation {
   };
   gapPriority: BenchmarkGapPriorityEntry[];
   capabilityPriority: BenchmarkCapabilityPriorityEntry[];
+  trackingSafety?: TrackingSafetyEvaluation;
   failed: boolean;
 }
 

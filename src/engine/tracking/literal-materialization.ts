@@ -25,7 +25,7 @@ import type {
   CallableReturnSummary,
   TrackedObjectBinding,
 } from "./model.js";
-import { getResolvedSpreadPropertySegments } from "./spread-support.js";
+import { visitResolvedSpreadPropertySegments } from "./spread-support.js";
 import { classifyTrackedObjectStructuralRole, unwrapExpression } from "./syntax.js";
 import {
   ensureCollectionChildPath,
@@ -336,16 +336,14 @@ function registerTrackedLiteralAliases(
         );
         if (resolved && !resolved.dynamic) {
           const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
-          const spreadSegments = getResolvedSpreadPropertySegments(spreadBinding);
-          if (spreadSegments) {
-            for (const spreadSegment of spreadSegments) {
-              registerExactPathAlias(
-                trackedObject,
-                [...segments, spreadSegment],
-                extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
-                "object spread keeps this property exact",
-              );
-            }
+          if (visitResolvedSpreadPropertySegments(spreadBinding, (spreadSegment) => {
+            registerExactPathAlias(
+              trackedObject,
+              [...segments, spreadSegment],
+              extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
+              "object spread keeps this property exact",
+            );
+          })) {
             continue;
           }
         }

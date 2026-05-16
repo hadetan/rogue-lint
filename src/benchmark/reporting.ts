@@ -16,6 +16,21 @@ import type {
 const REPORT_KIND_WIDTH = 28;
 const COARSE_MATCHER_NOTE = "coarse matcher: same-file churn is surfaced only in the raw records below";
 
+function formatTrackingSafetyMetric(metric: "passes" | "binding-changes" | "return-summary-changes" | "elapsed-ms"): string {
+  switch (metric) {
+    case "passes":
+      return "convergence passes";
+    case "binding-changes":
+      return "binding churn";
+    case "return-summary-changes":
+      return "return-summary churn";
+    case "elapsed-ms":
+      return "tracking elapsed ms";
+    default:
+      return metric;
+  }
+}
+
 function qualifyLabel(owner: string | undefined, name: string): string {
   if (!owner || name === owner || name.startsWith(`${owner}.`) || name.startsWith(`${owner}[`)) {
     return name;
@@ -317,6 +332,36 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
     `- diagnostics: ${target.evaluation.unexpected.diagnostics.length}`,
   ];
 
+  if (target.evaluation.trackingSafety) {
+    lines.push(
+      "",
+      "Tracking Upgrade Safety:",
+      `- passes: ${target.evaluation.trackingSafety.metrics.passes} (budget <= ${target.evaluation.trackingSafety.budgets.maxPasses})`,
+      `- binding churn: ${target.evaluation.trackingSafety.metrics.bindingChanges} (budget <= ${target.evaluation.trackingSafety.budgets.maxBindingChanges})`,
+      `- return-summary churn: ${target.evaluation.trackingSafety.metrics.returnSummaryChanges} (budget <= ${target.evaluation.trackingSafety.budgets.maxReturnSummaryChanges})`,
+      `- elapsed ms: ${target.evaluation.trackingSafety.metrics.elapsedMs} (info <= ${target.evaluation.trackingSafety.budgets.maxElapsedMs})`,
+      `- convergence warned: ${target.evaluation.trackingSafety.metrics.warned ? "yes" : "no"}`,
+    );
+
+    if (target.evaluation.trackingSafety.enforced.violations.length > 0) {
+      lines.push(
+        "",
+        "Tracking Safety Regressions:",
+        ...target.evaluation.trackingSafety.enforced.violations.map((violation) =>
+          `- ${formatTrackingSafetyMetric(violation.metric)}: actual ${violation.actual}, budget ${violation.budget}`),
+      );
+    }
+
+    if (target.evaluation.trackingSafety.informational.advisories.length > 0) {
+      lines.push(
+        "",
+        "Tracking Safety Advisories:",
+        ...target.evaluation.trackingSafety.informational.advisories.map((advisory) =>
+          `- ${formatTrackingSafetyMetric(advisory.metric)}: actual ${advisory.actual}, budget ${advisory.budget}`),
+      );
+    }
+  }
+
   lines.push(
     ...renderTopCounts(
       "Current Engine Gap Signal (Finding Kinds)",
@@ -510,6 +555,12 @@ export function renderBenchmarkReport(result: BenchmarkWorkspaceRun): string {
   const failedTargets = analyzedTargets.filter((target) => target.exitCode === 1).length + invalidTargets.length;
   lines.push(`Failed targets: ${failedTargets}`);
   lines.push(`Passed targets: ${analyzedTargets.length - analyzedTargets.filter((target) => target.exitCode === 1).length}`);
+  lines.push(
+    `Tracking safety regressions: ${analyzedTargets.filter((target) => (target.evaluation.trackingSafety?.enforced.violations.length ?? 0) > 0).length}`,
+  );
+  lines.push(
+    `Tracking safety advisories: ${analyzedTargets.filter((target) => (target.evaluation.trackingSafety?.informational.advisories.length ?? 0) > 0).length}`,
+  );
 
   const capabilityWorklist = collectWorkspaceCapabilityPriority(analyzedTargets);
   if (capabilityWorklist.length > 0) {

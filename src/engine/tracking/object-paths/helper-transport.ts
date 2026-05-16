@@ -9,6 +9,10 @@ import type {
 import { getSymbolKey } from "../../../compiler/ast-utils.js";
 import { getCallSiteStructuredArgumentBinding } from "../access.js";
 import { extendTrackedBinding } from "../bindings.js";
+import {
+  getAnalyzableCallableBindingFromDeclaration,
+  getCallableReturnBinding,
+} from "../callables.js";
 import type {
   CallableReturnSummary,
   HelperParameterSummary,
@@ -139,7 +143,8 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
     const fullPath = [...resolved.binding.prefix, ...resolved.segments];
     const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
     const helperHasStructuredChildren = collectionInfo !== undefined
-      || hasTrackedChildren(resolved.binding.trackedObject, fullPath);
+      || hasTrackedChildren(resolved.binding.trackedObject, fullPath)
+      || Boolean(resolved.viaAliasObjectId);
     if (!helperHasStructuredChildren) {
       return false;
     }
@@ -204,10 +209,18 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
     }
 
     if (summary.boundaryReason) {
+      const callableBinding = getAnalyzableCallableBindingFromDeclaration(project, analyzableCallable);
+      const helperReturnBinding = callableBinding
+        ? getCallableReturnBinding(functionReturnSummaries.get(callableBinding.symbolKey))
+        : undefined;
+      const boundaryCategory: SkipCategory = summary.boundaryReason.includes("stores this value by reference")
+        && helperReturnBinding
+        ? "returned-object"
+        : "opaque-object-call";
       markEscaped(
         resolved.binding.trackedObject,
         fullPath,
-        "opaque-object-call",
+        boundaryCategory,
         buildHelperBoundaryReason(
           project,
           summary,

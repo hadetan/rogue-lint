@@ -31,6 +31,7 @@ import {
 import {
   getAnalyzableCallableBindingFromDeclaration,
   getAnalyzableCallableName,
+  joinCallableReturnSummaries,
 } from "./callables.js";
 import type {
   MutableTrackingRuntimeSummary,
@@ -133,6 +134,50 @@ export function buildTrackedObjects(
   const trackedReturnLiteralBindings = new Map<string, TrackedObjectBinding>();
   const trackedObjectsById = new Map<string, TrackedObject>();
   const reachableSourceFileCount = project.sourceFiles.filter((sourceFile) => reachableFiles.has(sourceFile.fileName)).length;
+  const wideningSampleLimit = Math.max(1, options?.churnSampleLimit ?? 5);
+  const wideningSummary = {
+    returnSummaryChanges: 0,
+    reasons: {
+      bindings: [] as string[],
+      returnSummaries: [] as string[],
+    },
+  };
+
+  const recordWideningReason = (target: string[], reason: string | undefined): void => {
+    if (!reason || target.includes(reason) || target.length >= wideningSampleLimit) {
+      return;
+    }
+
+    target.push(reason);
+  };
+
+  const stabilizeFunctionReturnSummaries = (
+    currentSummaries: ReadonlyMap<string, CallableReturnSummary>,
+    nextSummaries: ReadonlyMap<string, CallableReturnSummary>,
+  ): Map<string, CallableReturnSummary> => {
+    const stabilized = new Map<string, CallableReturnSummary>();
+    const callableIds = new Set<string>([...currentSummaries.keys(), ...nextSummaries.keys()]);
+
+    for (const callableId of callableIds) {
+      const joined = joinCallableReturnSummaries(
+        currentSummaries.get(callableId),
+        nextSummaries.get(callableId),
+      );
+      if (joined.summary) {
+        stabilized.set(callableId, joined.summary);
+      }
+
+      if (joined.widened) {
+        wideningSummary.returnSummaryChanges += 1;
+        recordWideningReason(
+          wideningSummary.reasons.returnSummaries,
+          joined.reason ? `${callableId}: ${joined.reason}` : undefined,
+        );
+      }
+    }
+
+    return stabilized;
+  };
 
   const createTrackedBindingForLiteral = (
     symbolKey: string,
@@ -154,7 +199,7 @@ export function buildTrackedObjects(
         trackedBySymbolId,
         functionReturnSummaries,
         trackedObjectsById,
-        { registerAliases: kind === "expression" },
+        { registerAliases: true },
       );
       return existing;
     }
@@ -195,7 +240,7 @@ export function buildTrackedObjects(
       trackedBySymbolId,
       functionReturnSummaries,
       trackedObjectsById,
-      { registerAliases: kind === "expression" },
+      { registerAliases: true },
     );
 
     const binding = new TrackedObjectBindingRecord(trackedObject, []);
@@ -445,7 +490,7 @@ export function buildTrackedObjects(
 
     return {
       trackedBySymbolId: nextTrackedBySymbolId,
-      functionReturnSummaries: nextFunctionReturnSummaries,
+      functionReturnSummaries: stabilizeFunctionReturnSummaries(functionReturnSummaries, nextFunctionReturnSummaries),
     };
   };
 
@@ -475,6 +520,25 @@ export function buildTrackedObjects(
       warningPassThreshold: convergenceResult.warningPassThreshold,
       maxPasses: convergenceResult.maxPasses,
       warned: convergenceResult.warned,
+      elapsedMs: convergenceResult.elapsedMs,
+      churn: {
+        bindingChanges: convergenceResult.churn.bindingChanges,
+        bindingChangedPasses: convergenceResult.churn.bindingChangedPasses,
+        returnSummaryChanges: convergenceResult.churn.returnSummaryChanges,
+        returnSummaryChangedPasses: convergenceResult.churn.returnSummaryChangedPasses,
+      },
+      widening: {
+        bindingChanges: convergenceResult.widening.bindingChanges,
+        returnSummaryChanges: convergenceResult.widening.returnSummaryChanges + wideningSummary.returnSummaryChanges,
+        reasons: {
+          bindings: [...wideningSummary.reasons.bindings],
+          returnSummaries: [...wideningSummary.reasons.returnSummaries],
+        },
+      },
+      unstableSamples: {
+        bindings: [...convergenceResult.unstableSamples.bindings],
+        returnSummaries: [...convergenceResult.unstableSamples.returnSummaries],
+      },
     },
     totals: {
       trackedBindings: trackedBySymbolId.size,
@@ -491,48 +555,76 @@ export function buildTrackedObjects(
     ...convergenceResult.diagnostics,
   ];
 
-  const snapshot: MutableTrackingSnapshot = {
-    bindings: {
-      owner: TRACKING_BINDINGS_OWNER,
-      bySymbolId: trackedBySymbolId,
-    },
-    returnSummaries: {
-      owner: TRACKING_RETURN_SUMMARY_OWNER,
-      byCallableId: functionReturnSummaries,
-    },
-    aliases: {
-      owner: TRACKING_ALIAS_OWNER,
-      trackedObjectsById,
-    },
-    boundaries: {
-      owner: TRACKING_BOUNDARY_OWNER,
-      trackedObjectsById,
-    },
-    runtimeSummary,
-    diagnostics,
+  const observeTrackingSnapshotShape = (currentSnapshot: MutableTrackingSnapshot): void => {
+    void currentSnapshot.sharedFacts.bindings.owner;
+    void currentSnapshot.sharedFacts.bindings.bySymbolId;
+    void currentSnapshot.sharedFacts.returnSummaries.owner;
+    void currentSnapshot.sharedFacts.returnSummaries.byCallableId;
+    void currentSnapshot.sharedFacts.aliases.owner;
+    void currentSnapshot.sharedFacts.aliases.trackedObjectsById;
+    void currentSnapshot.sharedFacts.boundaries.owner;
+    void currentSnapshot.sharedFacts.boundaries.trackedObjectsById;
+    void currentSnapshot.solverState.diagnostics;
+    void currentSnapshot.solverState.runtimeSummary;
   };
 
+  const observeTrackingRunArtifactsShape = (artifacts: TrackingRunArtifacts): void => {
+    void artifacts.diagnostics;
+    void artifacts.debugTrace;
+    void artifacts.runtimeSummary;
+    void artifacts.getStageArtifacts;
+  };
+
+  const snapshot: MutableTrackingSnapshot = {
+    sharedFacts: {
+      bindings: {
+        owner: TRACKING_BINDINGS_OWNER,
+        bySymbolId: trackedBySymbolId,
+      },
+      returnSummaries: {
+        owner: TRACKING_RETURN_SUMMARY_OWNER,
+        byCallableId: functionReturnSummaries,
+      },
+      aliases: {
+        owner: TRACKING_ALIAS_OWNER,
+        trackedObjectsById,
+      },
+      boundaries: {
+        owner: TRACKING_BOUNDARY_OWNER,
+        trackedObjectsById,
+      },
+    },
+    solverState: {
+      runtimeSummary,
+      diagnostics,
+    },
+  };
+
+  observeTrackingSnapshotShape(snapshot);
+
   const runArtifacts: TrackingRunArtifacts = {
-    diagnostics: snapshot.diagnostics,
+    diagnostics: snapshot.solverState.diagnostics,
+    debugTrace: convergenceResult.debugTrace,
+    runtimeSummary: snapshot.solverState.runtimeSummary,
     getStageArtifacts<TStage extends TrackingStage>(stage: TStage): Extract<TrackingStageArtifacts, { stage: TStage }> {
       if (stage === VALUE_LIVENESS_TRACKING_STAGE) {
-        runtimeSummary.stageRequests[VALUE_LIVENESS_TRACKING_STAGE] += 1;
+        snapshot.solverState.runtimeSummary.stageRequests[VALUE_LIVENESS_TRACKING_STAGE] += 1;
         return {
           stage,
-          returnSummaries: snapshot.returnSummaries,
-          runtimeSummary: snapshot.runtimeSummary,
+          returnSummaries: snapshot.sharedFacts.returnSummaries,
+          runtimeSummary: snapshot.solverState.runtimeSummary,
         } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
       }
 
       if (stage === OBJECT_PATHS_TRACKING_STAGE) {
-        runtimeSummary.stageRequests[OBJECT_PATHS_TRACKING_STAGE] += 1;
+        snapshot.solverState.runtimeSummary.stageRequests[OBJECT_PATHS_TRACKING_STAGE] += 1;
         return {
           stage,
-          bindings: snapshot.bindings,
-          returnSummaries: snapshot.returnSummaries,
-          aliases: snapshot.aliases,
-          boundaries: snapshot.boundaries,
-          runtimeSummary: snapshot.runtimeSummary,
+          bindings: snapshot.sharedFacts.bindings,
+          returnSummaries: snapshot.sharedFacts.returnSummaries,
+          aliases: snapshot.sharedFacts.aliases,
+          boundaries: snapshot.sharedFacts.boundaries,
+          runtimeSummary: snapshot.solverState.runtimeSummary,
         } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
       }
 
@@ -540,10 +632,12 @@ export function buildTrackedObjects(
         code: "contract-violation",
         message: `tracking stage '${stage}' is outside the declared tracking-kernel contract`,
       };
-      snapshot.diagnostics.push(diagnostic);
+      snapshot.solverState.diagnostics.push(diagnostic);
       throw new Error(diagnostic.message);
     },
   };
+
+  observeTrackingRunArtifactsShape(runArtifacts);
 
   return runArtifacts;
 }

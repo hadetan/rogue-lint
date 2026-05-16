@@ -22,6 +22,7 @@ import {
   hasTrackedChildren,
   isCollectionPathInvalidated,
 } from "../state.js";
+import type { TrackedObjectBinding } from "../model.js";
 import { shouldSuppressStructuralPath, shouldSuppressStructuralRoot } from "../syntax.js";
 import {
   getObjectPathOverlayBoundaryRecords,
@@ -60,6 +61,27 @@ function getReportingBoundaries(
   tracked: TrackedObject,
 ): ReadonlyMap<string, CollectionBoundaryRecord> {
   return getObjectPathOverlayBoundaryRecords(overlayState, tracked.id) ?? tracked.collectionBoundaries;
+}
+
+function getReportingOwnerId(
+  tracked: TrackedObject,
+  trackedBindingsBySymbolId?: ReadonlyMap<string, TrackedObjectBinding>,
+): string {
+  if (tracked.reportingOwnerId && tracked.reportingOwnerId !== tracked.id) {
+    return tracked.reportingOwnerId;
+  }
+
+  if (
+    trackedBindingsBySymbolId
+    && (tracked.rootEntity.kind === "local" || tracked.rootEntity.kind === "export")
+  ) {
+    const currentBinding = trackedBindingsBySymbolId.get(tracked.canonicalSymbolKey);
+    if (currentBinding && currentBinding.trackedObject.id !== tracked.id) {
+      return currentBinding.trackedObject.reportingOwnerId ?? currentBinding.trackedObject.id;
+    }
+  }
+
+  return tracked.id;
 }
 
 function hasBoundaryAtPath(
@@ -107,6 +129,7 @@ export function finalizeObjectPathFindings(
   suppressionContext: SuppressionContext,
   trackedObjects: Iterable<TrackedObject>,
   overlayState: ObjectPathOverlayState,
+  trackedBindingsBySymbolId?: ReadonlyMap<string, TrackedObjectBinding>,
 ): void {
   const trackedList = [...trackedObjects];
   const reportingReadsById = new Map<string, Set<string>>();
@@ -114,7 +137,7 @@ export function finalizeObjectPathFindings(
   const reportingObservedAliasesById = new Map<string, Set<string>>();
 
   for (const tracked of trackedList) {
-    const reportingOwnerId = tracked.reportingOwnerId ?? tracked.id;
+    const reportingOwnerId = getReportingOwnerId(tracked, trackedBindingsBySymbolId);
     const reads = reportingReadsById.get(reportingOwnerId) ?? new Set<string>();
     const observedSubtrees = reportingObservedSubtreesById.get(reportingOwnerId) ?? new Set<string>();
     const observedAliases = reportingObservedAliasesById.get(reportingOwnerId) ?? new Set<string>();
@@ -127,7 +150,7 @@ export function finalizeObjectPathFindings(
   }
 
   for (const tracked of trackedList) {
-    if (tracked.reportingOwnerId && tracked.reportingOwnerId !== tracked.id) {
+    if (getReportingOwnerId(tracked, trackedBindingsBySymbolId) !== tracked.id) {
       continue;
     }
 

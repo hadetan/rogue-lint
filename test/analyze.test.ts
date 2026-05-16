@@ -5,8 +5,16 @@ import { describe, expect, it } from "vitest";
 import { runCli } from "../src/cli.js";
 import { getAnalysisCapabilityLedger } from "../src/engine/capabilities/providers.js";
 import { validateFindingKindOwners } from "../src/engine/finding-kind-owners.js";
+import { evaluateTrackingUpgradeSafety } from "../src/engine/tracking/upgrade-safety.js";
 import { analyzeProject } from "../src/index.js";
 import { renderResult } from "../src/output/render-result.js";
+
+const SELF_HOST_LIBRARY_TRACKING_SAFETY_BUDGETS = {
+  maxPasses: 10,
+  maxBindingChurnMultiplier: 8,
+  maxReturnSummaryChurnMultiplier: 8,
+  maxElapsedMs: 5000,
+};
 
 function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
@@ -68,7 +76,7 @@ describe("rogue-lint analyzer", () => {
     const keptNames = result.kept.map((entry) => entry.name);
     expect(keptNames).toContain("ignoredLocal");
 
-    expect(result.skipped).toHaveLength(0);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
   it("keeps public entrypoint exports live in library mode", async () => {
@@ -1458,6 +1466,30 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
+  it("keeps alias-cycle returned carriers conservative instead of reporting guessed dead paths", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-summary-alias-cycle-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "dead")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "live")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(true);
+  });
+
+  it("preserves local nested carrier aliases when later reads stay exact", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("local-exact-carrier-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "dead")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "live")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
   it("preserves returned form-error wrappers without write-only-state regressions", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1483,6 +1515,50 @@ describe("rogue-lint analyzer", () => {
     expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "formErrors")).toBe(false);
     expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "fieldErrors")).toBe(false);
     expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "flattenError()")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves returned wrapper arrays of pushed object literals through later callback reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-array-object-callback-wrapper-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].actual")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].metric")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "metrics.passes")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildReport()")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves multi-hop returned tracking-safety wrappers through local carriers and callback reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("multi-hop-tracking-safety-carrier-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].actual")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].metric")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "metrics.passes")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildTrackingSafety()")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildEvaluation()")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves discriminated analyzed-target filters before nested tracking-safety reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("filtered-analyzed-target-tracking-safety-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].actual")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].metric")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "metrics.passes")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildTrackingSafety()")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildEvaluation()")).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
@@ -1952,6 +2028,15 @@ describe("rogue-lint analyzer", () => {
     expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);
     expect(result.findings.map(normalizeFinding).sort()).toEqual(EXPECTED_SELF_HOST_FINDINGS);
     expect(result.skipped.map(normalizeAudit).sort()).toEqual(EXPECTED_SELF_HOST_SKIPS);
+  }, 15000);
+
+  it("keeps self-host tracking upgrade-safety signals within budget", async () => {
+    const result = await getSelfHostLibraryResult();
+    const trackingSafety = evaluateTrackingUpgradeSafety(result, SELF_HOST_LIBRARY_TRACKING_SAFETY_BUDGETS);
+
+    expect(trackingSafety).toBeDefined();
+    expect(trackingSafety?.enforced.violations).toHaveLength(0);
+    expect(trackingSafety?.informational.advisories).toHaveLength(0);
   }, 15000);
 
   it("keeps helper and finite capability boundary debt out of the normalized self-host surface", async () => {

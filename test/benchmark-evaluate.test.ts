@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { evaluateBenchmarkExpectations } from "../src/benchmark/evaluate.js";
+import { attachTrackingRuntimeSummary } from "../src/engine/tracking/upgrade-safety.js";
 import { attachAnalysisCapabilityLedger } from "../src/engine/capabilities/providers.js";
 import {
   createDiagnosticCapabilityRecordId,
   createEmptyAnalysisCapabilityLedger,
 } from "../src/engine/capabilities/types.js";
+import type { TrackingRuntimeSummary } from "../src/engine/tracking/contracts.js";
 import type { AnalysisResult, AuditRecord, DiagnosticRecord, FindingRecord } from "../src/types.js";
 
 function createFinding(overrides: Partial<FindingRecord> = {}): FindingRecord {
@@ -79,6 +81,56 @@ function createAnalysisResult(
     kept: [],
     skipped: skips,
     diagnostics,
+  };
+}
+
+function createTrackingRuntimeSummary(overrides: Partial<{
+  passes: number;
+  warningPassThreshold: number;
+  maxPasses: number;
+  warned: boolean;
+  elapsedMs: number;
+  bindingChanges: number;
+  returnSummaryChanges: number;
+  trackedBindings: number;
+  returnSummaries: number;
+}> = {}): TrackingRuntimeSummary {
+  return {
+    seed: {
+      reachableFileCount: 1,
+      reachableSourceFileCount: 1,
+    },
+    convergence: {
+      passes: overrides.passes ?? 4,
+      warningPassThreshold: overrides.warningPassThreshold ?? 12,
+      maxPasses: overrides.maxPasses ?? 50,
+      warned: overrides.warned ?? false,
+      elapsedMs: overrides.elapsedMs ?? 100,
+      churn: {
+        bindingChanges: overrides.bindingChanges ?? 4,
+        bindingChangedPasses: 2,
+        returnSummaryChanges: overrides.returnSummaryChanges ?? 4,
+        returnSummaryChangedPasses: 2,
+      },
+      widening: {
+        bindingChanges: 0,
+        returnSummaryChanges: 0,
+        reasons: {
+          bindings: [],
+          returnSummaries: [],
+        },
+      },
+      unstableSamples: {
+        bindings: [],
+        returnSummaries: [],
+      },
+    },
+    totals: {
+      trackedBindings: overrides.trackedBindings ?? 2,
+      returnSummaries: overrides.returnSummaries ?? 2,
+      trackedObjects: 2,
+    },
+    stageRequests: {},
   };
 }
 
@@ -200,6 +252,80 @@ describe("benchmark expectation evaluation", () => {
     expect(evaluation.accepted.skips.reduced).toHaveLength(1);
     expect(evaluation.accepted.findings.regressions).toHaveLength(0);
     expect(evaluation.accepted.skips.regressions).toHaveLength(0);
+    expect(evaluation.failed).toBe(false);
+  });
+
+  it("fails completed benchmark runs when tracking safety budgets regress", () => {
+    const result = createAnalysisResult([], [], [createDiagnostic()]);
+    attachTrackingRuntimeSummary(result, createTrackingRuntimeSummary({
+      passes: 9,
+      bindingChanges: 32,
+      returnSummaryChanges: 32,
+      trackedBindings: 2,
+      returnSummaries: 2,
+    }));
+
+    const evaluation = evaluateBenchmarkExpectations(
+      result,
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [
+          {
+            label: "diagnostic anchor",
+            kind: "project-warning",
+          },
+        ],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+      "library-public-surface",
+    );
+
+    expect(evaluation.contract.incomplete).toBe(false);
+    expect(evaluation.trackingSafety?.enforced.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ metric: "passes" }),
+        expect.objectContaining({ metric: "binding-changes" }),
+        expect.objectContaining({ metric: "return-summary-changes" }),
+      ]),
+    );
+    expect(evaluation.failed).toBe(true);
+  });
+
+  it("keeps informational timing drift out of benchmark failure status", () => {
+    const result = createAnalysisResult([], [], [createDiagnostic()]);
+    attachTrackingRuntimeSummary(result, createTrackingRuntimeSummary({
+      elapsedMs: 3500,
+    }));
+
+    const evaluation = evaluateBenchmarkExpectations(
+      result,
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [
+          {
+            label: "diagnostic anchor",
+            kind: "project-warning",
+          },
+        ],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+      "library-public-surface",
+    );
+
+    expect(evaluation.trackingSafety?.enforced.violations).toHaveLength(0);
+    expect(evaluation.trackingSafety?.informational.advisories).toEqual([
+      expect.objectContaining({ metric: "elapsed-ms", severity: "informational" }),
+    ]);
     expect(evaluation.failed).toBe(false);
   });
 

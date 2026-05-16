@@ -6,6 +6,7 @@ import type {
   TrackedObject,
 } from "../../types.js";
 import { getSymbolKey } from "../../compiler/ast-utils.js";
+import { makeEntity } from "../../shared/entity-utils.js";
 import {
   indexSegment,
   propertySegment,
@@ -39,6 +40,7 @@ import {
   getConcreteProjectionPaths,
   getTrackedArrayLength,
   hasTrackedChildren,
+  indexTrackedObjectNode,
   registerExactPathAlias,
   resolveExactPathAlias,
 } from "./state.js";
@@ -47,7 +49,7 @@ import {
   getRetainedBindingContainerSlotKey,
   isLocallyOwnedRetainedBindingContainer,
 } from "./retained-bindings.js";
-import { getResolvedSpreadPropertySegments } from "./spread-support.js";
+import { visitResolvedSpreadPropertySegments } from "./spread-support.js";
 import { unwrapExpression } from "./syntax.js";
 
 /**
@@ -297,17 +299,14 @@ function registerSpecializedStructuredReturnAliases(
         );
         if (resolved && !resolved.dynamic) {
           const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
-          const spreadSegments = getResolvedSpreadPropertySegments(spreadBinding);
-          if (spreadSegments) {
-            for (const spreadSegment of spreadSegments) {
-              registerExactPathAlias(
-                trackedObject,
-                [...segments, spreadSegment],
-                extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
-                "call-site structured return keeps this spread property exact",
-              );
-            }
-          }
+          visitResolvedSpreadPropertySegments(spreadBinding, (spreadSegment) => {
+            registerExactPathAlias(
+              trackedObject,
+              [...segments, spreadSegment],
+              extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
+              "call-site structured return keeps this spread property exact",
+            );
+          });
         }
         continue;
       }
@@ -655,6 +654,144 @@ export function getCallSiteStructuredArgumentBinding(
   return new TrackedObjectBindingRecord(specialized, []);
 }
 
+function getConstructorParameterPropertyName(parameter: ts.ParameterDeclaration): string | undefined {
+  if (!ts.isIdentifier(parameter.name)) {
+    return undefined;
+  }
+
+  const modifiers = parameter.modifiers;
+  if (!modifiers) {
+    return undefined;
+  }
+
+  return modifiers.some((modifier) => (
+    modifier.kind === ts.SyntaxKind.PublicKeyword
+    || modifier.kind === ts.SyntaxKind.PrivateKeyword
+    || modifier.kind === ts.SyntaxKind.ProtectedKeyword
+    || modifier.kind === ts.SyntaxKind.ReadonlyKeyword
+    || modifier.kind === ts.SyntaxKind.OverrideKeyword
+  ))
+    ? parameter.name.text
+    : undefined;
+}
+
+function resetConstructedInstanceTracking(trackedObject: TrackedObject): void {
+  trackedObject.nodes = new Map();
+  trackedObject.callablePaths = new Map();
+  trackedObject.descendantNodeKeys = new Map();
+  trackedObject.collections = new Map();
+  trackedObject.collectionStates = new Map();
+  trackedObject.collectionBoundaries = new Map();
+  trackedObject.invalidatedCollectionPaths = new Set();
+  trackedObject.invalidatedPaths = new Map();
+  trackedObject.placeStates = new Map();
+  trackedObject.observedSubtrees = new Set();
+  trackedObject.escapedPaths = new Map();
+  trackedObject.exactPathAliases = new Map();
+  trackedObject.valueFates = [];
+  trackedObject.reads = new Set();
+  trackedObject.writes = new Set();
+}
+
+function getConstructedInstanceBinding(
+  project: ProjectContext,
+  node: ts.NewExpression,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding | undefined {
+  if (!ts.isIdentifier(node.expression)) {
+    return undefined;
+  }
+
+  const classSymbol = project.checker.getSymbolAtLocation(node.expression);
+  const classDeclaration = classSymbol?.declarations?.find(ts.isClassDeclaration);
+  const constructorDeclaration = classDeclaration?.members.find(ts.isConstructorDeclaration);
+  if (!classDeclaration || !constructorDeclaration) {
+    return undefined;
+  }
+
+  const parameterProperties = constructorDeclaration.parameters
+    .map((parameter, index) => ({
+      index,
+      parameter,
+      propertyName: getConstructorParameterPropertyName(parameter),
+    }))
+    .filter((entry): entry is { index: number; parameter: ts.ParameterDeclaration; propertyName: string } => Boolean(entry.propertyName));
+  if (parameterProperties.length === 0) {
+    return undefined;
+  }
+
+  const instanceName = classDeclaration.name?.text ?? node.expression.text;
+  const instanceId = `new:${node.getSourceFile().fileName}:${node.getStart()}:${instanceName}`;
+  const rootEntity = makeEntity(project.rootPath, "local", node.getSourceFile(), node, `${instanceName}()`);
+  const existing = trackedObjectsById.get(instanceId);
+  const trackedObject: TrackedObject = existing ?? {
+    id: instanceId,
+    canonicalSymbolKey: classSymbol ? getSymbolKey(classSymbol) : instanceId,
+    rootName: `${instanceName}()`,
+    sourceFile: node.getSourceFile().fileName,
+    rootEntity,
+    structuralRole: undefined,
+    nodes: new Map(),
+    callablePaths: new Map(),
+    descendantNodeKeys: new Map(),
+    collections: new Map(),
+    collectionStates: new Map(),
+    collectionBoundaries: new Map(),
+    invalidatedCollectionPaths: new Set(),
+    invalidatedPaths: new Map(),
+    placeStates: new Map(),
+    observedSubtrees: new Set(),
+    escapedPaths: new Map(),
+    exactPathAliases: new Map(),
+    valueFates: [],
+    reads: new Set(),
+    writes: new Set(),
+  };
+  if (!existing) {
+    trackedObjectsById.set(instanceId, trackedObject);
+  } else {
+    resetConstructedInstanceTracking(trackedObject);
+  }
+
+  for (const { index, parameter, propertyName } of parameterProperties) {
+    const propertyPath = [propertySegment(propertyName)];
+    const joinedPath = serializePath(propertyPath);
+    const entity = makeEntity(project.rootPath, "object-key", node.getSourceFile(), parameter.name, propertyName, trackedObject.rootEntity.id);
+    trackedObject.nodes.set(joinedPath, {
+      entity,
+      fullPath: propertyPath,
+      origin: "property",
+    });
+    trackedObject.placeStates.set(joinedPath, "initialized");
+    indexTrackedObjectNode(trackedObject, joinedPath, propertyPath);
+
+    const argument = node.arguments?.[index];
+    if (!argument) {
+      continue;
+    }
+
+    const resolved = resolveTrackedObjectAccess(
+      project,
+      argument,
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    if (resolved && !resolved.dynamic) {
+      registerExactPathAlias(
+        trackedObject,
+        propertyPath,
+        extendTrackedBinding(resolved.binding, resolved.segments),
+        "constructor parameter property keeps this instance field exact",
+      );
+    }
+  }
+
+  return new TrackedObjectBindingRecord(trackedObject, []);
+}
+
 function extractBoundedElementAccessSegment(
   project: ProjectContext,
   argument: ts.Expression,
@@ -937,6 +1074,32 @@ export function resolveTrackedObjectAccess(
   if (ts.isCallExpression(node)) {
     if (
       ts.isPropertyAccessExpression(node.expression)
+      && node.expression.name.text === "filter"
+      && node.arguments.length >= 1
+    ) {
+      const receiver = resolveTrackedObjectAccess(
+        project,
+        node.expression.expression,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      if (receiver && !receiver.dynamic) {
+        const receiverPath = [...receiver.binding.prefix, ...receiver.segments];
+        if (getCollectionInfo(receiver.binding.trackedObject, receiverPath)?.kind === "array") {
+          return {
+            binding: receiver.binding,
+            segments: receiver.segments,
+            dynamic: false,
+            viaAliasObjectId: receiver.viaAliasObjectId,
+            viaAliasPath: receiver.viaAliasPath,
+          };
+        }
+      }
+    }
+
+    if (
+      ts.isPropertyAccessExpression(node.expression)
       && (node.expression.name.text === "pop" || node.expression.name.text === "shift")
       && node.arguments.length === 0
     ) {
@@ -1072,6 +1235,23 @@ export function resolveTrackedObjectAccess(
           trackedObjectsById,
         )
       : undefined;
+    return binding
+      ? {
+          binding,
+          segments: [],
+          dynamic: false,
+        }
+      : undefined;
+  }
+
+  if (ts.isNewExpression(node)) {
+    const binding = getConstructedInstanceBinding(
+      project,
+      node,
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
     return binding
       ? {
           binding,

@@ -44,5 +44,6 @@ export function analyzeObjectPaths(
     suppressionContext,
     stageContext.trackedObjectRegistry.values(),
     stageContext.overlayState,
+    stageContext.trackedBindingRegistry,
   );
 }

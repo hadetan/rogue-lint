@@ -15,6 +15,7 @@ import { attachAnalysisCapabilityLedger, collectAnalysisCapabilityLedger } from 
 import { assembleProviderBackedReportSurface } from "./capabilities/report-assembly.js";
 import { validateFindingKindOwners } from "./finding-kind-owners.js";
 import { appendTrackingAnalysisDiagnostics } from "./tracking/diagnostics.js";
+import { attachTrackingRuntimeSummary } from "./tracking/upgrade-safety.js";
 
 interface AnalysisStage {
   enabled: boolean;
@@ -112,6 +113,7 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
   };
 
   attachAnalysisCapabilityLedger(result, capabilityLedger);
+  attachTrackingRuntimeSummary(result, artifacts.getTrackingRunArtifacts().runtimeSummary);
 
   return result;
 }

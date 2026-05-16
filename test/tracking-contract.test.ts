@@ -6,6 +6,13 @@ import { describe, expect, it } from "vitest";
 import { createAnalysisArtifacts } from "../src/engine/analysis-artifacts.js";
 import { createAnalysisState } from "../src/engine/analysis-state.js";
 import { collectPublicSurface } from "../src/engine/analyzers/support.js";
+import { joinCallableReturnSummaries } from "../src/engine/tracking/callables.js";
+import {
+  TRACKING_ALIAS_OWNER,
+  TRACKING_BINDINGS_OWNER,
+  TRACKING_BOUNDARY_OWNER,
+  TRACKING_RETURN_SUMMARY_OWNER,
+} from "../src/engine/tracking/contracts.js";
 import { createObjectPathStageContext } from "../src/engine/tracking/object-paths/stage-context.js";
 import {
   getObjectPathOverlayBoundaryRecords,
@@ -18,11 +25,13 @@ import { visitObjectPathSourceFile } from "../src/engine/tracking/object-paths/v
 import { createValueLivenessStageContext } from "../src/engine/tracking/value-liveness-context.js";
 import { buildTrackedObjects } from "../src/engine/tracking/graph.js";
 import type { TrackingStage } from "../src/engine/tracking/contracts.js";
+import type { CallableReturnSummary } from "../src/engine/tracking/model.js";
 import { appendTrackingAnalysisDiagnostics } from "../src/engine/tracking/diagnostics.js";
 import { buildModuleGraph, computeReachableFiles, discoverEntrypoints } from "../src/module-graph.js";
 import { loadProject } from "../src/project.js";
 import { indexSegment, propertySegment, serializePath } from "../src/shared/path-utils.js";
 import { buildSuppressionContext } from "../src/suppressions.js";
+import type { TrackedObject } from "../src/types.js";
 
 function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
@@ -144,6 +153,20 @@ function getFirstTrackedObjectPair(
 }
 
 describe("tracking kernel contract", () => {
+  it("keeps shared tracking owners explicit and stable", () => {
+    expect(new Set([
+      TRACKING_BINDINGS_OWNER,
+      TRACKING_RETURN_SUMMARY_OWNER,
+      TRACKING_ALIAS_OWNER,
+      TRACKING_BOUNDARY_OWNER,
+    ])).toEqual(new Set([
+      "binding-convergence",
+      "return-summary-convergence",
+      "alias-state",
+      "boundary-state",
+    ]));
+  });
+
   it("exposes run-scoped and stage-scoped tracking artifacts", () => {
     const { project, reachableFiles, publicSurfaceIds, publicCallableIds } = createProjectContext("app-basic");
     const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurfaceIds, publicCallableIds);
@@ -170,16 +193,24 @@ describe("tracking kernel contract", () => {
     expect(objectPathStage.runtimeSummary.stageRequests["object-paths"]).toBe(1);
   });
 
-  it("emits convergence warnings in the tracking runtime summary", () => {
+  it("emits convergence warnings with churn attribution in the tracking runtime summary", () => {
     const { project, reachableFiles } = createProjectContext("app-basic");
     const runArtifacts = buildTrackedObjects(project, reachableFiles, {
       warningPassThreshold: 1,
     });
     const runtimeSummary = runArtifacts.getStageArtifacts("value-liveness").runtimeSummary;
+    const warningDiagnostic = runArtifacts.diagnostics.find((diagnostic) => diagnostic.code === "convergence-warning");
 
     expect(runtimeSummary.convergence.passes).toBeGreaterThanOrEqual(1);
     expect(runtimeSummary.convergence.warned).toBe(true);
-    expect(runArtifacts.diagnostics.some((diagnostic) => diagnostic.code === "convergence-warning")).toBe(true);
+    expect(runtimeSummary.convergence.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(
+      runtimeSummary.convergence.churn.bindingChanges + runtimeSummary.convergence.churn.returnSummaryChanges,
+    ).toBeGreaterThan(0);
+    expect(warningDiagnostic).toBeDefined();
+    expect(
+      (warningDiagnostic?.details?.bindingChanges ?? 0) + (warningDiagnostic?.details?.returnSummaryChanges ?? 0),
+    ).toBeGreaterThan(0);
   });
 
   it("fails explicitly when the convergence budget is exceeded", () => {
@@ -193,6 +224,84 @@ describe("tracking kernel contract", () => {
         maxPasses: guardLimit,
       })
     ).toThrow(`tracking convergence exceeded ${guardLimit} passes`);
+    expect(() =>
+      buildTrackedObjects(project, reachableFiles, {
+        maxPasses: guardLimit,
+      })
+    ).toThrow(/recent churn:/);
+  });
+
+  it("captures pass-by-pass convergence traces only when explicitly enabled", () => {
+    const { project, reachableFiles } = createProjectContext("returned-object-basic");
+    const baseline = buildTrackedObjects(project, reachableFiles);
+    const traced = buildTrackedObjects(project, reachableFiles, {
+      tracePasses: true,
+    });
+
+    expect(baseline.debugTrace).toBeUndefined();
+    expect(traced.debugTrace?.passTraces.length).toBeGreaterThan(0);
+    expect(
+      traced.debugTrace?.passTraces.some((passTrace) => passTrace.bindingChanges > 0 || passTrace.returnSummaryChanges > 0),
+    ).toBe(true);
+  });
+
+  it("widens conflicting return summary states monotonically", () => {
+    const trackedObjectA = { id: "tracked-a" } as TrackedObject;
+    const trackedObjectB = { id: "tracked-b" } as TrackedObject;
+    const valueSummary: CallableReturnSummary = { kind: "value" };
+    const structuredA: CallableReturnSummary = {
+      kind: "structured",
+      binding: {
+        trackedObject: trackedObjectA,
+        prefix: [],
+      },
+    };
+    const aliasA: CallableReturnSummary = {
+      kind: "returned-alias",
+      binding: {
+        trackedObject: trackedObjectA,
+        prefix: [],
+      },
+    };
+    const structuredB: CallableReturnSummary = {
+      kind: "structured",
+      binding: {
+        trackedObject: trackedObjectB,
+        prefix: [],
+      },
+    };
+
+    const widenedAlias = joinCallableReturnSummaries(structuredA, aliasA);
+    expect(widenedAlias.summary).toEqual(aliasA);
+    expect(widenedAlias.widened).toBe(true);
+    expect(joinCallableReturnSummaries(widenedAlias.summary, structuredA).summary).toEqual(aliasA);
+
+    const preservedStructured = joinCallableReturnSummaries(structuredA, valueSummary);
+    expect(preservedStructured.summary).toEqual(structuredA);
+    expect(preservedStructured.widened).toBe(false);
+
+    const adoptedStructured = joinCallableReturnSummaries(valueSummary, structuredA);
+    expect(adoptedStructured.summary).toEqual(structuredA);
+    expect(adoptedStructured.widened).toBe(false);
+
+    const widenedOpaque = joinCallableReturnSummaries(structuredA, structuredB);
+    expect(widenedOpaque.summary).toEqual({ kind: "opaque" });
+    expect(widenedOpaque.widened).toBe(true);
+    expect(joinCallableReturnSummaries(widenedOpaque.summary, structuredA).summary).toEqual({ kind: "opaque" });
+  });
+
+  it("keeps focused return-summary stress fixtures stable without convergence warnings", () => {
+    for (const fixtureName of [
+      "higher-order-helper-return-basic",
+      "returned-recursive-status-wrapper-basic",
+      "returned-summary-alias-cycle-basic",
+      "library-public-nested-callable-returns-basic",
+    ]) {
+      const { project, reachableFiles } = createProjectContext(fixtureName);
+      const runtimeSummary = buildTrackedObjects(project, reachableFiles).getStageArtifacts("value-liveness").runtimeSummary;
+
+      expect(runtimeSummary.convergence.warned, fixtureName).toBe(false);
+    }
   });
 
   it("records contract violations for invalid stage requests", () => {
