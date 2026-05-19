@@ -29,22 +29,43 @@ export function extendTrackedBinding(
   };
 }
 
-export function sameTrackedBindingMap(
+export interface TrackingMapDiff {
+  changedCount: number;
+  sampleKeys: string[];
+}
+
+export function diffTrackedBindingMaps(
   left: Map<string, TrackedObjectBinding>,
   right: Map<string, TrackedObjectBinding>,
-): boolean {
-  if (left.size !== right.size) {
-    return false;
-  }
+  sampleLimit: number,
+  heartbeat?: () => void,
+): TrackingMapDiff {
+  let changedCount = 0;
+  const sampleKeys: string[] = [];
+  const keys = new Set<string>([...left.keys(), ...right.keys()]);
+  let heartbeatCounter = 0;
 
-  for (const [symbolKey, binding] of left) {
-    const other = right.get(symbolKey);
-    if (!other || !sameTrackedBinding(binding, other)) {
-      return false;
+  for (const key of keys) {
+    heartbeatCounter += 1;
+    if (heartbeatCounter >= 2048) {
+      heartbeatCounter = 0;
+      heartbeat?.();
+    }
+
+    const current = left.get(key);
+    const next = right.get(key);
+    if (!current || !next || !sameTrackedBinding(current, next)) {
+      changedCount += 1;
+      if (sampleKeys.length < sampleLimit) {
+        sampleKeys.push(key);
+      }
     }
   }
 
-  return true;
+  return {
+    changedCount,
+    sampleKeys,
+  };
 }
 
 export function mergeTrackedBinding(

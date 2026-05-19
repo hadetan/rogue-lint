@@ -1,20 +1,25 @@
 import type { DiagnosticRecord, EntityRecord, SkipCategory } from "../../types.js";
+import type {
+  AnalysisCapabilityAttributionSource,
+  AnalysisCapabilityBoundarySource,
+  AnalysisCapabilityEvidenceSource,
+  AnalysisCapabilityFactFamily,
+  AnalysisCapabilityFactOutcome,
+  AnalysisCapabilityId,
+  AnalysisCapabilityObligationFamily,
+  AnalysisCapabilityOutcome,
+} from "./vocabulary.js";
 
-export type AnalysisCapabilityId =
-  | "finite-keyed-access"
-  | "returned-structure-transport"
-  | "helper-transport"
-  | "library-public-surface-aliasing";
-
-export type AnalysisCapabilityObligationFamily =
-  | "internal-exported-interface-member"
-  | "returned-contract-member";
-
-export type AnalysisCapabilityOutcome = "finding" | "kept" | "skipped" | "live" | "boundary";
-
-export type AnalysisCapabilityFactFamily = "helper-transport" | "finite-keyed-access";
-
-export type AnalysisCapabilityFactOutcome = "live" | "boundary";
+export type {
+  AnalysisCapabilityAttributionSource,
+  AnalysisCapabilityBoundarySource,
+  AnalysisCapabilityEvidenceSource,
+  AnalysisCapabilityFactFamily,
+  AnalysisCapabilityFactOutcome,
+  AnalysisCapabilityId,
+  AnalysisCapabilityObligationFamily,
+  AnalysisCapabilityOutcome,
+} from "./vocabulary.js";
 
 export interface AnalysisCapabilityFactRecord {
   id: string;
@@ -36,22 +41,16 @@ export interface AnalysisCapabilityObligationRecord {
   detailHint?: string;
 }
 
-type CapabilityEvidenceSource = "finding" | "kept" | "skipped" | "diagnostic" | "obligation" | "fact";
-
-type CapabilityBoundarySource = "skipped" | "diagnostic" | "obligation" | "boundary" | "fact";
-
-type CapabilityAttributionSource = "finding" | "kept" | "skipped";
-
 interface CapabilityEvidenceRecord {
   capabilityId: AnalysisCapabilityId;
-  source: CapabilityEvidenceSource;
+  source: AnalysisCapabilityEvidenceSource;
   recordId: string;
   label: string;
 }
 
 interface CapabilityBoundaryRecord {
   capabilityId: AnalysisCapabilityId;
-  source: CapabilityBoundarySource;
+  source: AnalysisCapabilityBoundarySource;
   recordId: string;
   label: string;
   category?: SkipCategory;
@@ -60,7 +59,7 @@ interface CapabilityBoundaryRecord {
 interface CapabilityAttributionRecord {
   capabilityId: AnalysisCapabilityId;
   recordId: string;
-  source: CapabilityAttributionSource;
+  source: AnalysisCapabilityAttributionSource;
 }
 
 export interface AnalysisCapabilityLedger {
@@ -74,7 +73,7 @@ export interface AnalysisCapabilityLedger {
 
 export function createCapabilityEvidenceRecord(
   capabilityId: AnalysisCapabilityId,
-  source: CapabilityEvidenceSource,
+  source: AnalysisCapabilityEvidenceSource,
   recordId: string,
   label: string,
 ): CapabilityEvidenceRecord {
@@ -88,7 +87,7 @@ export function createCapabilityEvidenceRecord(
 
 export function createCapabilityBoundaryRecord(
   capabilityId: AnalysisCapabilityId,
-  source: CapabilityBoundarySource,
+  source: AnalysisCapabilityBoundarySource,
   recordId: string,
   label: string,
   category?: SkipCategory,
@@ -104,7 +103,7 @@ export function createCapabilityBoundaryRecord(
 
 export function createCapabilityAttributionRecord(
   capabilityId: AnalysisCapabilityId,
-  source: CapabilityAttributionSource,
+  source: AnalysisCapabilityAttributionSource,
   recordId: string,
 ): CapabilityAttributionRecord {
   return {

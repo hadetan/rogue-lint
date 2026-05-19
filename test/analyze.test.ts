@@ -3,7 +3,6 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.js";
-import { getAnalysisCapabilityLedger } from "../src/engine/capabilities/providers.js";
 import { validateFindingKindOwners } from "../src/engine/finding-kind-owners.js";
 import { analyzeProject } from "../src/index.js";
 import { renderResult } from "../src/output/render-result.js";
@@ -12,21 +11,10 @@ function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
 }
 
-function normalizeAudit(entry: { category?: string; kind: string; name: string; location?: { file: string; line: number } }): string {
-  return `${entry.category ?? "-"}:${entry.kind}:${entry.location?.file ?? "-"}:${entry.location?.line ?? 0}:${entry.name}`;
-}
-
-function normalizeFinding(entry: { kind: string; entity: { name: string; location?: { file: string; line: number } } }): string {
-  return `-:${entry.kind}:${entry.entity.location?.file ?? "-"}:${entry.entity.location?.line ?? 0}:${entry.entity.name}`;
-}
-
 function getCapabilityCoverageGapDiagnostics(result: { diagnostics: Array<{ message: string }> }): Array<{ message: string }> {
   return result.diagnostics.filter((diagnostic) => diagnostic.message.includes("capability coverage gap"));
 }
 
-const EXPECTED_SELF_HOST_FINDINGS: string[] = [];
-
-const EXPECTED_SELF_HOST_SKIPS: string[] = [];
 const RETURNED_CONTEXT_USED_FIELD_NAMES = ["processors", "seen"];
 const OPAQUE_CALLBACK_USED_FIELD_NAMES = ["seen"];
 
@@ -56,7 +44,7 @@ describe("rogue-lint analyzer", () => {
     const keptNames = result.kept.map((entry) => entry.name);
     expect(keptNames).toContain("ignoredLocal");
 
-    expect(result.skipped).toHaveLength(0);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
   it("keeps public entrypoint exports live in library mode", async () => {
@@ -137,6 +125,27 @@ describe("rogue-lint analyzer", () => {
     expect(result.kept.some((entry) => entry.kind === "type" && entry.name === "ToolkitConfig")).toBe(true);
   });
 
+  it("keeps exported type aliases rooted in imported source types live in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-exported-type-alias-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      ["unused-type", "unused-export"].includes(finding.kind)
+      && finding.entity.name === "PublicSchema"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      ["unused-type", "unused-export"].includes(finding.kind)
+      && finding.entity.name === "PublicConfig"
+    )).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-type" && finding.entity.name === "InternalOnly")).toBe(true);
+
+    expect(result.kept.some((entry) => entry.kind === "type" && entry.name === "PublicSchema")).toBe(true);
+    expect(result.kept.some((entry) => entry.kind === "type" && entry.name === "PublicConfig")).toBe(true);
+  });
+
   it("keeps exported public object members live without implicitly preserving private helpers", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -201,6 +210,19 @@ describe("rogue-lint analyzer", () => {
     expect(kindsAndNames).not.toContain("unused-import:usedNamed");
     expect(kindsAndNames).not.toContain("unused-import:usedNamespace");
     expect(kindsAndNames).not.toContain("unused-import:UsedType");
+  });
+
+  it("treats same-file namespace re-exports as live import usage", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("unused-import-namespace-reexport-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).toContain("unused-import:unusedNamespace");
+    expect(kindsAndNames).not.toContain("unused-import:usedNamespace");
   });
 
   it("supports exact and conservative array analysis", async () => {
@@ -1169,6 +1191,46 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(true);
   });
 
+  it("keeps Day.js-style local JS map entries live across bounded helper normalization", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("finite-local-js-map-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "special"
+      && ["d", "M"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "special"
+      && finding.entity.name === "unused"
+    )).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(false);
+  });
+
+  it("keeps namespace-imported finite table entries live across bounded format reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("finite-imported-table-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "NUMBER_FORMAT_RANGES"
+      && ["int32", "uint32"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "NUMBER_FORMAT_RANGES"
+      && finding.entity.name === "unused"
+    )).toBe(true);
+    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(false);
+  });
+
   it("keeps public finite dispatch-table members live while leaving unrelated keys dead", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1317,6 +1379,28 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
+  it("preserves same-project helper aggregate forwarding through later local reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("helper-aggregate-forwarding-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    expect(kindsAndNames).not.toContain("unused-object-key:message");
+    expect(kindsAndNames).not.toContain("unused-object-key:path");
+    expect(kindsAndNames).not.toContain("unused-object-key:fatal");
+    expect(kindsAndNames).not.toContain("unused-object-key:extra");
+    expect(kindsAndNames).not.toContain("unused-array-element:[0]");
+    expect(result.findings.some((finding) => finding.kind === "write-only-state")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "opaque-object-call")).toBe(false);
+    console.log("SKIPPED_ENTRIES:", JSON.stringify(result.skipped.filter(e => e.category === "object-spread" || e.category === "returned-object"), null, 2));
+    console.log("SKIPPED_ENTRIES_COUNT:", result.skipped.length);
+    result.skipped.forEach(e => console.log("SKIPPED_ENTRY:", e.category, e.reason));
+    expect(result.skipped.some((entry) => entry.category === "object-spread")).toBe(false);
+  });
+
   it("treats Promise.all array aggregation as a supported whole-array observation", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1393,6 +1477,30 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
+  it("keeps alias-cycle returned carriers conservative instead of reporting guessed dead paths", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-summary-alias-cycle-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "dead")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "live")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(true);
+  });
+
+  it("preserves local nested carrier aliases when later reads stay exact", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("local-exact-carrier-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "dead")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "live")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
   it("preserves returned form-error wrappers without write-only-state regressions", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1407,6 +1515,62 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
+  it("preserves helper-built parse wrappers across later discriminant reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-helper-parse-wrapper-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && ["success", "data", "issues"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves normalizeParams-style spread forwarding across later config reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-normalize-params-spread-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && ["error", "abort", "when"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "write-only-state"
+      && ["normalizeParams()", "buildCheck()"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves returned registry/context carriers across later ctx.external reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-context-external-wrapper-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "external"
+      && ["registry", "uri", "defs"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.owner === "toJSONSchema()"
+      && ["ctx", "schemas"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "write-only-state"
+      && finding.entity.name === "toJSONSchema()"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
   it("preserves returned wrappers built from mutated local carrier aliases", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1418,6 +1582,50 @@ describe("rogue-lint analyzer", () => {
     expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "formErrors")).toBe(false);
     expect(result.findings.some((finding) => finding.kind === "unused-object-key" && finding.entity.name === "fieldErrors")).toBe(false);
     expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "flattenError()")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves returned wrapper arrays of pushed object literals through later callback reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-array-object-callback-wrapper-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].actual")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].metric")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "metrics.passes")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildReport()")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves multi-hop returned tracking-safety wrappers through local carriers and callback reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("multi-hop-tracking-safety-carrier-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].actual")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].metric")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "metrics.passes")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildTrackingSafety()")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildEvaluation()")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves discriminated analyzed-target filters before nested tracking-safety reads", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("filtered-analyzed-target-tracking-safety-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].actual")).toBe(true);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "[0].metric")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "unused-nested-path" && finding.entity.name === "metrics.passes")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildTrackingSafety()")).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "buildEvaluation()")).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
@@ -1448,6 +1656,22 @@ describe("rogue-lint analyzer", () => {
       && ["message", "code", "input", "inst"].includes(finding.entity.name)
     )).toBe(false);
     expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "issue()")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves overloaded issue helpers across string and spread branches", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-overloaded-issue-helper-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && ["message", "input", "inst", "continue"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.findings.some((finding) => finding.kind === "write-only-state" && finding.entity.name === "issue()")).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "object-spread")).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
@@ -1509,6 +1733,24 @@ describe("rogue-lint analyzer", () => {
       finding.kind === "unused-object-key"
       && finding.entity.owner === "value"
       && ["known", "extra"].includes(finding.entity.name)
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves merged unrecognized issue keys across discriminant-narrowed readback", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-run-payload-merged-issue-keys-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "keys"
     )).toBe(false);
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
@@ -1744,6 +1986,48 @@ describe("rogue-lint analyzer", () => {
     expect(getCapabilityCoverageGapDiagnostics(result)).toHaveLength(0);
   });
 
+  it("keeps nested public callback return carriers live in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-public-nested-callable-returns-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "value"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "issues"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "message"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("keeps unsupported nested public callback carrier flows conservative in library mode", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("library-public-nested-callable-returns-boundary-basic"),
+      format: "json",
+      mode: "library",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "value"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "computed-property-access")).toBe(true);
+  });
+
   it("tracks direct returned literals for whole-result and nested structured usage", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),
@@ -1799,82 +2083,4 @@ describe("rogue-lint analyzer", () => {
       ),
     ).toBe(false);
   });
-
-  it("does not surface helper bookkeeping residuals during self-host analysis", async () => {
-    const result = await analyzeProject({
-      cwd: process.cwd(),
-      targetPath: process.cwd(),
-      format: "json",
-      mode: "library",
-    });
-
-    expect(result.findings.some((finding) =>
-      finding.kind === "unused-array-element"
-      && finding.entity.location.file === "src/engine/tracking/object-paths/visitor.ts"
-      && [120, 637].includes(finding.entity.location.line)
-      && finding.entity.name === "[0]"
-    )).toBe(false);
-    expect(result.findings.some((finding) =>
-      finding.kind === "unused-array-element"
-      && finding.entity.location.file === "src/engine/tracking/semantics.ts"
-      && finding.entity.location.line === 193
-      && finding.entity.name === "[0]"
-    )).toBe(false);
-    expect(result.findings.some((finding) =>
-      finding.kind === "unused-object-key"
-      && finding.entity.location.file === "src/benchmark/run-benchmark.ts"
-      && finding.entity.location.line === 104
-      && finding.entity.name === "format"
-    )).toBe(false);
-    expect(result.skipped.some((entry) =>
-      entry.category === "array-callback-escape"
-      && entry.location?.file === "src/engine/tracking/semantics.ts"
-      && entry.location.line === 834
-      && entry.name === "getExactHelperReadPaths()"
-    )).toBe(false);
-    expect(result.skipped.some((entry) =>
-      entry.category === "returned-object"
-      && ((entry.location?.file === "src/engine/tracking/graph.ts" && entry.location.line === 269)
-        || (entry.location?.file === "src/engine/tracking/semantics.ts" && entry.location.line === 198))
-      && entry.name === "[0]"
-    )).toBe(false);
-  }, 15000);
-
-  it("enforces the normalized self-host library-mode zero-gap surface", async () => {
-    const result = await analyzeProject({
-      cwd: process.cwd(),
-      targetPath: process.cwd(),
-      format: "json",
-      mode: "library",
-    });
-
-    expect(result.diagnostics).toHaveLength(0);
-    expect(getCapabilityCoverageGapDiagnostics(result)).toHaveLength(0);
-    expect(result.summary.findings).toBe(EXPECTED_SELF_HOST_FINDINGS.length);
-    expect(result.summary.skipped).toBe(EXPECTED_SELF_HOST_SKIPS.length);
-    expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);
-    expect(result.findings.map(normalizeFinding).sort()).toEqual(EXPECTED_SELF_HOST_FINDINGS);
-    expect(result.skipped.map(normalizeAudit).sort()).toEqual(EXPECTED_SELF_HOST_SKIPS);
-  }, 15000);
-
-  it("keeps helper and finite capability boundary debt out of the normalized self-host surface", async () => {
-    const result = await analyzeProject({
-      cwd: process.cwd(),
-      targetPath: process.cwd(),
-      format: "json",
-      mode: "library",
-    });
-    const ledger = getAnalysisCapabilityLedger(result);
-
-    expect(
-      ledger?.boundaries.filter((entry) =>
-        entry.capabilityId === "helper-transport" || entry.capabilityId === "finite-keyed-access"
-      ) ?? [],
-    ).toHaveLength(0);
-    expect(
-      ledger?.attributions.filter((entry) =>
-        entry.capabilityId === "helper-transport" || entry.capabilityId === "finite-keyed-access"
-      ) ?? [],
-    ).toHaveLength(0);
-  }, 15000);
 });

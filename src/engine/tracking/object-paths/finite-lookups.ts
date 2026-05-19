@@ -1,29 +1,17 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, TrackedObject } from "../../../types.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
+import { getBindingSymbolKey, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
 import {
-  getBindingSymbolKey,
-  resolveAnalyzableCallableBinding,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  sameTrackedBinding,
-} from "../bindings.js";
-import { getAnalyzableCallableBindingFromDeclaration } from "../callables.js";
-import type {
-  CallableReturnSummary,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  getCollectionInfo,
-  resolveExactPathAlias,
-} from "../state.js";
+  getAnalyzableCallableBindingFromDeclaration,
+  resolveAnalyzableFunctionDeclaration,
+} from "../callables.js";
+import type { CallableReturnSummary, TrackedObjectBinding } from "../model.js";
+import { getCollectionInfo, resolveExactPathAlias } from "../state.js";
+import { unwrapExpression } from "../syntax.js";
+import { TRACKING_COLLECTION_KIND } from "../vocabulary.js";
 import type { FiniteLookupCandidate } from "./types.js";
 import { extractFinitePropertyUnionSegments } from "./policy.js";
 
@@ -34,6 +22,8 @@ interface FiniteLookupReadPlan {
 
 interface FiniteLookupPlannerOptions {
   project: ProjectContext;
+  reachableFiles: ReadonlySet<string>;
+  publiclyReachableCallableIds: ReadonlySet<string>;
   trackedBySymbolId: Map<string, TrackedObjectBinding>;
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>;
   trackedObjectsById: Map<string, TrackedObject>;
@@ -52,6 +42,8 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
 } {
   const {
     project,
+    reachableFiles,
+    publiclyReachableCallableIds,
     trackedBySymbolId,
     functionReturnSummaries,
     trackedObjectsById,
@@ -60,6 +52,319 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
     hasExactTrackedPath,
     collapseExactBindingPrefix,
   } = options;
+  const helperStringReturnCache = new Map<string, PathSegment[] | null>();
+  const parameterFiniteCandidateCache = new Map<string, PathSegment[] | null>();
+
+  const mergeFiniteSegments = (...candidates: Array<PathSegment[] | undefined>): PathSegment[] | undefined => {
+    const merged = new Map<string, PathSegment>();
+
+    for (const candidateSet of candidates) {
+      if (!candidateSet || candidateSet.length === 0) {
+        return undefined;
+      }
+
+      for (const candidate of candidateSet) {
+        const key = serializePath([candidate]);
+        if (merged.has(key)) {
+          continue;
+        }
+
+        merged.set(key, candidate);
+      }
+    }
+
+    return merged.size > 0 ? Array.from(merged.values()) : undefined;
+  };
+
+  const isPublicHelperParameterIdentifier = (expression: ts.Expression | undefined): boolean => {
+    if (!expression) {
+      return false;
+    }
+
+    const node = unwrapExpression(expression);
+    if (!ts.isIdentifier(node)) {
+      return false;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(node);
+    const declaration = symbol?.declarations?.find(ts.isParameter);
+    if (!declaration) {
+      return false;
+    }
+
+    const callable = (
+      ts.isFunctionDeclaration(declaration.parent)
+      || ts.isFunctionExpression(declaration.parent)
+      || ts.isArrowFunction(declaration.parent)
+      || ts.isMethodDeclaration(declaration.parent)
+    )
+      ? declaration.parent
+      : undefined;
+    const callableBinding = callable
+      ? getAnalyzableCallableBindingFromDeclaration(project, callable)
+      : undefined;
+    return Boolean(callableBinding && publiclyReachableCallableIds.has(callableBinding.symbolKey));
+  };
+
+  const getDirectPropertyCandidateCount = (binding: TrackedObjectBinding): number => {
+    const collection = getCollectionInfo(binding.trackedObject, binding.prefix);
+    if (!collection || collection.kind !== TRACKING_COLLECTION_KIND.object) {
+      return 0;
+    }
+
+    const seen = new Set<string>();
+    for (const childPath of collection.childPaths) {
+      if (childPath.length !== binding.prefix.length + 1) {
+        continue;
+      }
+
+      const segment = childPath[binding.prefix.length];
+      if (!segment || segment.kind !== "property") {
+        continue;
+      }
+
+      seen.add(serializePath([segment]));
+    }
+
+    return seen.size;
+  };
+
+  const serializeCandidateMap = (candidates: ReadonlyMap<string, PathSegment[]>): string => [...candidates.entries()]
+    .map(([symbolKey, segments]) => `${symbolKey}=${segments.map((segment) => serializePath([segment])).sort().join(",")}`)
+    .sort()
+    .join("|");
+
+  const collectFiniteStringCandidates = (
+    expression: ts.Expression,
+    parameterCandidates = new Map<string, PathSegment[]>(),
+    activeCallKeys = new Set<string>(),
+  ): PathSegment[] | undefined => {
+    const typedCandidates = extractFinitePropertyUnionSegments(project, expression);
+    if (typedCandidates) {
+      return typedCandidates;
+    }
+
+    const node = unwrapExpression(expression);
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      return [propertySegment(node.text)];
+    }
+
+    if (ts.isBinaryExpression(node)) {
+      if (
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        || node.operatorToken.kind === ts.SyntaxKind.BarBarToken
+      ) {
+        return mergeFiniteSegments(
+          collectFiniteStringCandidates(node.left, parameterCandidates, activeCallKeys),
+          collectFiniteStringCandidates(node.right, parameterCandidates, activeCallKeys),
+        );
+      }
+
+      return undefined;
+    }
+
+    if (ts.isConditionalExpression(node)) {
+      return mergeFiniteSegments(
+        collectFiniteStringCandidates(node.whenTrue, parameterCandidates, activeCallKeys),
+        collectFiniteStringCandidates(node.whenFalse, parameterCandidates, activeCallKeys),
+      );
+    }
+
+    if (ts.isIdentifier(node)) {
+      const symbolKey = getBindingSymbolKey(project, node);
+      if (symbolKey) {
+        const parameterCandidateSet = parameterCandidates.get(symbolKey);
+        if (parameterCandidateSet) {
+          return parameterCandidateSet;
+        }
+      }
+
+      const symbol = project.checker.getSymbolAtLocation(node);
+      if (!symbol) {
+        return undefined;
+      }
+
+      for (const declaration of symbol.declarations ?? []) {
+        if (
+          ts.isVariableDeclaration(declaration)
+          && declaration.initializer
+          && ts.isIdentifier(declaration.name)
+          && ts.isVariableDeclarationList(declaration.parent)
+          && (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+        ) {
+          return collectFiniteStringCandidates(declaration.initializer, parameterCandidates, activeCallKeys);
+        }
+
+        if (ts.isParameter(declaration) && ts.isIdentifier(declaration.name)) {
+          const parameterSymbolKey = getBindingSymbolKey(project, declaration.name);
+          if (!parameterSymbolKey) {
+            return undefined;
+          }
+
+          const cached = parameterFiniteCandidateCache.get(parameterSymbolKey);
+          if (cached !== undefined) {
+            return cached ?? undefined;
+          }
+
+          const callable = (
+            ts.isFunctionDeclaration(declaration.parent)
+            || ts.isFunctionExpression(declaration.parent)
+            || ts.isArrowFunction(declaration.parent)
+            || ts.isMethodDeclaration(declaration.parent)
+          )
+            ? declaration.parent
+            : undefined;
+          const callableBinding = callable
+            ? getAnalyzableCallableBindingFromDeclaration(project, callable)
+            : undefined;
+          const parameterIndex = callable?.parameters.findIndex((candidate) => candidate === declaration) ?? -1;
+          if (
+            !callable
+            || !callableBinding
+            || parameterIndex < 0
+          ) {
+            parameterFiniteCandidateCache.set(parameterSymbolKey, null);
+            return undefined;
+          }
+
+          const callableIsPublic = publiclyReachableCallableIds.has(callableBinding.symbolKey);
+
+          let sawReachableCall = false;
+          let unsupported = false;
+          let collected: PathSegment[] | undefined;
+          for (const sourceFile of project.sourceFiles) {
+            if (!reachableFiles.has(sourceFile.fileName)) {
+              continue;
+            }
+
+            const visit = (candidate: ts.Node): void => {
+              if (unsupported) {
+                return;
+              }
+
+              if (ts.isCallExpression(candidate)) {
+                const resolvedCallable = resolveAnalyzableFunctionDeclaration(project, candidate.expression);
+                const resolvedBinding = resolvedCallable
+                  ? getAnalyzableCallableBindingFromDeclaration(project, resolvedCallable)
+                  : undefined;
+                if (resolvedBinding?.symbolKey === callableBinding.symbolKey) {
+                  sawReachableCall = true;
+                  const argument = candidate.arguments[parameterIndex];
+                  const argumentCandidates = argument
+                    ? collectFiniteStringCandidates(argument, new Map(), activeCallKeys)
+                    : undefined;
+                  if (!argumentCandidates) {
+                    if (!callableIsPublic) {
+                      unsupported = true;
+                    }
+                    return;
+                  }
+
+                  collected = collected
+                    ? mergeFiniteSegments(collected, argumentCandidates)
+                    : argumentCandidates;
+                }
+              }
+
+              ts.forEachChild(candidate, visit);
+            };
+
+            ts.forEachChild(sourceFile, visit);
+            if (unsupported) {
+              break;
+            }
+          }
+
+          const result = (!unsupported || callableIsPublic) && sawReachableCall && collected && collected.length > 1
+            ? collected
+            : null;
+          parameterFiniteCandidateCache.set(parameterSymbolKey, result);
+          return result ?? undefined;
+        }
+      }
+
+      return undefined;
+    }
+
+    if (ts.isCallExpression(node)) {
+      const callable = resolveAnalyzableFunctionDeclaration(project, node.expression);
+      const callableBinding = callable ? getAnalyzableCallableBindingFromDeclaration(project, callable) : undefined;
+      if (!callable || !callableBinding || !callable.body) {
+        return undefined;
+      }
+
+      const callParameterCandidates = new Map<string, PathSegment[]>();
+      callable.parameters.forEach((parameter, index) => {
+        if (!ts.isIdentifier(parameter.name)) {
+          return;
+        }
+
+        const parameterSymbolKey = getBindingSymbolKey(project, parameter.name);
+        const argument = node.arguments[index];
+        const argumentCandidates = argument
+          ? collectFiniteStringCandidates(argument, parameterCandidates, activeCallKeys)
+          : undefined;
+        if (parameterSymbolKey && argumentCandidates) {
+          callParameterCandidates.set(parameterSymbolKey, argumentCandidates);
+        }
+      });
+
+      const callKey = `${callableBinding.symbolKey}:${serializeCandidateMap(callParameterCandidates)}`;
+      if (activeCallKeys.has(callKey)) {
+        return undefined;
+      }
+
+      const cached = helperStringReturnCache.get(callKey);
+      if (cached !== undefined) {
+        return cached ?? undefined;
+      }
+
+      helperStringReturnCache.set(callKey, null);
+      const nestedActiveCallKeys = new Set(activeCallKeys);
+      nestedActiveCallKeys.add(callKey);
+
+      let sawReturn = false;
+      let unsupported = false;
+      let collected: PathSegment[] | undefined;
+      const visitReturn = (candidate: ts.Node): void => {
+        if (unsupported) {
+          return;
+        }
+
+        if (ts.isFunctionLike(candidate) && candidate !== callable) {
+          return;
+        }
+
+        if (ts.isReturnStatement(candidate) && candidate.expression) {
+          sawReturn = true;
+          const returnCandidates = collectFiniteStringCandidates(
+            candidate.expression,
+            callParameterCandidates,
+            nestedActiveCallKeys,
+          );
+          if (!returnCandidates) {
+            unsupported = true;
+            return;
+          }
+
+          collected = collected
+            ? mergeFiniteSegments(collected, returnCandidates)
+            : returnCandidates;
+        }
+
+        ts.forEachChild(candidate, visitReturn);
+      };
+
+      ts.forEachChild(callable.body, visitReturn);
+      const result = !unsupported && sawReturn && collected && collected.length > 0
+        ? collected
+        : null;
+      helperStringReturnCache.set(callKey, result);
+      return result ?? undefined;
+    }
+
+    return undefined;
+  };
 
   const resolveFiniteLookupCandidates = (node: ts.ElementAccessExpression): FiniteLookupCandidate[] | undefined => {
     const nested = resolveTrackedObjectAccess(
@@ -74,11 +379,13 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
     }
 
     const collapsedBinding = collapseExactBindingPrefix(extendTrackedBinding(nested.binding, nested.segments));
-    if (getCollectionInfo(collapsedBinding.trackedObject, collapsedBinding.prefix)?.kind === "array") {
+    if (getCollectionInfo(collapsedBinding.trackedObject, collapsedBinding.prefix)?.kind === TRACKING_COLLECTION_KIND.array) {
       return undefined;
     }
 
-    const candidateSegments = extractFinitePropertyUnionSegments(project, node.argumentExpression);
+    const typedCandidateSegments = extractFinitePropertyUnionSegments(project, node.argumentExpression);
+    const candidateSegments = typedCandidateSegments
+      ?? collectFiniteStringCandidates(node.argumentExpression);
     if (!candidateSegments) {
       return undefined;
     }
@@ -87,6 +394,12 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
       collapsedBinding,
       [candidateSegment],
     ));
+    if (!typedCandidateSegments && isPublicHelperParameterIdentifier(node.argumentExpression)) {
+      const directPropertyCandidateCount = getDirectPropertyCandidateCount(collapsedBinding);
+      if (directPropertyCandidateCount === 0 || exactCandidateSegments.length !== directPropertyCandidateCount) {
+        return undefined;
+      }
+    }
     if (exactCandidateSegments.length <= 1) {
       return undefined;
     }

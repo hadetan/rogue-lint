@@ -1,77 +1,39 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, SkipCategory, TrackedObject } from "../../../types.js";
+import { createAnalysisState, type AnalysisState } from "../../analysis-state.js";
 import { getSymbolKey } from "../../../compiler/ast-utils.js";
-import { serializePath } from "../../../shared/path-utils.js";
-import { registerCapabilityFact } from "../../analysis-state.js";
+import { ENTITY_KIND } from "../../../shared/entity-vocabulary.js";
+import { makeEntity } from "../../../shared/entity-utils.js";
+import { TRACKED_OBJECT_NODE_ORIGIN } from "../../../shared/path-vocabulary.js";
+import { indexSegment, propertySegment, renderPath, serializePath } from "../../../shared/path-utils.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
+import { createCapabilityFactRecordId } from "../../capabilities/types.js";
 import {
-  getObjectBackedRetainedBindingSlotKeyFromAccess,
-  getRetainedBindingContainerSlotKey,
-  isLocallyOwnedRetainedBindingContainer,
-  isSupportedRetainedBindingContainerType,
-} from "../retained-bindings.js";
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
+  ANALYSIS_CAPABILITY_FACT_FAMILY,
+  ANALYSIS_CAPABILITY_FACT_OUTCOME,
+  ANALYSIS_CAPABILITY_ID,
+} from "../../capabilities/vocabulary.js";
+import { isTrackingProtectedStructuralRole } from "../ownership.js";
+import { TRACKING_COLLECTION_KIND, TRACKING_PLACE_STATE, TRACKING_RETAINED_BINDING_WRITE_METHOD } from "../vocabulary.js";
+import { getObjectBackedRetainedBindingSlotKeyFromAccess, getRetainedBindingContainerSlotKey, isLocallyOwnedRetainedBindingContainer, isSupportedRetainedBindingContainerType } from "../retained-bindings.js";
+import { getBindingSymbolKey, getCallSiteStructuredArgumentBinding, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, getCanonicalSymbolKey, getGlobalThisBindingKey, getStaticGlobalThisPropertyName, mergeTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import { getCallableReturnBinding } from "../callables.js";
+import type { ArrayProjectionBinding, ResolvedTrackedObjectAccess, TrackedObjectBinding } from "../model.js";
+import { buildHelperBoundaryReason, classifySupportedCallArgumentUse, summarizeHelperParameterUse } from "../semantics.js";
+import { buildCollectionBoundaryEntity, ensureCollectionChildPath, getCollectionInfo, getProjectionBinding, hasTrackedChildren, indexTrackedObjectNode, registerExactPathAlias, resolveExactPathAlias } from "../state.js";
+import { unwrapExpression } from "../syntax.js";
 import {
-  getBindingSymbolKey,
-  resolveAnalyzableCallableBinding,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  getCanonicalSymbolKey,
-  getGlobalThisBindingKey,
-  getStaticGlobalThisPropertyName,
-  mergeTrackedBinding,
-  sameTrackedBinding,
-} from "../bindings.js";
-import {
-  getCallableReturnBinding,
-} from "../callables.js";
-import type {
-  ArrayProjectionBinding,
-  ResolvedTrackedObjectAccess,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  buildHelperBoundaryReason,
-  classifySupportedCallArgumentUse,
-  summarizeHelperParameterUse,
-} from "../semantics.js";
-import {
-  buildCollectionBoundaryEntity,
-  getCollectionInfo,
-  getProjectionBinding,
-  hasTrackedChildren,
-  resolveExactPathAlias,
-} from "../state.js";
-import {
-  handleSupportedValueFateCall as handleSupportedValueFateCallEffect,
-  handleTrackedArrayMutation as handleTrackedArrayMutationEffect,
-  maybeInvalidateReplacedTrackedPath as maybeInvalidateReplacedTrackedPathEffect,
-  maybeReportInvalidatedRead as maybeReportInvalidatedReadEffect,
-  recordArrayBoundary as recordArrayBoundaryEffect,
-  tryRegisterExactArrayInsertion,
+  handleSupportedValueFateCall as handleSupportedValueFateCallEffect, handleTrackedArrayMutation as handleTrackedArrayMutationEffect, maybeInvalidateReplacedTrackedPath as maybeInvalidateReplacedTrackedPathEffect,
+  maybeReportInvalidatedRead as maybeReportInvalidatedReadEffect, recordArrayBoundary as recordArrayBoundaryEffect, tryRegisterExactArrayInsertion,
 } from "./effects.js";
 import {
-  markObjectPathAliasObserved,
-  markObjectPathEscaped,
-  markObjectPathObservedChildPaths,
-  markObjectPathObservedSubtree,
-  markObjectPathProjectionChildReads,
-  markObjectPathProjectionElementRead,
-  markObjectPathProjectionReads,
-  markObjectPathProjectionWrites,
-  markObjectPathRead,
-  markObjectPathWrite,
+  markObjectPathAliasObserved, markObjectPathEscaped, markObjectPathObservedChildPaths, markObjectPathObservedSubtree, markObjectPathProjectionChildReads,
+  markObjectPathProjectionElementRead, markObjectPathProjectionReads, markObjectPathProjectionWrites, markObjectPathRead, markObjectPathWrite,
 } from "./overlay.js";
-import type {
-  FiniteLookupCandidate,
-  ObjectPathSourceFileContext,
-  ObjectPathStageContext,
-} from "./types.js";
+import type { ObjectPathSourceFileContext, ObjectPathStageContext } from "./types.js";
 import { createCollectionOperationHandler } from "./collection-operations.js";
 import { createDestructuringHandler } from "./destructuring.js";
 import { createFiniteLookupPlanner } from "./finite-lookups.js";
@@ -86,16 +48,20 @@ import { createReturnedStructureHandler } from "./returned-structures.js";
  */
 export function visitObjectPathSourceFile(
   stageContext: ObjectPathStageContext,
-  sourceFileContext: ObjectPathSourceFileContext,
+  stateOrSourceFileContext: AnalysisState | ObjectPathSourceFileContext,
+  maybeSourceFileContext?: ObjectPathSourceFileContext,
 ): void {
+  const state = maybeSourceFileContext ? stateOrSourceFileContext as AnalysisState : createAnalysisState();
+  const sourceFileContext = maybeSourceFileContext ?? stateOrSourceFileContext as ObjectPathSourceFileContext;
   const {
     project,
-    publicCallableIds,
+    reachableFiles,
+    publicSurfaceIds,
+    publiclyReachableCallableIds,
     overlayState,
     trackedBindingRegistry: trackedBySymbolId,
     functionReturnSummaries,
     trackedObjectRegistry: trackedObjectsById,
-    state,
     suppressionContext,
   } = stageContext;
   const {
@@ -110,10 +76,14 @@ export function visitObjectPathSourceFile(
     handledSpreadAppendStarts,
     parameterMeaningfulUse,
     parameterSummaryCache,
+    helperExecutionSnapshotCache,
     helperExactAppendPlanCache,
     helperProjectedUsagePlanCache,
     higherOrderCallableReturnSummaryCache,
   } = sourceFileContext;
+  const capabilityFacts = state.runState.capabilityFacts;
+  const findings = state.findings;
+  const kept = state.kept;
   const projectionContext = {
     elementBindings: projectionBindings,
     receiverBindings: projectionReceiverBindings,
@@ -149,44 +119,62 @@ export function visitObjectPathSourceFile(
     reason: string,
     detailHint?: string,
   ): void => {
-    if (["array-callback-escape", "array-opaque-mutation", "opaque-object-call"].includes(category)) {
-      const entity = category === "array-callback-escape" || category === "array-opaque-mutation"
+    if (
+      category === SKIP_CATEGORY.arrayCallbackEscape
+      || category === SKIP_CATEGORY.arrayOpaqueMutation
+      || category === SKIP_CATEGORY.opaqueObjectCall
+    ) {
+      const entity = category === SKIP_CATEGORY.arrayCallbackEscape || category === SKIP_CATEGORY.arrayOpaqueMutation
         ? buildCollectionBoundaryEntity(project, trackedObject, boundarySourceFile, node, segments)
         : getTrackedEntityAtPath(trackedObject, segments);
-      registerCapabilityFact(state, "helper-transport", entity, "helper-transport", "boundary", {
-        category,
-        reason,
+      const recordId = createCapabilityFactRecordId(
+        ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport,
+        entity,
+        ANALYSIS_CAPABILITY_ID.helperTransport,
         detailHint,
-      });
+      );
+      if (!capabilityFacts.has(recordId)) {
+        capabilityFacts.set(recordId, {
+          id: recordId,
+          family: ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport,
+          capabilityId: ANALYSIS_CAPABILITY_ID.helperTransport,
+          entity,
+          outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.boundary,
+          category,
+          reason,
+          detailHint,
+        });
+      }
       return;
     }
 
-    if (["array-at-call", "computed-property-access", "dynamic-array-index"].includes(category)) {
-      const entity = category === "array-at-call" || category === "dynamic-array-index"
+    if (
+      category === SKIP_CATEGORY.arrayAtCall
+      || category === SKIP_CATEGORY.computedPropertyAccess
+      || category === SKIP_CATEGORY.dynamicArrayIndex
+    ) {
+      const entity = category === SKIP_CATEGORY.arrayAtCall || category === SKIP_CATEGORY.dynamicArrayIndex
         ? buildCollectionBoundaryEntity(project, trackedObject, boundarySourceFile, node, segments)
         : getTrackedEntityAtPath(trackedObject, segments);
-      registerCapabilityFact(state, "finite-keyed-access", entity, "finite-keyed-access", "boundary", {
-        category,
-        reason,
+      const recordId = createCapabilityFactRecordId(
+        ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+        entity,
+        ANALYSIS_CAPABILITY_ID.finiteKeyedAccess,
         detailHint,
-      });
+      );
+      if (!capabilityFacts.has(recordId)) {
+        capabilityFacts.set(recordId, {
+          id: recordId,
+          family: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+          capabilityId: ANALYSIS_CAPABILITY_ID.finiteKeyedAccess,
+          entity,
+          outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.boundary,
+          category,
+          reason,
+          detailHint,
+        });
+      }
     }
-  };
-
-  const registerLiveCapabilityFact = (
-    trackedObject: TrackedObject,
-    segments: PathSegment[],
-    capabilityId: "helper-transport" | "finite-keyed-access",
-    detailHint: string,
-  ): void => {
-    registerCapabilityFact(
-      state,
-      capabilityId,
-      getTrackedEntityAtPath(trackedObject, segments),
-      capabilityId,
-      "live",
-      { detailHint },
-    );
   };
 
   const markEscaped = (
@@ -209,14 +197,165 @@ export function visitObjectPathSourceFile(
     markObjectPathObservedSubtree(overlayState, trackedObject, segments, aliasTrackedObjectsById, visited);
   };
 
+  const setLocalHelperBinding = (
+    bindings: Map<string, TrackedObjectBinding>,
+    identifier: ts.Identifier,
+    binding: TrackedObjectBinding,
+  ): void => {
+    const symbol = project.checker.getSymbolAtLocation(identifier);
+    if (!symbol) {
+      return;
+    }
+
+    bindings.set(getSymbolKey(symbol), binding);
+    bindings.set(getCanonicalSymbolKey(project, symbol), binding);
+  };
+
+  const getLocalHelperBinding = (
+    bindings: ReadonlyMap<string, TrackedObjectBinding>,
+    identifier: ts.Identifier,
+  ): TrackedObjectBinding | undefined => {
+    const symbol = project.checker.getSymbolAtLocation(identifier);
+    if (!symbol) {
+      return undefined;
+    }
+
+    return bindings.get(getCanonicalSymbolKey(project, symbol))
+      ?? bindings.get(getSymbolKey(symbol));
+  };
+
+  const getSingleReturnExpression = (callable: ts.FunctionLikeDeclaration): ts.Expression | undefined => {
+    if (!callable.body) {
+      return undefined;
+    }
+
+    if (!ts.isBlock(callable.body)) {
+      return callable.body;
+    }
+
+    let match: ts.Expression | undefined;
+    let multiple = false;
+
+    const visitReturn = (candidate: ts.Node): void => {
+      if (multiple || (ts.isFunctionLike(candidate) && candidate !== callable)) {
+        return;
+      }
+
+      if (ts.isReturnStatement(candidate) && candidate.expression) {
+        if (match) {
+          multiple = true;
+          return;
+        }
+
+        match = candidate.expression;
+        return;
+      }
+
+      ts.forEachChild(candidate, visitReturn);
+    };
+
+    ts.forEachChild(callable.body, visitReturn);
+    return multiple ? undefined : match;
+  };
+
+  const getBoundedHelperCallBindings = (
+    node: ts.CallExpression,
+    callable: ts.FunctionLikeDeclaration,
+    scopeBindings: Map<string, TrackedObjectBinding>,
+  ): Map<string, TrackedObjectBinding> => {
+    const localBindings = new Map(scopeBindings);
+
+    node.arguments.forEach((argument, index) => {
+      const parameter = callable.parameters[index];
+      if (!parameter || !ts.isIdentifier(parameter.name)) {
+        return;
+      }
+
+      const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+      if (!parameterSymbol) {
+        return;
+      }
+
+      const baseBinding = trackedBySymbolId.get(getSymbolKey(parameterSymbol));
+      const resolved = resolveTrackedObjectAccess(
+        project,
+        argument,
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      const binding = resolved && !resolved.dynamic
+        ? extendTrackedBinding(resolved.binding, resolved.segments)
+        : baseBinding
+          ? getCallSiteStructuredArgumentBinding(
+              project,
+              node,
+              argument,
+              baseBinding,
+              localBindings,
+              functionReturnSummaries,
+              trackedObjectsById,
+            )
+          : undefined;
+      if (binding) {
+        setLocalHelperBinding(localBindings, parameter.name, binding);
+      }
+    });
+
+    return localBindings;
+  };
+
+  let executeBoundedHelperCall = (
+    _node: ts.CallExpression,
+    _scopeBindings: Map<string, TrackedObjectBinding>,
+  ): void => {};
+
+  const resolveBoundedHelperReturnBinding = (
+    node: ts.CallExpression,
+    scopeBindings: Map<string, TrackedObjectBinding> = trackedBySymbolId,
+    visitedCallables = new Set<string>(),
+  ): TrackedObjectBinding | undefined => {
+    const callable = resolveAnalyzableCallableBinding(
+      project,
+      node.expression,
+      scopeBindings,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+    if (!callable || visitedCallables.has(callable.symbolKey)) {
+      return undefined;
+    }
+
+    const returnExpression = getSingleReturnExpression(callable.declaration);
+    if (!returnExpression) {
+      return undefined;
+    }
+
+    visitedCallables.add(callable.symbolKey);
+    const localBindings = getBoundedHelperCallBindings(node, callable.declaration, scopeBindings);
+    const returned = unwrapExpression(returnExpression);
+    const binding = ts.isCallExpression(returned)
+      ? (() => {
+          executeBoundedHelperCall(returned, localBindings);
+          return resolveBoundedHelperReturnBinding(returned, localBindings, visitedCallables);
+        })()
+      : ts.isIdentifier(returned)
+        ? getLocalHelperBinding(localBindings, returned)
+        : undefined;
+    visitedCallables.delete(callable.symbolKey);
+    return binding;
+  };
+
   const returnedStructureHandler = createReturnedStructureHandler({
     project,
-    publicCallableIds,
+    publicSurfaceIds,
+    publiclyReachableCallableIds,
     trackedBySymbolId,
     functionReturnSummaries,
     trackedObjectsById,
     markObservedSubtree,
     markEscaped,
+    resolveBoundedHelperReturnBinding,
   });
 
   const markProjectionChildReads = (
@@ -259,6 +398,93 @@ export function visitObjectPathSourceFile(
 
   const markWrite = (trackedObject: TrackedObject, segments: PathSegment[]): void => {
     markObjectPathWrite(overlayState, trackedObject, segments);
+  };
+
+  const getAssignedAccessSegment = (
+    node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  ): PathSegment | undefined => {
+    if (ts.isPropertyAccessExpression(node)) {
+      return propertySegment(node.name.text);
+    }
+
+    const argument = node.argumentExpression;
+    if (!argument) {
+      return undefined;
+    }
+
+    if (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument)) {
+      return propertySegment(argument.text);
+    }
+
+    if (ts.isNumericLiteral(argument)) {
+      return indexSegment(Number(argument.text));
+    }
+
+    if (
+      ts.isPrefixUnaryExpression(argument)
+      && argument.operator === ts.SyntaxKind.MinusToken
+      && ts.isNumericLiteral(argument.operand)
+    ) {
+      return indexSegment(-Number(argument.operand.text));
+    }
+
+    return undefined;
+  };
+
+  const shouldMaterializeAssignedPath = (operatorKind: ts.SyntaxKind): boolean => (
+    operatorKind === ts.SyntaxKind.EqualsToken
+    || operatorKind === ts.SyntaxKind.QuestionQuestionEqualsToken
+    || operatorKind === ts.SyntaxKind.BarBarEqualsToken
+    || operatorKind === ts.SyntaxKind.AmpersandAmpersandEqualsToken
+  );
+
+  const materializeAssignedPath = (trackedObject: TrackedObject, fullPath: PathSegment[], anchor: ts.Node): void => {
+    if (fullPath.length === 0) {
+      return;
+    }
+
+    const joinedPath = serializePath(fullPath);
+    if (
+      trackedObject.nodes.has(joinedPath)
+      || trackedObject.collections.has(joinedPath)
+      || trackedObject.exactPathAliases.has(joinedPath)
+      || hasTrackedChildren(trackedObject, fullPath)
+    ) {
+      trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
+      return;
+    }
+
+    const parentPath = fullPath.slice(0, -1);
+    ensureCollectionChildPath(trackedObject, parentPath, fullPath);
+
+    const segment = fullPath[fullPath.length - 1];
+    if (!segment) {
+      return;
+    }
+
+    const entity = makeEntity(
+      project.rootPath,
+      segment.kind === "index"
+        ? fullPath.length === 1
+          ? ENTITY_KIND.arrayElement
+          : ENTITY_KIND.nestedPath
+        : fullPath.length === 1
+          ? ENTITY_KIND.objectKey
+          : ENTITY_KIND.nestedPath,
+      sourceFile,
+      anchor,
+      segment.kind === "property" && fullPath.length === 1 ? segment.value : renderPath(fullPath),
+      trackedObject.rootName,
+    );
+    trackedObject.nodes.set(joinedPath, {
+      entity,
+      fullPath,
+      origin: segment.kind === "index"
+        ? TRACKED_OBJECT_NODE_ORIGIN.arrayElement
+        : TRACKED_OBJECT_NODE_ORIGIN.property,
+    });
+    trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
+    indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
   };
 
   const recordArrayBoundary = (
@@ -317,10 +543,7 @@ export function visitObjectPathSourceFile(
   });
 
   const maybeReportInvalidatedRead = (
-    _project: typeof project,
     readSourceFile: ts.SourceFile,
-    currentState: typeof state,
-    currentSuppressionContext: typeof suppressionContext,
     trackedObject: TrackedObject,
     node: ts.Node,
     fullPath: PathSegment[],
@@ -328,8 +551,9 @@ export function visitObjectPathSourceFile(
     maybeReportInvalidatedReadEffect(
       project,
       readSourceFile,
-      currentState,
-      currentSuppressionContext,
+      findings,
+      kept,
+      suppressionContext,
       overlayState,
       trackedObject,
       node,
@@ -384,8 +608,16 @@ export function visitObjectPathSourceFile(
     node: ts.Node,
     context: typeof projectionContext,
     projectionTrackedObjectsById: Map<string, TrackedObject>,
+    projectionTrackedBySymbolId?: Map<string, TrackedObjectBinding>,
   ): void => {
-    visitProjectedArrayUsageEffect(project, node, context, projectionTrackedObjectsById, overlayState);
+    visitProjectedArrayUsageEffect(
+      project,
+      node,
+      context,
+      projectionTrackedObjectsById,
+      overlayState,
+      projectionTrackedBySymbolId ?? trackedBySymbolId,
+    );
   };
 
   const collectionHandler = createCollectionOperationHandler({
@@ -396,6 +628,7 @@ export function visitObjectPathSourceFile(
     trackedObjectsById,
     handledExactCallbackBodies,
     handledSpreadAppendStarts,
+    projectionContext,
     getPublicReturnBinding: returnedStructureHandler.getPublicReturnBinding,
     markObservedAggregateLiteralBindings: returnedStructureHandler.markObservedAggregateLiteralBindings,
     markObservedSubtree,
@@ -439,6 +672,8 @@ export function visitObjectPathSourceFile(
     resolveFiniteLookupRead,
   } = createFiniteLookupPlanner({
     project,
+    reachableFiles,
+    publiclyReachableCallableIds,
     trackedBySymbolId,
     functionReturnSummaries,
     trackedObjectsById,
@@ -447,32 +682,6 @@ export function visitObjectPathSourceFile(
     hasExactTrackedPath,
     collapseExactBindingPrefix,
   });
-
-  const markFiniteLookupReads = (
-    node: ts.Node,
-    candidates: FiniteLookupCandidate[],
-    suffix: PathSegment[] = [],
-  ): void => {
-    for (const candidate of candidates) {
-      const fullPath = [...candidate.binding.prefix, ...candidate.segments, ...suffix];
-      registerLiveCapabilityFact(
-        candidate.binding.trackedObject,
-        fullPath,
-        "finite-keyed-access",
-        "bounded finite key read",
-      );
-      maybeReportInvalidatedRead(
-        project,
-        sourceFile,
-        state,
-        suppressionContext,
-        candidate.binding.trackedObject,
-        node,
-        fullPath,
-      );
-      markRead(candidate.binding.trackedObject, fullPath);
-    }
-  };
 
   const markExactHelperReadPath = (
     binding: TrackedObjectBinding,
@@ -527,20 +736,17 @@ export function visitObjectPathSourceFile(
       currentBinding = collapseExactAliasPrefix(currentBinding);
     }
 
-    markObservedChildPaths(currentBinding.trackedObject, currentBinding.prefix, trackedObjectsById);
+    markRead(currentBinding.trackedObject, currentBinding.prefix);
   };
 
   const shouldReplayExactHelperReadPaths = (binding: TrackedObjectBinding): boolean => (
-    binding.trackedObject.structuralRole !== "structural-record"
-    && binding.trackedObject.structuralRole !== "structural-record-array"
-    && binding.trackedObject.structuralRole !== "state-holder"
+    !isTrackingProtectedStructuralRole(binding.trackedObject.structuralRole)
   );
 
   const {
     getHigherOrderCallableReturnSummary,
     resolveCallableArgumentBinding,
-    getHelperExactAppendPlans,
-    getHelperProjectedUsagePlans,
+    getBoundedHelperExecutionSnapshot,
   } = createHelperPlanningHelpers({
     project,
     trackedBySymbolId,
@@ -548,6 +754,7 @@ export function visitObjectPathSourceFile(
     trackedObjectsById,
     parameterMeaningfulUse,
     parameterSummaryCache,
+    helperExecutionSnapshotCache,
     helperExactAppendPlanCache,
     helperProjectedUsagePlanCache,
     higherOrderCallableReturnSummaryCache,
@@ -557,29 +764,34 @@ export function visitObjectPathSourceFile(
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
     binding: TrackedObjectBinding,
+    providedLocalBindings?: Map<string, TrackedObjectBinding>,
   ): void => {
     const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
     if (!parameterSymbol) {
       return;
     }
 
-    const plans = getHelperExactAppendPlans(callable, parameter);
-    if (plans.length === 0) {
+    const snapshot = getBoundedHelperExecutionSnapshot(callable, parameter);
+    if (!snapshot) {
       return;
     }
 
-    const localBindings = new Map(trackedBySymbolId);
+    const localBindings = new Map(providedLocalBindings ?? trackedBySymbolId);
     localBindings.set(getSymbolKey(parameterSymbol), binding);
 
-    for (const plan of plans) {
+    for (const step of snapshot.steps) {
+      if (step.kind !== "exact-append-mutation") {
+        continue;
+      }
+
       tryRegisterExactArrayInsertion(
         project,
         binding.trackedObject,
-        plan.sourceFile,
-        plan.call,
-        [...binding.prefix, ...plan.relativeCollectionPath],
-        plan.methodName,
-        plan.slotPlans,
+        step.sourceFile,
+        step.call,
+        [...binding.prefix, ...step.relativeCollectionPath],
+        step.methodName,
+        step.slotPlans,
         localBindings,
         functionReturnSummaries,
         trackedObjectsById,
@@ -591,11 +803,21 @@ export function visitObjectPathSourceFile(
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
     binding: TrackedObjectBinding,
+    localBindings?: Map<string, TrackedObjectBinding>,
   ): void => {
-    for (const plan of getHelperProjectedUsagePlans(callable, parameter)) {
+    const snapshot = getBoundedHelperExecutionSnapshot(callable, parameter);
+    if (!snapshot) {
+      return;
+    }
+
+    for (const step of snapshot.steps) {
+      if (step.kind !== "projected-iteration-binding") {
+        continue;
+      }
+
       const projection = getProjectionBinding(
         binding.trackedObject,
-        [...binding.prefix, ...plan.relativeCollectionPath],
+        [...binding.prefix, ...step.relativeCollectionPath],
       );
       if (!projection) {
         continue;
@@ -603,13 +825,14 @@ export function visitObjectPathSourceFile(
 
       visitProjectedArrayUsage(
         project,
-        plan.statement,
+        step.statement,
         {
-          elementBindings: new Map([[plan.elementSymbolKey, projection]]),
+          elementBindings: new Map([[step.elementSymbolKey, projection]]),
           receiverBindings: new Map(),
           indexBindings: new Map(),
         },
         trackedObjectsById,
+        localBindings,
       );
     }
   };
@@ -622,14 +845,50 @@ export function visitObjectPathSourceFile(
     trackedObjectsById,
     parameterMeaningfulUse,
     parameterSummaryCache,
+    getBoundedHelperExecutionSnapshot,
     markExactHelperReadPath,
     shouldReplayExactHelperReadPaths,
     replayHelperExactAppendPlans,
     replayHelperProjectedUsages,
-    registerLiveCapabilityFact,
+    capabilityFacts: state.runState.capabilityFacts,
     recordArrayBoundary,
     markEscaped,
   });
+
+  executeBoundedHelperCall = (
+    node: ts.CallExpression,
+    scopeBindings: Map<string, TrackedObjectBinding>,
+  ): void => {
+    const analyzableCallable = resolveAnalyzableCallableBinding(
+      project,
+      node.expression,
+      scopeBindings,
+      functionReturnSummaries,
+      trackedObjectsById,
+    )?.declaration;
+    if (!analyzableCallable) {
+      return;
+    }
+
+    for (const [index, argument] of node.arguments.entries()) {
+      const parameter = analyzableCallable.parameters[index];
+      const resolved = resolveTrackedObjectAccess(
+        project,
+        argument,
+        scopeBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      helperTransportHandler.handleStructuredHelperArgument(
+        node,
+        argument,
+        resolved,
+        parameter,
+        analyzableCallable,
+        scopeBindings,
+      );
+    }
+  };
 
   const visit = (node: ts.Node): void => {
     if (handledExactCallbackBodies.has(node)) {
@@ -638,13 +897,22 @@ export function visitObjectPathSourceFile(
 
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       const target = project.checker.getSymbolAtLocation(node.name);
-      const resolved = resolveTrackedObjectAccess(
-        project,
-        node.initializer,
-        trackedBySymbolId,
-        functionReturnSummaries,
-        trackedObjectsById,
-      );
+      const helperReturnBinding = ts.isCallExpression(node.initializer)
+        ? resolveBoundedHelperReturnBinding(node.initializer)
+        : undefined;
+      const resolved = helperReturnBinding
+        ? {
+          binding: helperReturnBinding,
+          segments: [],
+          dynamic: false as const,
+        }
+        : resolveTrackedObjectAccess(
+            project,
+            node.initializer,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
       if (target && resolved && !resolved.dynamic) {
         trackedBySymbolId.set(
           getCanonicalSymbolKey(project, target),
@@ -708,7 +976,7 @@ export function visitObjectPathSourceFile(
       const handledRetainedContainerIndices = new Set<number>();
       if (
         ts.isPropertyAccessExpression(node.expression)
-        && node.expression.name.text === "set"
+        && node.expression.name.text === TRACKING_RETAINED_BINDING_WRITE_METHOD
         && node.arguments.length >= 2
         && isSupportedRetainedBindingContainerType(project, node.expression.expression)
       ) {
@@ -755,7 +1023,33 @@ export function visitObjectPathSourceFile(
       for (const [index, argument] of node.arguments.entries()) {
         const finiteLookupRead = resolveFiniteLookupRead(argument);
         if (finiteLookupRead) {
-          markFiniteLookupReads(node, finiteLookupRead.candidates, finiteLookupRead.suffix);
+          for (const candidate of finiteLookupRead.candidates) {
+            const fullPath = [...candidate.binding.prefix, ...candidate.segments, ...finiteLookupRead.suffix];
+            const entity = getTrackedEntityAtPath(candidate.binding.trackedObject, fullPath);
+            const recordId = createCapabilityFactRecordId(
+              ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+              entity,
+              ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+              ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
+            );
+            if (!capabilityFacts.has(recordId)) {
+              capabilityFacts.set(recordId, {
+                id: recordId,
+                family: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+                capabilityId: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+                entity,
+                outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.live,
+                detailHint: ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
+              });
+            }
+            maybeReportInvalidatedRead(
+              sourceFile,
+              candidate.binding.trackedObject,
+              node,
+              fullPath,
+            );
+            markRead(candidate.binding.trackedObject, fullPath);
+          }
           continue;
         }
 
@@ -793,6 +1087,9 @@ export function visitObjectPathSourceFile(
           trackedObjectsById,
         );
         if (!resolved) {
+          if (helperTransportHandler.handleStructuredHelperArgument(node, argument, undefined, parameter, analyzableCallable)) {
+            continue;
+          }
           continue;
         }
 
@@ -803,7 +1100,7 @@ export function visitObjectPathSourceFile(
         const fullPath = [...resolved.binding.prefix, ...resolved.segments];
         if (resolved.dynamic) {
           const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
-          if (collectionInfo?.kind === "array" && resolved.boundaryCategory) {
+          if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array && resolved.boundaryCategory) {
             recordArrayBoundary(
               project,
               resolved.binding.trackedObject,
@@ -849,7 +1146,7 @@ export function visitObjectPathSourceFile(
           continue;
         }
 
-        if (collectionInfo?.kind === "array") {
+        if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array) {
           recordArrayBoundary(
             project,
             resolved.binding.trackedObject,
@@ -918,7 +1215,11 @@ export function visitObjectPathSourceFile(
           const fullPath = [...resolved.binding.prefix, ...resolved.segments];
           const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
           const parameter = callable.parameters[argumentIndex];
-          if (collectionInfo?.kind === "array" && parameter && ts.isIdentifier(parameter.name)) {
+          if (
+            collectionInfo?.kind === TRACKING_COLLECTION_KIND.array
+            && parameter
+            && ts.isIdentifier(parameter.name)
+          ) {
             const summary = summarizeHelperParameterUse(
               project,
               callable,
@@ -969,13 +1270,75 @@ export function visitObjectPathSourceFile(
             }
           }
 
-          markFiniteLookupReads(node, finiteLookupRead.candidates, finiteLookupRead.suffix);
+          for (const candidate of finiteLookupRead.candidates) {
+            const fullPath = [...candidate.binding.prefix, ...candidate.segments, ...finiteLookupRead.suffix];
+            const entity = getTrackedEntityAtPath(candidate.binding.trackedObject, fullPath);
+            const recordId = createCapabilityFactRecordId(
+              ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+              entity,
+              ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+              ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
+            );
+            if (!capabilityFacts.has(recordId)) {
+              capabilityFacts.set(recordId, {
+                id: recordId,
+                family: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+                capabilityId: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
+                entity,
+                outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.live,
+                detailHint: ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
+              });
+            }
+            maybeReportInvalidatedRead(
+              sourceFile,
+              candidate.binding.trackedObject,
+              node,
+              fullPath,
+            );
+            markRead(candidate.binding.trackedObject, fullPath);
+          }
           return;
         }
       }
 
       const resolved = resolveTrackedObjectAccess(project, node, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
       if (!resolved) {
+        if (
+          isAssignmentLeft(node)
+          && ts.isBinaryExpression(node.parent)
+          && node.parent.left === node
+          && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+          const assignedSegment = getAssignedAccessSegment(node);
+          const receiver = resolveTrackedObjectAccess(
+            project,
+            node.expression,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          const right = resolveTrackedObjectAccess(
+            project,
+            node.parent.right,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          if (assignedSegment && receiver && !receiver.dynamic && right && !right.dynamic) {
+            const receiverPath = [...receiver.binding.prefix, ...receiver.segments];
+            const fullPath = [...receiverPath, assignedSegment];
+            registerExactPathAlias(
+              receiver.binding.trackedObject,
+              fullPath,
+              extendTrackedBinding(right.binding, right.segments),
+              "same-project exact property assignment keeps this nested binding exact",
+            );
+            maybeInvalidateReplacedTrackedPath(project, receiver.binding.trackedObject, sourceFile, node, fullPath);
+            markWrite(receiver.binding.trackedObject, fullPath);
+            return ts.forEachChild(node, visit);
+          }
+        }
+
         if (!projectionTraversalHandler.handleProjectedAccess(node)) {
           return ts.forEachChild(node, visit);
         }
@@ -990,7 +1353,7 @@ export function visitObjectPathSourceFile(
         }
 
         const collectionInfo = getCollectionInfo(resolved.binding.trackedObject, fullPath);
-        if (collectionInfo?.kind === "array" && resolved.boundaryCategory) {
+        if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array && resolved.boundaryCategory) {
           recordArrayBoundary(
             project,
             resolved.binding.trackedObject,
@@ -1033,6 +1396,14 @@ export function visitObjectPathSourceFile(
       }
 
       if (isAssignmentLeft(node)) {
+        if (
+          ts.isBinaryExpression(node.parent)
+          && node.parent.left === node
+          && shouldMaterializeAssignedPath(node.parent.operatorToken.kind)
+        ) {
+          materializeAssignedPath(resolved.binding.trackedObject, fullPath, node);
+        }
+
         if (fullPath.length > 1) {
           markAliasObserved(resolved, trackedObjectsById);
           markRead(resolved.binding.trackedObject, fullPath.slice(0, -1));
@@ -1041,10 +1412,7 @@ export function visitObjectPathSourceFile(
         markWrite(resolved.binding.trackedObject, fullPath);
       } else {
         maybeReportInvalidatedRead(
-          project,
           sourceFile,
-          state,
-          suppressionContext,
           resolved.binding.trackedObject,
           node,
           fullPath,

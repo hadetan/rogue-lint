@@ -1,0 +1,7 @@
+{
+  "name": "finite-local-js-map-basic",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  }
+}

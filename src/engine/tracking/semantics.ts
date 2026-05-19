@@ -1,50 +1,22 @@
 import ts from "typescript";
 
 import type { PathSegment, ProjectContext } from "../../types.js";
-import {
-  getSymbolKey,
-  hasModifier,
-  isReadLikeUse,
-} from "../../compiler/ast-utils.js";
+import { getSymbolKey, hasModifier, isReadLikeUse } from "../../compiler/ast-utils.js";
 import { toRelative } from "../../shared/path-utils.js";
-import {
-  indexSegment,
-  propertySegment,
-  serializePath,
-} from "../../shared/path-utils.js";
-import {
-  HelperParameterSummaryState,
-} from "./model.js";
-import type {
-  CallableReturnSummary,
-  HelperParameterEffectKind,
-  HelperParameterSummary,
-  ValueAnalysisCaches,
-} from "./model.js";
-import {
-  getCanonicalSymbol,
-  getCanonicalSymbolKey,
-  getStaticGlobalThisPropertyName,
-} from "./bindings.js";
-import {
-  isExactArrayCallbackMethod,
-} from "./projection-support.js";
-import {
-  getObjectBackedRetainedBindingSlotKeyFromAccess,
-  isSupportedRetainedBindingContainerType,
-} from "./retained-bindings.js";
-import {
-  getAnalyzableCallableBinding,
-  getAnalyzableCallableBindingFromDeclaration,
-  resolveAnalyzableFunctionDeclaration,
-} from "./callables.js";
+import { indexSegment, propertySegment, serializePath } from "../../shared/path-utils.js";
+import { HelperParameterSummaryState } from "./model.js";
+import type { CallableReturnSummary, HelperParameterSummary, ValueAnalysisCaches } from "./model.js";
+import { getCanonicalSymbol, getCanonicalSymbolKey, getStaticGlobalThisPropertyName } from "./bindings.js";
+import { getAnalyzableCallableBinding, getAnalyzableCallableBindingFromDeclaration, resolveAnalyzableFunctionDeclaration } from "./callables.js";
+import { getObjectBackedRetainedBindingSlotKeyFromAccess, isSupportedRetainedBindingContainerType } from "./retained-bindings.js";
 import { isTrackablePureExpression } from "./trackable-structures.js";
+import { ASSIGNMENT_OPERATORS, getStaticObjectLiteralPropertyName, isPureObjectConstructorExpression, unwrapExpression } from "./syntax.js";
 import {
-  ASSIGNMENT_OPERATORS,
-  getStaticObjectLiteralPropertyName,
-  isPureObjectConstructorExpression,
-  unwrapExpression,
-} from "./syntax.js";
+  ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS, TRACKING_RETAINED_BINDING_WRITE_METHOD, TRACKING_RETAINED_BINDING_OBSERVER_METHODS,
+  TRACKING_ACCESS_KIND, TRACKING_HELPER_PARAMETER_EFFECT_KIND, TRACKING_ARRAY_INDEX_ACCESS_METHOD, WHOLE_ARRAY_CONSUMPTION_METHODS, isExactArrayCallbackMethod,
+} from "./vocabulary.js";
+
+export { ARRAY_APPEND_METHODS, ARRAY_REORDER_METHODS, ARRAY_REPLACEMENT_METHODS, ARRAY_TRUNCATE_METHODS, WHOLE_ARRAY_CONSUMPTION_METHODS } from "./vocabulary.js";
 
 /**
  * Shared exactness semantics for helper lifecycles and call/mutation classification.
@@ -52,18 +24,6 @@ import {
  * This module centralizes the exactness-sensitive rules that both heavy stages reuse
  * when deciding whether calls, helper forwarding, and ignored results remain analyzable.
  */
-
-export const WHOLE_ARRAY_CONSUMPTION_METHODS = new Set([
-  "entries",
-  "includes",
-  "indexOf",
-  "join",
-  "keys",
-  "lastIndexOf",
-  "slice",
-  "with",
-  "values",
-]);
 
 const OBSERVATION_ONLY_CALLS = new Set([
   "console.log",
@@ -86,11 +46,6 @@ interface SupportedCallArgumentUse {
   kind: SupportedCallArgumentUseKind;
   reason: string;
 }
-
-export const ARRAY_APPEND_METHODS = new Set(["push"]);
-export const ARRAY_TRUNCATE_METHODS = new Set(["pop"]);
-export const ARRAY_REPLACEMENT_METHODS = new Set(["fill"]);
-export const ARRAY_REORDER_METHODS = new Set(["copyWithin", "reverse", "shift", "sort", "splice", "unshift"]);
 
 export function classifySupportedCallArgumentUse(
   calleeText: string,
@@ -135,16 +90,136 @@ function getHelperLocationText(project: ProjectContext, sourceFile: ts.SourceFil
   return `${toRelative(project.rootPath, sourceFile.fileName)}:${line + 1}:${character + 1}`;
 }
 
-function addHelperParameterEffect(summary: HelperParameterSummary, effect: HelperParameterEffectKind): void {
-  summary.effectKinds.add(effect);
+function mergeHelperParameterSummary(
+  summary: HelperParameterSummary,
+  nested: HelperParameterSummary,
+): void {
+  nested.effectKinds.forEach((effect) => summary.effectKinds.add(effect));
+  for (const path of nested.exactReadPaths) {
+    const serialized = serializePath(path);
+    if (summary.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
+      continue;
+    }
+
+    summary.exactReadPaths.push(path);
+  }
 }
 
-function addHelperParameterExactReadPath(summary: HelperParameterSummary, path: PathSegment[]): void {
-  const serialized = serializePath(path);
-  if (summary.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
-    return;
+function pathStartsWith(path: PathSegment[], prefix: PathSegment[]): boolean {
+  return prefix.length <= path.length && prefix.every((segment, index) => {
+    const candidate = path[index];
+    return candidate !== undefined && candidate.kind === segment.kind && candidate.value === segment.value;
+  });
+}
+
+function getAggregateForwardingPath(node: ts.Node): {
+  literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression;
+  path: PathSegment[];
+} | undefined {
+  if (ts.isShorthandPropertyAssignment(node) && ts.isObjectLiteralExpression(node.parent)) {
+    return {
+      literal: node.parent,
+      path: [propertySegment(node.name.text)],
+    };
   }
-  summary.exactReadPaths.push(path);
+
+  if (
+    ts.isIdentifier(node)
+    && ts.isPropertyAssignment(node.parent)
+    && node.parent.initializer === node
+    && ts.isObjectLiteralExpression(node.parent.parent)
+  ) {
+    const property: ts.PropertyAssignment = node.parent;
+    const propertyName = getStaticObjectLiteralPropertyName(property);
+    if (!propertyName) {
+      return undefined;
+    }
+
+    return {
+      literal: node.parent.parent,
+      path: [propertySegment(propertyName)],
+    };
+  }
+
+  if (ts.isIdentifier(node) && ts.isArrayLiteralExpression(node.parent)) {
+    const index = node.parent.elements.indexOf(node);
+    if (index < 0) {
+      return undefined;
+    }
+
+    return {
+      literal: node.parent,
+      path: [indexSegment(index)],
+    };
+  }
+
+  return undefined;
+}
+
+function trySummarizeAggregateLiteralForwarding(
+  project: ProjectContext,
+  forwardingNode: ts.Node,
+  cache: Map<string, boolean | null>,
+  summaryCache: Map<string, HelperParameterSummary | null>,
+): HelperParameterSummary | undefined {
+  const forwarding = getAggregateForwardingPath(forwardingNode);
+  if (!forwarding) {
+    return undefined;
+  }
+
+  const parent = forwarding.literal.parent;
+  if (!ts.isCallExpression(parent) && !ts.isNewExpression(parent)) {
+    return undefined;
+  }
+
+  const argumentIndex = (parent.arguments ?? []).findIndex((argument) => argument === forwarding.literal);
+  if (argumentIndex < 0) {
+    return undefined;
+  }
+
+  const callable = resolveAnalyzableFunctionDeclaration(project, parent.expression);
+  if (!callable) {
+    return undefined;
+  }
+
+  const nestedParameter = callable.parameters[argumentIndex];
+  if (!nestedParameter || !ts.isIdentifier(nestedParameter.name)) {
+    return undefined;
+  }
+
+  const nestedSummary = summarizeHelperParameterUse(project, callable, nestedParameter.name, cache, summaryCache);
+  if (nestedSummary.boundaryReason) {
+    return undefined;
+  }
+
+  const remapped = new HelperParameterSummaryState();
+  let matched = false;
+
+  for (const path of nestedSummary.exactReadPaths) {
+    if (!pathStartsWith(path, forwarding.path)) {
+      continue;
+    }
+
+    matched = true;
+    const remappedPath = path.slice(forwarding.path.length);
+    const serialized = serializePath(remappedPath);
+    if (remapped.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
+      continue;
+    }
+
+    remapped.exactReadPaths.push(remappedPath);
+  }
+
+  if (!matched) {
+    return undefined;
+  }
+
+  remapped.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.read);
+  if (nestedSummary.effectKinds.has(TRACKING_HELPER_PARAMETER_EFFECT_KIND.returnedAlias)) {
+    remapped.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.returnedAlias);
+  }
+
+  return remapped;
 }
 
 function markHelperParameterBoundary(
@@ -152,7 +227,7 @@ function markHelperParameterBoundary(
   node: ts.Node,
   reason: string,
 ): void {
-  addHelperParameterEffect(summary, "opaque-escape");
+  summary.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape);
   if (!summary.boundaryReason) {
     summary.boundaryNode = node;
     summary.boundaryReason = reason;
@@ -256,7 +331,7 @@ function getExactHelperReadPaths(project: ProjectContext, node: ts.Identifier): 
     && parent.expression === current
     && ts.isCallExpression(parent.parent)
     && parent.parent.expression === parent
-    && ["get", "has", "entries", "keys", "values"].includes(parent.name.text)
+    && TRACKING_RETAINED_BINDING_OBSERVER_METHODS.has(parent.name.text)
     && isSupportedRetainedBindingContainerType(project, current)
   ) {
     return paths;
@@ -556,7 +631,7 @@ export function getCallArgumentUse(
   project: ProjectContext,
   node: ts.Identifier,
   caches: ValueAnalysisCaches,
-): "read" | "ignore" | undefined {
+): typeof TRACKING_ACCESS_KIND.read | "ignore" | undefined {
   const parent = node.parent;
   if (!(ts.isCallExpression(parent) || ts.isNewExpression(parent))) {
     return undefined;
@@ -569,15 +644,15 @@ export function getCallArgumentUse(
 
   const callable = resolveAnalyzableFunctionDeclaration(project, parent.expression);
   if (!callable) {
-    return "read";
+    return TRACKING_ACCESS_KIND.read;
   }
 
   const parameter = callable.parameters[argumentIndex];
   if (!parameter || !ts.isIdentifier(parameter.name)) {
-    return "read";
+    return TRACKING_ACCESS_KIND.read;
   }
 
-  return hasMeaningfulParameterUse(project, callable, parameter.name, caches) ? "read" : "ignore";
+  return hasMeaningfulParameterUse(project, callable, parameter.name, caches) ? TRACKING_ACCESS_KIND.read : "ignore";
 }
 
 function hasMeaningfulParameterUse(
@@ -680,7 +755,7 @@ export function summarizeHelperParameterUse(
       parameterName,
       "helper parameter cannot be resolved for exact analysis",
     );
-    addHelperParameterEffect(summary, "opaque-escape");
+    summary.effectKinds.add("opaque-escape");
     return summary;
   }
 
@@ -692,7 +767,7 @@ export function summarizeHelperParameterUse(
       parameterName,
       "recursive same-project helper forwarding prevents exact helper lifecycle analysis",
     );
-    addHelperParameterEffect(summary, "opaque-escape");
+    summary.effectKinds.add("opaque-escape");
     return summary;
   }
   if (cached !== undefined) {
@@ -725,7 +800,7 @@ export function summarizeHelperParameterUse(
 
   const handleTrackedAssignment = (left: ts.Expression): boolean => {
     if (getStaticGlobalThisPropertyName(left)) {
-      addHelperParameterEffect(summary, "retained-binding");
+      summary.effectKinds.add("retained-binding");
       return true;
     }
 
@@ -733,7 +808,7 @@ export function summarizeHelperParameterUse(
       (ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left))
       && getObjectBackedRetainedBindingSlotKeyFromAccess(project, left)
     ) {
-      addHelperParameterEffect(summary, "retained-binding");
+      summary.effectKinds.add("retained-binding");
       return true;
     }
 
@@ -742,7 +817,7 @@ export function summarizeHelperParameterUse(
       return false;
     }
 
-    addHelperParameterEffect(summary, "retained-binding");
+    summary.effectKinds.add("retained-binding");
     if (isSymbolDeclaredWithinFunction(target, declaration)) {
       if (ts.isIdentifier(left)) {
         addAliasSymbol(left);
@@ -797,13 +872,19 @@ export function summarizeHelperParameterUse(
         markHelperParameterBoundary(summary, node, "helper rebinds this value through an unsupported pattern");
         return;
       }
-      addHelperParameterEffect(summary, "retained-binding");
+      summary.effectKinds.add("retained-binding");
       addAliasSymbol(node.name);
     }
 
     if (ts.isShorthandPropertyAssignment(node)) {
       const valueSymbol = project.checker.getShorthandAssignmentValueSymbol(node);
       if (valueSymbol && trackedAliasKeys.has(getCanonicalSymbolKey(project, valueSymbol))) {
+        const forwardedSummary = trySummarizeAggregateLiteralForwarding(project, node, cache, summaryCache);
+        if (forwardedSummary) {
+          mergeHelperParameterSummary(summary, forwardedSummary);
+          return;
+        }
+
         markHelperParameterBoundary(summary, node.name, "helper stores this value inside an aggregate literal beyond exact local analysis");
         return;
       }
@@ -818,13 +899,13 @@ export function summarizeHelperParameterUse(
 
     if (ts.isReturnStatement(node) && node.expression) {
       if (isTrackedAliasIdentifier(node.expression)) {
-        addHelperParameterEffect(summary, "returned-alias");
+        summary.effectKinds.add("returned-alias");
       }
       if (
         (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression))
         && isTrackedAliasIdentifier(node.expression.expression)
       ) {
-        addHelperParameterEffect(summary, "returned-alias");
+        summary.effectKinds.add("returned-alias");
       }
     }
 
@@ -833,7 +914,14 @@ export function summarizeHelperParameterUse(
 
       const exactReadPaths = getExactHelperReadPaths(project, node);
       if (exactReadPaths) {
-        exactReadPaths.forEach((path) => addHelperParameterExactReadPath(summary, path));
+        for (const path of exactReadPaths) {
+          const serialized = serializePath(path);
+          if (summary.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
+            continue;
+          }
+
+          summary.exactReadPaths.push(path);
+        }
       }
 
       if (
@@ -841,6 +929,12 @@ export function summarizeHelperParameterUse(
         || (ts.isPropertyAssignment(parent) && parent.initializer === node && ts.isObjectLiteralExpression(parent.parent))
         || (ts.isArrayLiteralExpression(parent) && parent.elements.includes(node))
       ) {
+        const forwardedSummary = trySummarizeAggregateLiteralForwarding(project, node, cache, summaryCache);
+        if (forwardedSummary) {
+          mergeHelperParameterSummary(summary, forwardedSummary);
+          return;
+        }
+
         markHelperParameterBoundary(summary, parent, "helper stores this value inside an aggregate literal beyond exact local analysis");
         return;
       }
@@ -851,11 +945,11 @@ export function summarizeHelperParameterUse(
           if (
             ts.isCallExpression(parent)
             && ts.isPropertyAccessExpression(parent.expression)
-            && parent.expression.name.text === "set"
+            && parent.expression.name.text === TRACKING_RETAINED_BINDING_WRITE_METHOD
             && argumentIndex === 1
             && isSupportedRetainedBindingContainerType(project, parent.expression.expression)
           ) {
-            addHelperParameterEffect(summary, "retained-binding");
+            summary.effectKinds.add("retained-binding");
             return;
           }
 
@@ -872,7 +966,7 @@ export function summarizeHelperParameterUse(
           }
 
           const nestedSummary = summarizeHelperParameterUse(project, callable, nestedParameter.name, cache, summaryCache);
-          nestedSummary.effectKinds.forEach((effect) => addHelperParameterEffect(summary, effect));
+          nestedSummary.effectKinds.forEach((effect) => summary.effectKinds.add(effect));
           if (nestedSummary.boundaryReason) {
             markHelperParameterBoundary(summary, nestedSummary.boundaryNode ?? parent, nestedSummary.boundaryReason);
           }
@@ -894,9 +988,9 @@ export function summarizeHelperParameterUse(
           || ARRAY_TRUNCATE_METHODS.has(methodName)
           || ARRAY_REPLACEMENT_METHODS.has(methodName)
           || ARRAY_REORDER_METHODS.has(methodName)
-          || methodName === "at"
+          || methodName === TRACKING_ARRAY_INDEX_ACCESS_METHOD
         ) {
-          addHelperParameterEffect(summary, WHOLE_ARRAY_CONSUMPTION_METHODS.has(methodName) ? "read" : "mutation");
+          summary.effectKinds.add(WHOLE_ARRAY_CONSUMPTION_METHODS.has(methodName) ? "read" : "mutation");
           return;
         }
       }
@@ -908,7 +1002,7 @@ export function summarizeHelperParameterUse(
         && parent.parent.left === parent
         && parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        addHelperParameterEffect(summary, "mutation");
+        summary.effectKinds.add("mutation");
         return;
       }
 
@@ -919,7 +1013,7 @@ export function summarizeHelperParameterUse(
         && parent.parent.left === parent
         && parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        addHelperParameterEffect(summary, "mutation");
+        summary.effectKinds.add("mutation");
         return;
       }
 
@@ -927,10 +1021,10 @@ export function summarizeHelperParameterUse(
         parameterMeaningfulUse: cache,
         callablePurity: new Map(),
       });
-      if (callArgumentUse === "read") {
-        addHelperParameterEffect(summary, "read");
+      if (callArgumentUse === TRACKING_ACCESS_KIND.read) {
+        summary.effectKinds.add("read");
       } else if (isUpdateRead(node) || isReadLikeUse(node)) {
-        addHelperParameterEffect(summary, "read");
+        summary.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.read);
       }
     }
 
@@ -939,15 +1033,24 @@ export function summarizeHelperParameterUse(
 
   ts.forEachChild(body, visit);
   const directStorageNode = findDirectReferenceStorageParameterUse(project, declaration, parameterName);
+  const supportedAggregateForwarding = directStorageNode
+    ? trySummarizeAggregateLiteralForwarding(
+        project,
+        ts.isShorthandPropertyAssignment(directStorageNode.parent) ? directStorageNode.parent : directStorageNode,
+        cache,
+        summaryCache,
+      )
+    : undefined;
   if (
     directStorageNode
+    && !supportedAggregateForwarding
     && (
       !summary.boundaryReason
       || summary.boundaryReason === "helper stores this value inside an aggregate literal beyond exact local analysis"
       || summary.boundaryReason === "helper stores this value in an unsupported retained location"
     )
   ) {
-    addHelperParameterEffect(summary, "opaque-escape");
+    summary.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape);
     summary.boundaryNode = directStorageNode;
     summary.boundaryReason = "helper stores this value by reference beyond exact local analysis";
   }
@@ -957,7 +1060,7 @@ export function summarizeHelperParameterUse(
 
 export function buildHelperBoundaryReason(
   project: ProjectContext,
-  summary: HelperParameterSummary,
+  summary: Pick<HelperParameterSummary, "boundaryNode" | "boundaryReason">,
   fallback: string,
 ): string {
   if (!summary.boundaryReason || !summary.boundaryNode) {

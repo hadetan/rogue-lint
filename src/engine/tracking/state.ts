@@ -1,35 +1,18 @@
 import type ts from "typescript";
 
 import type {
-  EscapedPathRecord,
-  EntityRecord,
-  InvalidatedPathRecord,
-  PathSegment,
-  ProjectContext,
-  SkipCategory,
-  TrackedCollectionInfo,
-  TrackedCollectionState,
-  TrackedPlaceState,
-  TrackedObject,
+  EntityRecord, InvalidatedPathRecord, PathSegment, ProjectContext, SkipCategory,
+  TrackedCollectionInfo, TrackedCollectionState, TrackedPlaceState, TrackedObject,
 } from "../../types.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
+import { FINDING_KIND } from "../../shared/finding-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import {
-  isSerializedPathWithin,
-  renderPath,
-  renderPathWithRoot,
-  samePath,
-  serializePath,
-} from "../../shared/path-utils.js";
-import {
-  CollectionInfoRecord,
-  CollectionState,
-} from "./model.js";
-import type {
-  ArrayProjectionBinding,
-  ExactAppendSlotPlan,
-  TrackedObjectBinding,
-  TrackedValueFate,
-} from "./model.js";
+import { TRACKED_OBJECT_NODE_ORIGIN } from "../../shared/path-vocabulary.js";
+import { SKIP_CATEGORY } from "../../shared/skip-category-vocabulary.js";
+import { isSerializedPathWithin, renderPath, renderPathWithRoot, samePath, serializePath } from "../../shared/path-utils.js";
+import { CollectionInfoRecord, CollectionState } from "./model.js";
+import { TRACKING_COLLECTION_KIND, TRACKING_PLACE_STATE, TRACKING_VALUE_FATE } from "./vocabulary.js";
+import type { ArrayProjectionBinding, ExactAppendSlotPlan, TrackedObjectBinding, TrackedValueFate } from "./model.js";
 
 /**
  * Shared tracked-object state and collection helpers for the exact tracking kernel.
@@ -37,6 +20,18 @@ import type {
  * This module centralizes tracked-path mutation, alias bookkeeping, collection invalidation,
  * and projection helpers so both heavy stages reuse the same state-transition rules.
  */
+
+export function bumpTrackedObjectDerivedStateRevision(trackedObject: TrackedObject): void {
+  trackedObject.derivedStateRevision += 1;
+}
+
+function observeTrackedValueFateShape(record: TrackedObject["valueFates"][number]): void {
+  void record.fate;
+  void record.path;
+  void record.reason;
+  void record.relatedObjectId;
+  void record.relatedPath;
+}
 
 export function addValueFate(
   trackedObject: TrackedObject,
@@ -58,20 +53,24 @@ export function addValueFate(
     }
   }
 
-  trackedObject.valueFates.push({
+  const record: TrackedObject["valueFates"][number] = {
     fate,
     path,
     reason,
     relatedObjectId,
     relatedPath,
-  });
+  };
+  observeTrackedValueFateShape(record);
+  trackedObject.valueFates.push(record);
 }
 
 function clearExactAliasesWithin(trackedObject: TrackedObject, segments: PathSegment[]): void {
   const prefix = serializePath(segments);
   for (const key of [...trackedObject.exactPathAliases.keys()]) {
     if (isSerializedPathWithin(key, prefix)) {
-      trackedObject.exactPathAliases.delete(key);
+      if (trackedObject.exactPathAliases.delete(key)) {
+        bumpTrackedObjectDerivedStateRevision(trackedObject);
+      }
     }
   }
 }
@@ -82,15 +81,26 @@ export function registerExactPathAlias(
   sourceBinding: TrackedObjectBinding,
   reason: string,
 ): void {
-  receiver.exactPathAliases.set(serializePath(receiverPath), {
-    fate: "inserted-by-reference",
+  const serializedReceiverPath = serializePath(receiverPath);
+  const existingAlias = receiver.exactPathAliases.get(serializedReceiverPath);
+  if (
+    existingAlias
+    && existingAlias.sourceObjectId === sourceBinding.trackedObject.id
+    && samePath(existingAlias.sourcePath, sourceBinding.prefix)
+  ) {
+    return;
+  }
+
+  receiver.exactPathAliases.set(serializedReceiverPath, {
+    fate: TRACKING_VALUE_FATE.insertedByReference,
     sourceObjectId: sourceBinding.trackedObject.id,
     sourcePath: sourceBinding.prefix,
     observed: false,
   });
+  bumpTrackedObjectDerivedStateRevision(receiver);
   addValueFate(
     receiver,
-    "inserted-by-reference",
+    TRACKING_VALUE_FATE.insertedByReference,
     receiverPath,
     reason,
     sourceBinding.trackedObject.id,
@@ -98,7 +108,7 @@ export function registerExactPathAlias(
   );
   addValueFate(
     sourceBinding.trackedObject,
-    "inserted-by-reference",
+    TRACKING_VALUE_FATE.insertedByReference,
     sourceBinding.prefix,
     reason,
     receiver.id,
@@ -173,7 +183,7 @@ export function buildCollectionBoundaryEntity(
 ): EntityRecord {
   return makeEntity(
     project.rootPath,
-    "collection-boundary",
+    ENTITY_KIND.collectionBoundary,
     sourceFile,
     node,
     renderPathWithRoot(trackedObject.rootName, segments),
@@ -217,7 +227,7 @@ function ensureCollectionState(
 export function setCollectionInfo(
   trackedObject: TrackedObject,
   segments: PathSegment[],
-  kind: "object" | "array",
+  kind: TrackedCollectionInfo["kind"],
   arrayLength?: number,
 ): TrackedCollectionInfo {
   const info = new CollectionInfoRecord(kind, segments, arrayLength);
@@ -281,7 +291,7 @@ function ensureTrackedArraySlotNode(
   if (!trackedObject.nodes.has(joinedPath)) {
     const entity = makeEntity(
       project.rootPath,
-      fullPath.length === 1 ? "array-element" : "nested-path",
+      fullPath.length === 1 ? ENTITY_KIND.arrayElement : ENTITY_KIND.nestedPath,
       sourceFile,
       node,
       renderPath(fullPath),
@@ -290,12 +300,12 @@ function ensureTrackedArraySlotNode(
     trackedObject.nodes.set(joinedPath, {
       entity,
       fullPath,
-      origin: "array-element",
+      origin: TRACKED_OBJECT_NODE_ORIGIN.arrayElement,
     });
     indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
   }
 
-  trackedObject.placeStates.set(joinedPath, "initialized");
+  trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
 }
 
 function setPlaceState(
@@ -311,15 +321,15 @@ export function createInvalidatedPathRecord(
   reason: string,
 ): InvalidatedPathRecord {
   switch (category) {
-    case "array-replacement-mutation":
+    case SKIP_CATEGORY.arrayReplacementMutation:
       return {
-        findingKind: "invalidated-read",
+        findingKind: FINDING_KIND.invalidatedRead,
         reason,
       };
-    case "array-truncate-mutation":
-    case "array-reorder-mutation":
+    case SKIP_CATEGORY.arrayTruncateMutation:
+    case SKIP_CATEGORY.arrayReorderMutation:
       return {
-        findingKind: "stale-read-after-mutation",
+        findingKind: FINDING_KIND.staleReadAfterMutation,
         reason,
       };
     default:
@@ -329,22 +339,13 @@ export function createInvalidatedPathRecord(
   }
 }
 
-export function isCollectionPathInvalidated(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
-  for (let index = segments.length; index >= 0; index -= 1) {
-    if (trackedObject.invalidatedCollectionPaths.has(serializePath(segments.slice(0, index)))) {
-      return true;
-    }
-  }
-  return false;
-}
-
 export function getNearestArrayCollectionPath(
   trackedObject: TrackedObject,
   segments: PathSegment[],
 ): PathSegment[] | undefined {
   for (let index = segments.length; index >= 0; index -= 1) {
     const candidate = segments.slice(0, index);
-    if (getCollectionInfo(trackedObject, candidate)?.kind === "array") {
+    if (getCollectionInfo(trackedObject, candidate)?.kind === TRACKING_COLLECTION_KIND.array) {
       return candidate;
     }
   }
@@ -377,7 +378,7 @@ export function getProjectionBinding(
   segments: PathSegment[],
 ): ArrayProjectionBinding | undefined {
   const collection = getCollectionInfo(trackedObject, segments);
-  if (!collection || collection.kind !== "array") {
+  if (!collection || collection.kind !== TRACKING_COLLECTION_KIND.array) {
     return undefined;
   }
 
@@ -418,7 +419,7 @@ function markRead(trackedObject: TrackedObject, segments: PathSegment[]): void {
 
 function markWrite(trackedObject: TrackedObject, segments: PathSegment[]): void {
   trackedObject.writes.add(serializePath(segments));
-  setPlaceState(trackedObject, segments, "initialized");
+  setPlaceState(trackedObject, segments, TRACKING_PLACE_STATE.initialized);
 }
 
 /**
@@ -431,20 +432,10 @@ export function markEscaped(
   reason: string,
 ): void {
   trackedObject.escapedPaths.set(serializePath(segments), { category, reason });
-  setPlaceState(trackedObject, segments, "escaped");
-  addValueFate(trackedObject, "escaped-opaquely", segments, reason);
-  if (!(category === "opaque-object-call" && segments.length === 0)) {
+  bumpTrackedObjectDerivedStateRevision(trackedObject);
+  setPlaceState(trackedObject, segments, TRACKING_PLACE_STATE.escaped);
+  addValueFate(trackedObject, TRACKING_VALUE_FATE.escapedOpaquely, segments, reason);
+  if (!(category === SKIP_CATEGORY.opaqueObjectCall && segments.length === 0)) {
     clearExactAliasesWithin(trackedObject, segments);
   }
-}
-
-export function getEscapedReason(trackedObject: TrackedObject, segments: PathSegment[]): EscapedPathRecord | undefined {
-  for (let index = segments.length; index >= 0; index -= 1) {
-    const key = serializePath(segments.slice(0, index));
-    const escaped = trackedObject.escapedPaths.get(key);
-    if (escaped) {
-      return escaped;
-    }
-  }
-  return undefined;
 }

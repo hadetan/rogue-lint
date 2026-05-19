@@ -1,49 +1,50 @@
 import type { ProjectContext, SkipCategory } from "../../types.js";
+import { SKIP_CATEGORY } from "../../shared/skip-category-vocabulary.js";
 
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import { VALUE_LIVENESS_TRACKING_STAGE } from "../tracking/contracts.js";
+import { TRACKING_GRAPH_BUILD_TRACKING_STAGE } from "../tracking/contracts.js";
 import type { CallableReturnSummary } from "../tracking/model.js";
+import { TRACKING_RETURN_SUMMARY_KIND } from "../tracking/vocabulary.js";
 import type {
   AnalysisCapabilityFactRecord,
   AnalysisCapabilityId,
   AnalysisCapabilityObligationRecord,
 } from "./types.js";
+import {
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_ARRAY_AT_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_CALLBACK_TRANSPORT_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_COMPUTED_KEY_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_DYNAMIC_INDEX_BOUNDARY,
+  ANALYSIS_CAPABILITY_FALLBACK_BOUNDARY_LABEL,
+  ANALYSIS_CAPABILITY_ID,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_MUTATION_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_TRANSPORT_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_PROMISE_ALL_TRANSPORT,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_RETURNED_STRUCTURE,
+} from "./vocabulary.js";
 
 interface AnalysisCapabilitySummaryRegistry {
   hasSameProjectReturnedStructureTransport: boolean;
 }
 
-const SAME_PROJECT_HELPER_TRANSPORT_LABEL = "same-project helper transport";
-const SAME_PROJECT_HELPER_RETAINED_STORAGE_LABEL = "same-project helper retained storage";
-const SAME_PROJECT_HELPER_ESCAPE_LABEL = "same-project helper escape";
-const SAME_PROJECT_RETURNED_STRUCTURE_LABEL = "same-project helper return summary";
-const BOUNDED_FINITE_KEY_READ_LABEL = "bounded finite key read";
-const PROMISE_ALL_TRANSPORT_LABEL = "Promise.all transport summary";
-const CALLBACK_TRANSPORT_BOUNDARY_LABEL = "callback transport boundary";
-const OPAQUE_HELPER_MUTATION_BOUNDARY_LABEL = "opaque helper mutation boundary";
-const OPAQUE_HELPER_TRANSPORT_BOUNDARY_LABEL = "opaque helper transport boundary";
-const ARRAY_AT_BOUNDARY_LABEL = "array .at boundary";
-const COMPUTED_KEY_BOUNDARY_LABEL = "computed key boundary";
-const DYNAMIC_INDEX_BOUNDARY_LABEL = "dynamic index boundary";
-
-const FALLBACK_BOUNDARY_LABELS: Record<AnalysisCapabilityId, string> = {
-  "finite-keyed-access": "finite keyed access summary fallback",
-  "returned-structure-transport": "returned transport summary fallback",
-  "helper-transport": "helper transport summary fallback",
-  "library-public-surface-aliasing": "public surface aliasing fallback",
-};
-
 function hasSameProjectTransportSummary(artifacts: AnalysisArtifacts): boolean {
   let returnSummaries: ReadonlyMap<string, CallableReturnSummary>;
 
   try {
-    returnSummaries = artifacts.getTrackingStageArtifacts(VALUE_LIVENESS_TRACKING_STAGE).returnSummaries.byCallableId;
+    returnSummaries = artifacts.getTrackingStageArtifacts(TRACKING_GRAPH_BUILD_TRACKING_STAGE).returnSummaries.byCallableId;
   } catch {
     return false;
   }
 
   for (const summary of returnSummaries.values()) {
-    if (summary.kind === "structured" || summary.kind === "returned-alias") {
+    if (
+      summary.kind === TRACKING_RETURN_SUMMARY_KIND.structured
+      || summary.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+    ) {
       return true;
     }
   }
@@ -69,24 +70,24 @@ function getCapabilityDetailHintLabel(
   }
 
   switch (capabilityId) {
-    case "helper-transport":
-      if (detailHint.startsWith(SAME_PROJECT_HELPER_TRANSPORT_LABEL)) {
-        return SAME_PROJECT_HELPER_TRANSPORT_LABEL;
+    case ANALYSIS_CAPABILITY_ID.helperTransport:
+      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT)) {
+        return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT;
       }
-      if (detailHint.startsWith(SAME_PROJECT_HELPER_RETAINED_STORAGE_LABEL)) {
-        return SAME_PROJECT_HELPER_RETAINED_STORAGE_LABEL;
+      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE)) {
+        return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE;
       }
-      if (detailHint.startsWith(SAME_PROJECT_HELPER_ESCAPE_LABEL)) {
-        return SAME_PROJECT_HELPER_ESCAPE_LABEL;
+      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE)) {
+        return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE;
       }
       return undefined;
-    case "finite-keyed-access":
-      return detailHint.startsWith(BOUNDED_FINITE_KEY_READ_LABEL)
-        ? BOUNDED_FINITE_KEY_READ_LABEL
+    case ANALYSIS_CAPABILITY_ID.finiteKeyedAccess:
+      return detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ)
+        ? ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ
         : undefined;
-    case "returned-structure-transport":
+    case ANALYSIS_CAPABILITY_ID.returnedStructureTransport:
       return detailHint.startsWith("Promise.all()")
-        ? PROMISE_ALL_TRANSPORT_LABEL
+        ? ANALYSIS_CAPABILITY_DETAIL_LABEL_PROMISE_ALL_TRANSPORT
         : undefined;
     default:
       return undefined;
@@ -102,25 +103,25 @@ function getCapabilityBoundaryCategoryLabel(
   }
 
   switch (capabilityId) {
-    case "helper-transport":
+    case ANALYSIS_CAPABILITY_ID.helperTransport:
       switch (category) {
-        case "array-callback-escape":
-          return CALLBACK_TRANSPORT_BOUNDARY_LABEL;
-        case "array-opaque-mutation":
-          return OPAQUE_HELPER_MUTATION_BOUNDARY_LABEL;
-        case "opaque-object-call":
-          return OPAQUE_HELPER_TRANSPORT_BOUNDARY_LABEL;
+        case SKIP_CATEGORY.arrayCallbackEscape:
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_CALLBACK_TRANSPORT_BOUNDARY;
+        case SKIP_CATEGORY.arrayOpaqueMutation:
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_MUTATION_BOUNDARY;
+        case SKIP_CATEGORY.opaqueObjectCall:
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_TRANSPORT_BOUNDARY;
         default:
           return undefined;
       }
-    case "finite-keyed-access":
+    case ANALYSIS_CAPABILITY_ID.finiteKeyedAccess:
       switch (category) {
-        case "array-at-call":
-          return ARRAY_AT_BOUNDARY_LABEL;
-        case "computed-property-access":
-          return COMPUTED_KEY_BOUNDARY_LABEL;
-        case "dynamic-array-index":
-          return DYNAMIC_INDEX_BOUNDARY_LABEL;
+        case SKIP_CATEGORY.arrayAtCall:
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_ARRAY_AT_BOUNDARY;
+        case SKIP_CATEGORY.computedPropertyAccess:
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_COMPUTED_KEY_BOUNDARY;
+        case SKIP_CATEGORY.dynamicArrayIndex:
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_DYNAMIC_INDEX_BOUNDARY;
         default:
           return undefined;
       }
@@ -139,8 +140,8 @@ export function getCapabilityObligationDetailLabel(
     return detailLabel;
   }
 
-  if (capabilityId === "returned-structure-transport" && registry.hasSameProjectReturnedStructureTransport) {
-    return SAME_PROJECT_RETURNED_STRUCTURE_LABEL;
+  if (capabilityId === ANALYSIS_CAPABILITY_ID.returnedStructureTransport && registry.hasSameProjectReturnedStructureTransport) {
+    return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_RETURNED_STRUCTURE;
   }
 
   return undefined;
@@ -166,5 +167,5 @@ export function getCapabilityBoundaryDetailLabel(
 }
 
 export function getCapabilityFallbackBoundaryLabel(capabilityId: AnalysisCapabilityId): string {
-  return FALLBACK_BOUNDARY_LABELS[capabilityId];
+  return ANALYSIS_CAPABILITY_FALLBACK_BOUNDARY_LABEL[capabilityId];
 }

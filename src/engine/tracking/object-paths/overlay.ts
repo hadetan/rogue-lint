@@ -1,26 +1,9 @@
-import type {
-  CollectionBoundaryRecord,
-  EscapedPathRecord,
-  InvalidatedPathRecord,
-  PathSegment,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
-import {
-  isSerializedPathWithin,
-  serializePath,
-} from "../../../shared/path-utils.js";
+import type { CollectionBoundaryRecord, EscapedPathRecord, InvalidatedPathRecord, PathSegment, SkipCategory, TrackedObject } from "../../../types.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
+import { isSerializedPathWithin, serializePath } from "../../../shared/path-utils.js";
 import { extendTrackedBinding } from "../bindings.js";
-import type {
-  ArrayProjectionBinding,
-  ResolvedTrackedObjectAccess,
-  TrackedObjectBinding,
-} from "../model.js";
-import {
-  getCollectionInfo,
-  hasTrackedChildren,
-  resolveExactPathAlias,
-} from "../state.js";
+import type { ArrayProjectionBinding, ResolvedTrackedObjectAccess, TrackedObjectBinding } from "../model.js";
+import { getCollectionInfo, hasTrackedChildren, resolveExactPathAlias } from "../state.js";
 
 type PathSetByObjectId = Map<string, Set<string>>;
 type PathRecordMapByObjectId<TRecord> = Map<string, Map<string, TRecord>>;
@@ -34,6 +17,45 @@ export interface ObjectPathOverlayState {
   invalidatedCollectionsByObjectId: PathRecordMapByObjectId<InvalidationRecord>;
   escapedPathsByObjectId: PathRecordMapByObjectId<EscapedPathRecord>;
   boundaryRecordsByObjectId: PathRecordMapByObjectId<CollectionBoundaryRecord>;
+}
+
+export function createObjectPathOverlayState(
+  trackedObjects: Iterable<TrackedObject> = [],
+): ObjectPathOverlayState {
+  const overlayState: ObjectPathOverlayState = {
+    readsByObjectId: new Map(),
+    writesByObjectId: new Map(),
+    observedSubtreesByObjectId: new Map(),
+    observedAliasesByObjectId: new Map(),
+    invalidatedCollectionsByObjectId: new Map(),
+    escapedPathsByObjectId: new Map(),
+    boundaryRecordsByObjectId: new Map(),
+  };
+
+  for (const trackedObject of trackedObjects) {
+    if (trackedObject.collectionBoundaries.size > 0) {
+      const boundaries = ensurePathRecordMap(overlayState.boundaryRecordsByObjectId, trackedObject.id);
+      for (const [recordId, boundary] of trackedObject.collectionBoundaries.entries()) {
+        boundaries.set(recordId, boundary);
+      }
+    }
+
+    if (trackedObject.invalidatedCollectionPaths.size > 0) {
+      const invalidations = ensurePathRecordMap(overlayState.invalidatedCollectionsByObjectId, trackedObject.id);
+      for (const joinedPath of trackedObject.invalidatedCollectionPaths) {
+        invalidations.set(joinedPath, trackedObject.invalidatedPaths.get(joinedPath) ?? null);
+      }
+    }
+
+    if (trackedObject.escapedPaths.size > 0) {
+      const escapes = ensurePathRecordMap(overlayState.escapedPathsByObjectId, trackedObject.id);
+      for (const [joinedPath, escaped] of trackedObject.escapedPaths.entries()) {
+        escapes.set(joinedPath, escaped);
+      }
+    }
+  }
+
+  return overlayState;
 }
 
 function ensurePathSet(pathsByObjectId: PathSetByObjectId, objectId: string): Set<string> {
@@ -149,17 +171,35 @@ function markObservedPath(
   markObjectPathRead(overlayState, trackedObject, segments);
 }
 
-interface ProjectionAliasHop {
-  receiverTrackedObject: TrackedObject;
-  receiverPath: PathSegment[];
-}
-
 function markProjectionAliasHopObserved(
   overlayState: ObjectPathOverlayState,
-  hop: ProjectionAliasHop,
+  receiverTrackedObject: TrackedObject,
+  receiverPath: PathSegment[],
+  consumedSuffixLength: number,
+  suffix: PathSegment[],
+  mode: "self" | "subtree" | "children" | "write",
+  trackedObjectsById: Map<string, TrackedObject>,
 ): void {
-  markSerializedObservedAlias(overlayState, hop.receiverTrackedObject.id, serializePath(hop.receiverPath));
-  markObjectPathRead(overlayState, hop.receiverTrackedObject, hop.receiverPath);
+  const fullReceiverPath = [...receiverPath, ...suffix.slice(consumedSuffixLength)];
+
+  markSerializedObservedAlias(overlayState, receiverTrackedObject.id, serializePath(fullReceiverPath));
+
+  if (mode === "subtree") {
+    markObjectPathObservedSubtree(overlayState, receiverTrackedObject, fullReceiverPath, trackedObjectsById);
+    return;
+  }
+
+  if (mode === "children") {
+    markObjectPathObservedChildPaths(overlayState, receiverTrackedObject, fullReceiverPath, trackedObjectsById);
+    return;
+  }
+
+  if (mode === "write") {
+    markObjectPathWrite(overlayState, receiverTrackedObject, fullReceiverPath);
+    return;
+  }
+
+  markObjectPathRead(overlayState, receiverTrackedObject, fullReceiverPath);
 }
 
 function applyResolvedProjectionTargets(
@@ -174,30 +214,15 @@ function applyResolvedProjectionTargets(
       trackedObject: projection.trackedObject,
       prefix: elementPath,
     };
-    const aliasHops: ProjectionAliasHop[] = [];
 
     const rootAlias = resolveExactPathAlias(currentBinding, [], trackedObjectsById);
     if (rootAlias.viaAliasObjectId && rootAlias.viaAliasPath) {
-      const receiverTrackedObject = trackedObjectsById.get(rootAlias.viaAliasObjectId);
-      if (receiverTrackedObject) {
-        aliasHops.push({
-          receiverTrackedObject,
-          receiverPath: rootAlias.viaAliasPath,
-        });
-      }
       currentBinding = rootAlias.binding;
     }
 
     for (const segment of suffix) {
       const aliased = resolveExactPathAlias(currentBinding, [segment], trackedObjectsById);
       if (aliased.viaAliasObjectId && aliased.viaAliasPath) {
-        const receiverTrackedObject = trackedObjectsById.get(aliased.viaAliasObjectId);
-        if (receiverTrackedObject) {
-          aliasHops.push({
-            receiverTrackedObject,
-            receiverPath: aliased.viaAliasPath,
-          });
-        }
         currentBinding = aliased.binding;
         continue;
       }
@@ -209,8 +234,47 @@ function applyResolvedProjectionTargets(
       continue;
     }
 
-    for (const aliasHop of aliasHops) {
-      markProjectionAliasHopObserved(overlayState, aliasHop);
+    let replayBinding: TrackedObjectBinding = {
+      trackedObject: projection.trackedObject,
+      prefix: elementPath,
+    };
+    const replayRootAlias = resolveExactPathAlias(replayBinding, [], trackedObjectsById);
+    if (replayRootAlias.viaAliasObjectId && replayRootAlias.viaAliasPath) {
+      const receiverTrackedObject = trackedObjectsById.get(replayRootAlias.viaAliasObjectId);
+      if (receiverTrackedObject) {
+        markProjectionAliasHopObserved(
+          overlayState,
+          receiverTrackedObject,
+          replayRootAlias.viaAliasPath,
+          0,
+          suffix,
+          mode,
+          trackedObjectsById,
+        );
+      }
+      replayBinding = replayRootAlias.binding;
+    }
+
+    for (const [index, segment] of suffix.entries()) {
+      const replayAliased = resolveExactPathAlias(replayBinding, [segment], trackedObjectsById);
+      if (replayAliased.viaAliasObjectId && replayAliased.viaAliasPath) {
+        const receiverTrackedObject = trackedObjectsById.get(replayAliased.viaAliasObjectId);
+        if (receiverTrackedObject) {
+          markProjectionAliasHopObserved(
+            overlayState,
+            receiverTrackedObject,
+            replayAliased.viaAliasPath,
+            index + 1,
+            suffix,
+            mode,
+            trackedObjectsById,
+          );
+        }
+        replayBinding = replayAliased.binding;
+        continue;
+      }
+
+      replayBinding = extendTrackedBinding(replayBinding, [segment]);
     }
 
     if (mode === "subtree") {
@@ -504,7 +568,7 @@ export function markObjectPathEscaped(
   reason: string,
 ): void {
   ensurePathRecordMap(overlayState.escapedPathsByObjectId, trackedObject.id).set(serializePath(segments), { category, reason });
-  if (!(category === "opaque-object-call" && segments.length === 0)) {
+  if (!(category === SKIP_CATEGORY.opaqueObjectCall && segments.length === 0)) {
     clearTrackedObjectExactAliasesWithin(trackedObject, segments);
   }
 }

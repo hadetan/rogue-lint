@@ -1,29 +1,17 @@
 import type ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SuppressionContext,
-  TrackedObject,
-} from "../../../types.js";
-import type { AnalysisState } from "../../analysis-state.js";
+import type { PathSegment, ProjectContext, SuppressionContext, TrackedObject } from "../../../types.js";
 import type { AnalysisArtifacts } from "../../analysis-artifacts.js";
-import { OBJECT_PATHS_TRACKING_STAGE } from "../contracts.js";
+import type { AnalysisState } from "../../analysis-state.js";
+import { OBJECT_PATHS_TRACKING_STAGE, type TrackingSharedFactsPlane } from "../contracts.js";
+import type { ArrayProjectionBinding, CallableReturnSummary, HelperParameterSummary, TrackedObjectBinding } from "../model.js";
+import { createObjectPathOverlayState, type ObjectPathOverlayState } from "./overlay.js";
+import { computePubliclyReachableCallableIds } from "./returned-structures.js";
 import type {
-  ArrayProjectionBinding,
-  CallableReturnSummary,
-  HelperParameterSummary,
-  TrackedObjectBinding,
-} from "../model.js";
-import type { ObjectPathOverlayState } from "./overlay.js";
-import type {
-  FiniteLookupCandidate,
-  HelperExactAppendPlan,
-  HelperProjectedUsagePlan,
-  HigherOrderCallableReturnSummary,
-  ObjectPathSourceFileContext,
-  ObjectPathStageContext,
+  BoundedHelperExecutionSnapshot, FiniteLookupCandidate, HelperExactAppendPlan, HelperProjectedUsagePlan,
+  HigherOrderCallableReturnSummary, ObjectPathSourceFileContext, ObjectPathStageContext,
 } from "./types.js";
+import { TRACKING_RETURN_SUMMARY_KIND } from "../vocabulary.js";
 
 function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObject {
   return {
@@ -64,32 +52,12 @@ function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObjec
         arrayLength: state.arrayLength,
       },
     ])),
-    collectionBoundaries: new Map([...base.collectionBoundaries.entries()].map(([id, boundary]) => [
-      id,
-      {
-        entity: boundary.entity,
-        path: [...boundary.path],
-        category: boundary.category,
-        reason: boundary.reason,
-      },
-    ])),
-    invalidatedCollectionPaths: new Set(base.invalidatedCollectionPaths),
-    invalidatedPaths: new Map([...base.invalidatedPaths.entries()].map(([joinedPath, invalidated]) => [
-      joinedPath,
-      {
-        reason: invalidated.reason,
-        findingKind: invalidated.findingKind,
-      },
-    ])),
+    collectionBoundaries: new Map(),
+    invalidatedCollectionPaths: new Set(),
+    invalidatedPaths: new Map(),
     placeStates: new Map(base.placeStates),
-    observedSubtrees: new Set(base.observedSubtrees),
-    escapedPaths: new Map([...base.escapedPaths.entries()].map(([joinedPath, escaped]) => [
-      joinedPath,
-      {
-        category: escaped.category,
-        reason: escaped.reason,
-      },
-    ])),
+    observedSubtrees: new Set(),
+    escapedPaths: new Map(),
     exactPathAliases: new Map([...base.exactPathAliases.entries()].map(([joinedPath, alias]) => [
       joinedPath,
       {
@@ -104,8 +72,8 @@ function cloneTrackedObjectForObjectPathStage(base: TrackedObject): TrackedObjec
       path: [...valueFate.path],
       relatedPath: valueFate.relatedPath ? [...valueFate.relatedPath] : undefined,
     })),
-    reads: new Set(base.reads),
-    writes: new Set(base.writes),
+    reads: new Set(),
+    writes: new Set(),
   };
 }
 
@@ -123,7 +91,10 @@ function cloneCallableReturnSummaryForObjectPathStage(
   summary: CallableReturnSummary,
   trackedObjectsById: ReadonlyMap<string, TrackedObject>,
 ): CallableReturnSummary {
-  if (summary.kind === "structured" || summary.kind === "returned-alias") {
+  if (
+    summary.kind === TRACKING_RETURN_SUMMARY_KIND.structured
+    || summary.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+  ) {
     return {
       kind: summary.kind,
       binding: cloneTrackedObjectBindingForObjectPathStage(summary.binding, trackedObjectsById),
@@ -133,50 +104,71 @@ function cloneCallableReturnSummaryForObjectPathStage(
   return summary;
 }
 
+interface ObjectPathTrackingInput {
+  sharedFacts: Pick<TrackingSharedFactsPlane, "bindings" | "returnSummaries" | "aliases" | "boundaries">;
+}
+
+function createObjectPathTrackingInput(artifacts: AnalysisArtifacts): ObjectPathTrackingInput {
+  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts(OBJECT_PATHS_TRACKING_STAGE);
+
+  const trackingInput: ObjectPathTrackingInput = {
+    sharedFacts: {
+      bindings: trackingStageArtifacts.bindings,
+      returnSummaries: trackingStageArtifacts.returnSummaries,
+      aliases: trackingStageArtifacts.aliases,
+      boundaries: trackingStageArtifacts.boundaries,
+    },
+  };
+
+  void trackingInput.sharedFacts.boundaries;
+  return trackingInput;
+}
+
 /**
  * Clones the shared tracking snapshot into the mutable state used by the object-path stage.
  */
 export function createObjectPathStageContext(
   project: ProjectContext,
   reachableFiles: Set<string>,
-  state: AnalysisState,
+  _state: AnalysisState,
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): ObjectPathStageContext {
-  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts(OBJECT_PATHS_TRACKING_STAGE);
-  const overlayState: ObjectPathOverlayState = {
-    readsByObjectId: new Map(),
-    writesByObjectId: new Map(),
-    observedSubtreesByObjectId: new Map(),
-    observedAliasesByObjectId: new Map(),
-    invalidatedCollectionsByObjectId: new Map(),
-    escapedPathsByObjectId: new Map(),
-    boundaryRecordsByObjectId: new Map(),
-  };
+  const trackingInput = createObjectPathTrackingInput(artifacts);
+  const overlayState: ObjectPathOverlayState = createObjectPathOverlayState(
+    trackingInput.sharedFacts.aliases.trackedObjectsById.values(),
+  );
   const trackedObjectRegistry = new Map(
-    [...trackingStageArtifacts.aliases.trackedObjectsById.entries()].map(([id, trackedObject]) => [
+    [...trackingInput.sharedFacts.aliases.trackedObjectsById.entries()].map(([id, trackedObject]) => [
       id,
       cloneTrackedObjectForObjectPathStage(trackedObject),
     ]),
   );
   const trackedBindingRegistry = new Map(
-    [...trackingStageArtifacts.bindings.bySymbolId.entries()].map(([symbolId, binding]) => [
+    [...trackingInput.sharedFacts.bindings.bySymbolId.entries()].map(([symbolId, binding]) => [
       symbolId,
       cloneTrackedObjectBindingForObjectPathStage(binding, trackedObjectRegistry),
     ]),
   );
   const functionReturnSummaries = new Map(
-    [...trackingStageArtifacts.returnSummaries.byCallableId.entries()].map(([callableId, summary]) => [
+    [...trackingInput.sharedFacts.returnSummaries.byCallableId.entries()].map(([callableId, summary]) => [
       callableId,
       cloneCallableReturnSummaryForObjectPathStage(summary, trackedObjectRegistry),
     ]),
   );
+  const publiclyReachableCallableIds = computePubliclyReachableCallableIds({
+    publicSurfaceIds: artifacts.publicSurfaceIds,
+    publicCallableIds: artifacts.publicCallableIds,
+    trackedBySymbolId: trackedBindingRegistry,
+    functionReturnSummaries,
+    trackedObjectsById: trackedObjectRegistry,
+  });
 
   return {
     project,
     reachableFiles,
-    publicCallableIds: artifacts.publicCallableIds,
-    state,
+    publicSurfaceIds: artifacts.publicSurfaceIds,
+    publiclyReachableCallableIds,
     suppressionContext,
     functionReturnSummaries,
     overlayState,
@@ -197,6 +189,7 @@ export function createObjectPathStageContext(
         handledSpreadAppendStarts: new Set<number>(),
         parameterMeaningfulUse: new Map<string, boolean | null>(),
         parameterSummaryCache: new Map<string, HelperParameterSummary | null>(),
+        helperExecutionSnapshotCache: new Map<string, BoundedHelperExecutionSnapshot | null>(),
         helperExactAppendPlanCache: new Map<string, HelperExactAppendPlan[] | null>(),
         helperProjectedUsagePlanCache: new Map<string, HelperProjectedUsagePlan[] | null>(),
         higherOrderCallableReturnSummaryCache: new Map<string, HigherOrderCallableReturnSummary | null>(),

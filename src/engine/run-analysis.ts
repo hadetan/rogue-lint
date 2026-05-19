@@ -3,23 +3,33 @@ import { loadProject } from "../project.js";
 import { buildSuppressionContext } from "../suppressions.js";
 import type { AnalysisOptions, AnalysisResult, FindingKind } from "../types.js";
 import { getVersion } from "../shared/general-utils.js";
-import { appendProviderObligationDiagnostics, createAnalysisState } from "./analysis-state.js";
+import { createAnalysisRunState, getOrCreateAnalysisRunResultMetadata } from "./analysis-run-state.js";
+import { appendProviderObligationDiagnostics, createAnalysisState, registerCapabilityFact } from "./analysis-state.js";
 import { createAnalysisArtifacts } from "./analysis-artifacts.js";
 import { analyzeCompilerSafetyDiagnostics } from "./analyzers/compiler-safety.js";
-import { analyzeObjectPaths } from "./analyzers/object-paths.js";
 import { analyzeUnusedFiles } from "./analyzers/unused-files.js";
 import { analyzeSymbolLiveness } from "./analyzers/symbol-liveness.js";
-import { analyzeValueLiveness } from "./analyzers/value-liveness.js";
 import { collectPublicSurface } from "./analyzers/support.js";
 import { attachAnalysisCapabilityLedger, collectAnalysisCapabilityLedger } from "./capabilities/providers.js";
 import { assembleProviderBackedReportSurface } from "./capabilities/report-assembly.js";
+import { createEmptyAnalysisCapabilityLedger } from "./capabilities/types.js";
 import { validateFindingKindOwners } from "./finding-kind-owners.js";
-import { appendTrackingAnalysisDiagnostics } from "./tracking/diagnostics.js";
+import { appendTrackingAnalysisDiagnostics, toAnalysisDiagnostic } from "./tracking/diagnostics.js";
+import { OBJECT_PATHS_TRACKING_STAGE, TRACKING_GRAPH_BUILD_TRACKING_STAGE, VALUE_LIVENESS_TRACKING_STAGE, getTrackingDiagnosticFromError, type TrackingStage } from "./tracking/contracts.js";
+import type { TrackingConvergenceOptions } from "./tracking/convergence.js";
+import { analyzeObjectPaths } from "./tracking/object-paths.js";
+import { attachTrackingRuntimeSummary } from "./tracking/upgrade-safety.js";
+import { analyzeValueLiveness } from "./tracking/value-liveness.js";
 
 interface AnalysisStage {
   enabled: boolean;
   run: () => void;
+  trackingStage?: TrackingStage;
 }
+
+const DEFAULT_TRACKING_CONVERGENCE_OPTIONS: TrackingConvergenceOptions = {
+  maxPassElapsedMs: 5000,
+};
 
 /**
  * Coordinates project loading, reachability discovery, stage execution, and final result assembly.
@@ -28,16 +38,25 @@ interface AnalysisStage {
  * execution order, shared caches, and final deduplication of findings, kept audits, skips, and diagnostics.
  */
 export async function analyzeProject(options: AnalysisOptions): Promise<AnalysisResult> {
+  void registerCapabilityFact;
+  void attachAnalysisCapabilityLedger;
   validateFindingKindOwners();
-
   const project = loadProject(options);
-  const state = createAnalysisState();
+  const runState = createAnalysisRunState();
+  const state = createAnalysisState(runState);
   const suppressionContext = buildSuppressionContext(project);
   const graph = buildModuleGraph(project);
   const entrypointDiscovery = discoverEntrypoints(project);
   const reachableFiles = computeReachableFiles(entrypointDiscovery.entrypoints, graph);
   const publicSurface = collectPublicSurface(project, entrypointDiscovery.publicSurfaceEntrypoints);
-  const artifacts = createAnalysisArtifacts(project, reachableFiles, publicSurface.ids, publicSurface.callableIds);
+  const artifacts = createAnalysisArtifacts(
+    project,
+    reachableFiles,
+    publicSurface.ids,
+    publicSurface.callableIds,
+    DEFAULT_TRACKING_CONVERGENCE_OPTIONS,
+    runState,
+  );
 
   state.diagnostics.push(...entrypointDiscovery.diagnostics);
   state.diagnostics.push(...graph.unresolved);
@@ -57,24 +76,55 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
     },
     {
       enabled: true,
+      run: () => {
+        artifacts.getTrackingStageArtifacts(TRACKING_GRAPH_BUILD_TRACKING_STAGE);
+      },
+    },
+    {
+      enabled: true,
       run: () => analyzeValueLiveness(project, reachableFiles, state, suppressionContext, artifacts),
+      trackingStage: VALUE_LIVENESS_TRACKING_STAGE,
     },
     {
       enabled: true,
       run: () => analyzeObjectPaths(project, reachableFiles, state, suppressionContext, artifacts),
+      trackingStage: OBJECT_PATHS_TRACKING_STAGE,
     },
   ];
 
+  let trackingFailure = false;
+
   for (const stage of stages) {
     if (stage.enabled) {
-      stage.run();
+      const startedAt = Date.now();
+      try {
+        stage.run();
+      } catch (error) {
+        const trackingDiagnostic = getTrackingDiagnosticFromError(error);
+        if (!trackingDiagnostic) {
+          throw error;
+        }
+
+        state.diagnostics.push(toAnalysisDiagnostic(trackingDiagnostic));
+        trackingFailure = true;
+        break;
+      } finally {
+        if (stage.trackingStage && runState.trackingArtifacts) {
+          runState.trackingArtifacts.recordStageTiming(stage.trackingStage, Date.now() - startedAt);
+        }
+      }
     }
   }
 
-  appendTrackingAnalysisDiagnostics(state, artifacts);
-  appendProviderObligationDiagnostics(state);
+  if (!trackingFailure) {
+    appendTrackingAnalysisDiagnostics(state, artifacts);
+    appendProviderObligationDiagnostics(state);
+  }
 
-  const capabilityLedger = collectAnalysisCapabilityLedger(project, state, artifacts);
+  const capabilityLedger = trackingFailure
+    ? createEmptyAnalysisCapabilityLedger()
+    : collectAnalysisCapabilityLedger(project, state, artifacts);
+  runState.capabilityLedger = capabilityLedger;
   const includeKinds = project.config.value.includeKinds;
   const { findings, kept, skipped, diagnostics } = assembleProviderBackedReportSurface(
     state,
@@ -111,7 +161,13 @@ export async function analyzeProject(options: AnalysisOptions): Promise<Analysis
     diagnostics,
   };
 
-  attachAnalysisCapabilityLedger(result, capabilityLedger);
+  const trackingRuntimeSummary = trackingFailure ? undefined : artifacts.getTrackingRunArtifacts().runtimeSummary;
+  runState.trackingRuntimeSummary = trackingRuntimeSummary;
+
+  getOrCreateAnalysisRunResultMetadata(result).capabilityLedger = capabilityLedger;
+  if (trackingRuntimeSummary) {
+    attachTrackingRuntimeSummary(result, trackingRuntimeSummary);
+  }
 
   return result;
 }

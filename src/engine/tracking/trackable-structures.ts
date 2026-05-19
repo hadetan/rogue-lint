@@ -95,8 +95,8 @@ function isTrackableObjectValue(node: ts.Expression): boolean {
       && isTrackableObjectValue(unwrapped.whenFalse);
   }
 
-  if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
-    return isTrackableObjectStructure(node);
+  if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
+    return isTrackableObjectStructure(unwrapped);
   }
 
   return isStructurallySimpleExpression(unwrapped);
@@ -106,11 +106,13 @@ function isTrackableObjectValue(node: ts.Expression): boolean {
  * Reports whether an expression is eligible for returned-structure exact tracking.
  */
 function isTrackableReturnObjectValue(node: ts.Expression): boolean {
-  if (ts.isObjectLiteralExpression(node) || ts.isArrayLiteralExpression(node)) {
-    return isTrackableReturnObjectStructure(node);
+  const unwrapped = unwrapExpression(node);
+
+  if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
+    return isTrackableReturnObjectStructure(unwrapped);
   }
 
-  return isTrackableObjectValue(node);
+  return isTrackableObjectValue(unwrapped);
 }
 
 /**
@@ -156,7 +158,7 @@ export function isTrackableReturnObjectStructure(node: ts.ObjectLiteralExpressio
 /**
  * Reports whether a local object or array literal can remain exact in the tracked graph.
  */
-export function isTrackableObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression): boolean {
+function isTrackableObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression): boolean {
   if (ts.isObjectLiteralExpression(node)) {
     return node.properties.every((property) => {
       if (ts.isSpreadAssignment(property)) {

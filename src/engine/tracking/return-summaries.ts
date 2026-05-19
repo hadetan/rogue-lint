@@ -1,35 +1,15 @@
 import ts from "typescript";
 
-import type {
-  EntityKind,
-  ProjectContext,
-  TrackedObject,
-} from "../../types.js";
-import {
-  extendTrackedBinding,
-  getCanonicalSymbolKey,
-  sameTrackedBinding,
-} from "./bindings.js";
-import {
-  resolveAnalyzableCallableBinding,
-  resolveTrackedObjectAccess,
-} from "./access.js";
-import {
-  getAnalyzableCallableBindingFromDeclaration,
-  getAnalyzableCallableName,
-  getCallableReturnBinding,
-} from "./callables.js";
-import type {
-  AnalyzableCallableBinding,
-  CallableReturnSummary,
-  TrackedObjectBinding,
-} from "./model.js";
+import type { EntityKind, ProjectContext, TrackedObject } from "../../types.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
+import { extendTrackedBinding, getCanonicalSymbolKey, sameTrackedBinding } from "./bindings.js";
+import { getCallSiteStructuredReturnBinding, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "./access.js";
+import { cloneCallableReturnSummary, getAnalyzableCallableBindingFromDeclaration, getAnalyzableCallableName, getCallableReturnBinding, joinCallableReturnSummaries } from "./callables.js";
+import type { AnalyzableCallableBinding, CallableReturnSummary, TrackedObjectBinding } from "./model.js";
 import { unwrapExpression } from "./syntax.js";
-import {
-  getTrackableStructuredLiteralExpression,
-  isTrackablePureExpression,
-  isTrackableReturnObjectStructure,
-} from "./trackable-structures.js";
+import { TRACKING_RETURN_SUMMARY_KIND } from "./vocabulary.js";
+import { TRACKING_COLLECTION_KIND } from "./vocabulary.js";
+import { getTrackableStructuredLiteralExpression, isTrackablePureExpression, isTrackableReturnObjectStructure } from "./trackable-structures.js";
 
 interface ReturnSummaryCollectorOptions {
   project: ProjectContext;
@@ -44,6 +24,19 @@ interface ReturnSummaryCollectorOptions {
     kind: EntityKind,
     anchor: ts.Node,
   ) => TrackedObjectBinding;
+}
+
+let trackingReturnSummaryHeartbeat: (() => void) | undefined;
+
+export function withTrackingReturnSummaryHeartbeat<T>(heartbeat: (() => void) | undefined, work: () => T): T {
+  const previousHeartbeat = trackingReturnSummaryHeartbeat;
+  trackingReturnSummaryHeartbeat = heartbeat;
+
+  try {
+    return work();
+  } finally {
+    trackingReturnSummaryHeartbeat = previousHeartbeat;
+  }
 }
 
 function getTrackableStructuredLiteral(
@@ -84,7 +77,9 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     callable: AnalyzableCallableBinding,
     literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
   ): TrackedObjectBinding => {
-    const returnKind = ts.isObjectLiteralExpression(literal) ? "object" : "array";
+    const returnKind = ts.isObjectLiteralExpression(literal)
+      ? TRACKING_COLLECTION_KIND.object
+      : TRACKING_COLLECTION_KIND.array;
     return createTrackedBindingForLiteral(
       `${callable.symbolKey}:return:${returnKind}`,
       literal.getSourceFile(),
@@ -187,14 +182,190 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     return getTrackableStructuredLiteral(declaration.initializer, { allowArraySpreadBoundary: true });
   };
 
-  const summarizeReturnExpression = (
+  const getSameCallableLocalInitializer = (
+    callable: AnalyzableCallableBinding,
+    expression: ts.Expression,
+  ): ts.Expression | undefined => {
+    const unwrapped = unwrapExpression(expression);
+    if (!ts.isIdentifier(unwrapped)) {
+      return undefined;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(unwrapped);
+    const declaration = symbol?.declarations?.find(ts.isVariableDeclaration);
+    if (!declaration?.initializer) {
+      return undefined;
+    }
+
+    const enclosingFunction = ts.findAncestor(
+      declaration,
+      (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+    );
+    if (enclosingFunction !== callable.declaration) {
+      return undefined;
+    }
+
+    return declaration.initializer;
+  };
+
+  const getSameCallableLocalStructuredAliasSummary = (
     callable: AnalyzableCallableBinding,
     expression: ts.Expression,
   ): CallableReturnSummary | undefined => {
+    const unwrapped = unwrapExpression(expression);
+    if (!ts.isIdentifier(unwrapped)) {
+      return undefined;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(unwrapped);
+    const declaration = symbol?.declarations?.find(ts.isVariableDeclaration);
+    if (!symbol || !declaration?.initializer || !ts.isIdentifier(declaration.name)) {
+      return undefined;
+    }
+
+    const enclosingFunction = ts.findAncestor(
+      declaration,
+      (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+    );
+    if (enclosingFunction !== callable.declaration) {
+      return undefined;
+    }
+
+    const literal = getTrackableStructuredLiteral(declaration.initializer, { allowArraySpreadBoundary: true });
+    if (!literal) {
+      return undefined;
+    }
+
+    return {
+      kind: "returned-alias",
+      binding: createTrackedBindingForLiteral(
+        getCanonicalSymbolKey(project, symbol),
+        declaration.getSourceFile(),
+        literal,
+        declaration.name.text,
+        ENTITY_KIND.local,
+        declaration.name,
+      ),
+    };
+  };
+
+  const isSameCallableLocalIdentifier = (
+    callable: AnalyzableCallableBinding,
+    expression: ts.Expression,
+  ): boolean => {
+    const unwrapped = unwrapExpression(expression);
+    if (!ts.isIdentifier(unwrapped)) {
+      return false;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(unwrapped);
+    const declaration = symbol?.declarations?.find(
+      ts.isVariableDeclaration,
+    );
+    if (!declaration) {
+      return false;
+    }
+
+    const enclosingFunction = ts.findAncestor(
+      declaration,
+      (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+    );
+    return enclosingFunction === callable.declaration;
+  };
+
+  const mergeReturnSummaries = (
+    current: CallableReturnSummary | undefined,
+    next: CallableReturnSummary,
+  ): CallableReturnSummary | undefined => {
+    return joinCallableReturnSummaries(current, next).summary;
+  };
+
+  const getSpeculativeCallableSummary = (
+    callable: AnalyzableCallableBinding,
+    activeCallableIds: Set<string>,
+    speculativeSummaries: Map<string, CallableReturnSummary>,
+  ): CallableReturnSummary | undefined => {
+    const stabilizedSummary = functionReturnSummaries.get(callable.symbolKey);
+    if (stabilizedSummary && stabilizedSummary.kind !== TRACKING_RETURN_SUMMARY_KIND.opaque) {
+      return cloneCallableReturnSummary(stabilizedSummary);
+    }
+
+    const cachedSummary = speculativeSummaries.get(callable.symbolKey);
+    if (cachedSummary) {
+      return cloneCallableReturnSummary(cachedSummary);
+    }
+
+    if (activeCallableIds.has(callable.symbolKey)) {
+      return undefined;
+    }
+
+    const summary = collectFunctionReturnSummary(callable.declaration, activeCallableIds, speculativeSummaries);
+    if (summary) {
+      speculativeSummaries.set(callable.symbolKey, cloneCallableReturnSummary(summary));
+    }
+
+    return summary ? cloneCallableReturnSummary(summary) : undefined;
+  };
+
+  const summarizeCallbackReturnExpression = (
+    callable: AnalyzableCallableBinding,
+    callback: ts.FunctionExpression | ts.ArrowFunction,
+    activeCallableIds: Set<string>,
+    speculativeSummaries: Map<string, CallableReturnSummary>,
+  ): CallableReturnSummary | undefined => {
+    if (!ts.isBlock(callback.body)) {
+      return summarizeReturnExpression(callable, callback.body, activeCallableIds, speculativeSummaries);
+    }
+
+    let summary: CallableReturnSummary | undefined;
+    let sawReturn = false;
+    let unsupported = false;
+
+    const visit = (node: ts.Node): void => {
+      if (unsupported) {
+        return;
+      }
+
+      if (ts.isFunctionLike(node) && node !== callback) {
+        return;
+      }
+
+      if (ts.isReturnStatement(node) && node.expression) {
+        sawReturn = true;
+        const nextSummary = summarizeReturnExpression(callable, node.expression, activeCallableIds, speculativeSummaries);
+        if (!nextSummary) {
+          unsupported = true;
+          return;
+        }
+
+        const merged = mergeReturnSummaries(summary, nextSummary);
+        if (!merged) {
+          unsupported = true;
+          return;
+        }
+
+        summary = merged;
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(callback.body, visit);
+    return !unsupported && sawReturn && summary ? cloneCallableReturnSummary(summary) : undefined;
+  };
+
+  const summarizeReturnExpression = (
+    callable: AnalyzableCallableBinding,
+    expression: ts.Expression,
+    activeCallableIds: Set<string>,
+    speculativeSummaries: Map<string, CallableReturnSummary>,
+  ): CallableReturnSummary | undefined => {
+    trackingReturnSummaryHeartbeat?.();
+
     if (
       ts.isAwaitExpression(expression)
     ) {
-      return summarizeReturnExpression(callable, expression.expression);
+      return summarizeReturnExpression(callable, expression.expression, activeCallableIds, speculativeSummaries);
     }
 
     if (
@@ -203,7 +374,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       || ts.isAsExpression(expression)
       || ts.isSatisfiesExpression(expression)
     ) {
-      return summarizeReturnExpression(callable, expression.expression);
+      return summarizeReturnExpression(callable, expression.expression, activeCallableIds, speculativeSummaries);
     }
 
     if ((ts.isObjectLiteralExpression(expression) || ts.isArrayLiteralExpression(expression)) && isTrackableReturnObjectStructure(expression)) {
@@ -211,6 +382,41 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     }
 
     if (ts.isCallExpression(expression)) {
+      if (
+        ts.isPropertyAccessExpression(expression.expression)
+        && (expression.expression.name.text === "then" || expression.expression.name.text === "catch")
+      ) {
+        let callbackSummary: CallableReturnSummary | undefined;
+
+        for (const argument of expression.arguments) {
+          const callback = unwrapExpression(argument);
+          if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) {
+            continue;
+          }
+
+          const nextSummary = summarizeCallbackReturnExpression(
+            callable,
+            callback,
+            activeCallableIds,
+            speculativeSummaries,
+          );
+          if (!nextSummary) {
+            return undefined;
+          }
+
+          const merged = mergeReturnSummaries(callbackSummary, nextSummary);
+          if (!merged) {
+            return undefined;
+          }
+
+          callbackSummary = merged;
+        }
+
+        if (callbackSummary) {
+          return callbackSummary;
+        }
+      }
+
       const nestedCallable = resolveAnalyzableCallableBinding(
         project,
         expression.expression,
@@ -218,8 +424,30 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         functionReturnSummaries,
         trackedObjectsById,
       );
-      const summary = nestedCallable ? functionReturnSummaries.get(nestedCallable.symbolKey) : undefined;
-      return summary && summary.kind !== "opaque" ? summary : undefined;
+      if (nestedCallable) {
+        const summary = getSpeculativeCallableSummary(nestedCallable, activeCallableIds, speculativeSummaries);
+        if (summary) {
+          const specializedBinding = getCallSiteStructuredReturnBinding(
+            project,
+            expression,
+            nestedCallable,
+            summary,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          if (specializedBinding) {
+            return {
+              kind: summary.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+                ? "returned-alias"
+                : "structured",
+              binding: specializedBinding,
+            };
+          }
+
+          return summary;
+        }
+      }
     }
 
     if (
@@ -228,15 +456,18 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         || expression.operatorToken.kind === ts.SyntaxKind.BarBarToken
         || expression.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
     ) {
-      const left = summarizeReturnExpression(callable, expression.left);
-      const right = summarizeReturnExpression(callable, expression.right);
+      const left = summarizeReturnExpression(callable, expression.left, activeCallableIds, speculativeSummaries);
+      const right = summarizeReturnExpression(callable, expression.right, activeCallableIds, speculativeSummaries);
       if (!left) {
         return right;
       }
       if (!right) {
         return left;
       }
-      if (left.kind === "value" && right.kind === "value") {
+      if (
+        left.kind === TRACKING_RETURN_SUMMARY_KIND.value
+        && right.kind === TRACKING_RETURN_SUMMARY_KIND.value
+      ) {
         return left;
       }
 
@@ -250,24 +481,25 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       }
 
       if (sameTrackedBinding(leftBinding, rightBinding)) {
-        return left.kind === "structured" && right.kind === "structured"
-          ? left
-          : { kind: "returned-alias", binding: leftBinding };
+        return joinCallableReturnSummaries(left, right).summary;
       }
 
-      return undefined;
+      return { kind: "opaque" };
     }
 
     if (ts.isConditionalExpression(expression)) {
-      const whenTrue = summarizeReturnExpression(callable, expression.whenTrue);
-      const whenFalse = summarizeReturnExpression(callable, expression.whenFalse);
+      const whenTrue = summarizeReturnExpression(callable, expression.whenTrue, activeCallableIds, speculativeSummaries);
+      const whenFalse = summarizeReturnExpression(callable, expression.whenFalse, activeCallableIds, speculativeSummaries);
       if (!whenTrue) {
         return whenFalse;
       }
       if (!whenFalse) {
         return whenTrue;
       }
-      if (whenTrue.kind === "value" && whenFalse.kind === "value") {
+      if (
+        whenTrue.kind === TRACKING_RETURN_SUMMARY_KIND.value
+        && whenFalse.kind === TRACKING_RETURN_SUMMARY_KIND.value
+      ) {
         return whenTrue;
       }
 
@@ -281,12 +513,10 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       }
 
       if (sameTrackedBinding(whenTrueBinding, whenFalseBinding)) {
-        return whenTrue.kind === "structured" && whenFalse.kind === "structured"
-          ? whenTrue
-          : { kind: "returned-alias", binding: whenTrueBinding };
+        return joinCallableReturnSummaries(whenTrue, whenFalse).summary;
       }
 
-      return undefined;
+      return { kind: "opaque" };
     }
 
     const resolved = resolveTrackedObjectAccess(
@@ -303,6 +533,23 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       };
     }
 
+    const localStructuredAliasSummary = getSameCallableLocalStructuredAliasSummary(callable, expression);
+    if (localStructuredAliasSummary) {
+      return localStructuredAliasSummary;
+    }
+
+    const localInitializer = getSameCallableLocalInitializer(callable, expression);
+    if (localInitializer) {
+      const localSummary = summarizeReturnExpression(callable, localInitializer, activeCallableIds, speculativeSummaries);
+      if (localSummary) {
+        return localSummary;
+      }
+    }
+
+    if (isSameCallableLocalIdentifier(callable, expression)) {
+      return undefined;
+    }
+
     if (isTrackablePureExpression(expression)) {
       return { kind: "value" };
     }
@@ -310,18 +557,32 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     return undefined;
   };
 
-  const collectFunctionReturnSummary = (declaration: ts.FunctionLikeDeclaration): CallableReturnSummary | undefined => {
+  const collectFunctionReturnSummary = (
+    declaration: ts.FunctionLikeDeclaration,
+    activeCallableIds = new Set<string>(),
+    speculativeSummaries = new Map<string, CallableReturnSummary>(),
+  ): CallableReturnSummary | undefined => {
+    trackingReturnSummaryHeartbeat?.();
+
     const callable = getAnalyzableCallableBindingFromDeclaration(project, declaration);
     if (!callable?.declaration.body) {
       return undefined;
     }
 
+    if (activeCallableIds.has(callable.symbolKey)) {
+      return undefined;
+    }
+
+    activeCallableIds.add(callable.symbolKey);
+
     let summary: CallableReturnSummary | undefined;
     let sawReturn = false;
-    let unsupported = false;
+    let pending = false;
 
     const visit = (node: ts.Node): void => {
-      if (unsupported) {
+      trackingReturnSummaryHeartbeat?.();
+
+      if (pending) {
         return;
       }
 
@@ -334,51 +595,40 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         const returnedLiteralAlias = resolveTrackableReturnedLiteralAlias(callable, node.expression);
         const nextSummary = returnedLiteralAlias
           ? createStructuredReturnSummary(callable, returnedLiteralAlias)
-          : summarizeReturnExpression(callable, node.expression);
+          : summarizeReturnExpression(callable, node.expression, activeCallableIds, speculativeSummaries);
         if (!nextSummary) {
-          unsupported = true;
+          pending = true;
           return;
         }
 
         if (!summary) {
-          summary = nextSummary;
+          summary = cloneCallableReturnSummary(nextSummary);
           return;
         }
 
-        if (summary.kind === "value" && nextSummary.kind === "value") {
+        const joinedSummary = joinCallableReturnSummaries(summary, nextSummary).summary;
+        if (!joinedSummary) {
+          pending = true;
           return;
         }
 
-        const summaryBinding = getCallableReturnBinding(summary);
-        const nextBinding = getCallableReturnBinding(nextSummary);
-        if (!summaryBinding) {
-          summary = nextSummary;
-          return;
-        }
-        if (!nextBinding) {
-          return;
-        }
-
-        if (!sameTrackedBinding(summaryBinding, nextBinding)) {
-          unsupported = true;
-          return;
-        }
-
-        if (summary.kind !== nextSummary.kind && !(summary.kind === "returned-alias" && nextSummary.kind === "returned-alias")) {
-          summary = { kind: "returned-alias", binding: summaryBinding };
-        }
+        summary = joinedSummary;
       }
 
       ts.forEachChild(node, visit);
     };
 
-    ts.forEachChild(callable.declaration.body, visit);
+    try {
+      ts.forEachChild(callable.declaration.body, visit);
+    } finally {
+      activeCallableIds.delete(callable.symbolKey);
+    }
 
     if (!sawReturn) {
       return undefined;
     }
 
-    return unsupported ? { kind: "opaque" } : summary ?? { kind: "opaque" };
+    return pending ? undefined : summary ? cloneCallableReturnSummary(summary) : undefined;
   };
 
   return {

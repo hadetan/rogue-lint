@@ -10,16 +10,23 @@ import type {
   SkipCategory,
 } from "../types.js";
 import type { AnalysisCapabilityId } from "../engine/capabilities/types.js";
+import type { TrackingSafetyEvaluation } from "../engine/tracking/upgrade-safety.js";
+import { BENCHMARK_TARGET_STATE } from "./vocabulary.js";
+import type {
+  BenchmarkCoverageClass,
+  BenchmarkGapPriorityScope,
+} from "./vocabulary.js";
+
+export type {
+  BenchmarkCoverageClass,
+  BenchmarkGapPriorityScope,
+  BenchmarkTargetState,
+} from "./vocabulary.js";
 
 interface BenchmarkRepositoryRef {
   url: string;
   ref: string;
 }
-
-type BenchmarkCoverageClass =
-  | "application-entrypoint-driven"
-  | "library-public-surface"
-  | "workspace-monorepo-subproject";
 
 interface BenchmarkCountMatcherFields {
   minCount?: number;
@@ -44,6 +51,7 @@ export interface BenchmarkSkipMatcher extends BenchmarkCountMatcherFields {
   kind?: EntityKind;
   file?: string;
   name?: string;
+  owner?: string;
   category?: SkipCategory;
   reasonIncludes?: string;
 }
@@ -117,15 +125,6 @@ export interface AcceptedDebtResult<Matcher, Record> {
   regressions: ExpectationCountViolation<Matcher, Record>[];
 }
 
-export type BenchmarkGapPriorityScope =
-  | "accepted-finding"
-  | "accepted-finding-growth"
-  | "known-skip"
-  | "known-skip-growth"
-  | "unexpected-finding"
-  | "unexpected-diagnostic"
-  | "unexpected-skip";
-
 export interface BenchmarkGapPriorityEntry {
   scope: BenchmarkGapPriorityScope;
   label: string;
@@ -171,17 +170,18 @@ export interface BenchmarkEvaluation {
   };
   gapPriority: BenchmarkGapPriorityEntry[];
   capabilityPriority: BenchmarkCapabilityPriorityEntry[];
+  trackingSafety?: TrackingSafetyEvaluation;
   failed: boolean;
 }
 
 interface MissingCorpusBenchmarkTarget {
-  state: "missing-corpus";
+  state: typeof BENCHMARK_TARGET_STATE.missingCorpus;
   manifest: BenchmarkTargetManifest;
   corpusPath: string;
 }
 
 interface InvalidBenchmarkTarget {
-  state: "invalid-target";
+  state: typeof BENCHMARK_TARGET_STATE.invalidTarget;
   manifest: BenchmarkTargetManifest;
   corpusPath: string;
   targetPath: string;
@@ -190,7 +190,7 @@ interface InvalidBenchmarkTarget {
 }
 
 export interface AnalyzedBenchmarkTarget {
-  state: "analyzed";
+  state: typeof BENCHMARK_TARGET_STATE.analyzed;
   manifest: BenchmarkTargetManifest;
   corpusPath: string;
   targetPath: string;
@@ -218,12 +218,4 @@ export const EMPTY_BENCHMARK_CONFIG: BenchmarkTargetConfig = {};
 
 export function isAnalysisMode(value: unknown): value is AnalysisMode {
   return value === "application" || value === "library";
-}
-
-export function isBenchmarkCoverageClass(value: unknown): value is BenchmarkCoverageClass {
-  return (
-    value === "application-entrypoint-driven"
-    || value === "library-public-surface"
-    || value === "workspace-monorepo-subproject"
-  );
 }

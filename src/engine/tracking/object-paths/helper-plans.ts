@@ -1,41 +1,22 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  TrackedObject,
-} from "../../../types.js";
-import {
-  getSymbolKey,
-  isReadLikeUse,
-} from "../../../compiler/ast-utils.js";
+import type { PathSegment, ProjectContext, TrackedObject } from "../../../types.js";
+import { getSymbolKey, isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
-import {
-  getBindingSymbolKey,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import {
-  extendTrackedBinding,
-  getCanonicalSymbolKey,
-} from "../bindings.js";
-import {
-  getAnalyzableCallableBinding,
-  resolveAnalyzableFunctionDeclaration,
-} from "../callables.js";
-import type {
-  CallableReturnSummary,
-  ExactAppendSlotPlan,
-  HelperParameterSummary,
-  TrackedObjectBinding,
-} from "../model.js";
+import { getBindingSymbolKey, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, getCanonicalSymbolKey } from "../bindings.js";
+import { getAnalyzableCallableBinding, resolveAnalyzableFunctionDeclaration } from "../callables.js";
+import type { CallableReturnSummary, ExactAppendSlotPlan, HelperParameterSummary, TrackedObjectBinding } from "../model.js";
+import type { TrackingAppendMethodName } from "../vocabulary.js";
+import { TRACKING_ARRAY_EXACT_APPEND_METHODS, TRACKING_COLLECTION_KIND, TRACKING_METHOD_NAME } from "../vocabulary.js";
 import { summarizeHelperParameterUse } from "../semantics.js";
 import { unwrapExpression } from "../syntax.js";
 import { getCollectionInfo } from "../state.js";
 import type {
-  HelperExactAppendPlan,
-  HelperProjectedUsagePlan,
-  HigherOrderCallableReturnSummary,
+  BoundedHelperExecutionStep, BoundedHelperExecutionSnapshot, HelperExactAppendPlan,
+  HelperProjectedUsagePlan, HigherOrderCallableReturnSummary
 } from "./types.js";
+import { HigherOrderCallableReturnSummaryState } from "./types.js";
 
 interface HelperPlanningOptions {
   project: ProjectContext;
@@ -44,6 +25,7 @@ interface HelperPlanningOptions {
   trackedObjectsById: Map<string, TrackedObject>;
   parameterMeaningfulUse: Map<string, boolean | null>;
   parameterSummaryCache: Map<string, HelperParameterSummary | null>;
+  helperExecutionSnapshotCache: Map<string, BoundedHelperExecutionSnapshot | null>;
   helperExactAppendPlanCache: Map<string, HelperExactAppendPlan[] | null>;
   helperProjectedUsagePlanCache: Map<string, HelperProjectedUsagePlan[] | null>;
   higherOrderCallableReturnSummaryCache: Map<string, HigherOrderCallableReturnSummary | null>;
@@ -57,15 +39,11 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
   ) => HigherOrderCallableReturnSummary;
+  getBoundedHelperExecutionSnapshot: (
+    callable: ts.FunctionLikeDeclaration,
+    parameter: ts.Identifier,
+  ) => BoundedHelperExecutionSnapshot | undefined;
   resolveCallableArgumentBinding: (expression: ts.Expression) => ReturnType<typeof getAnalyzableCallableBinding>;
-  getHelperExactAppendPlans: (
-    callable: ts.FunctionLikeDeclaration,
-    parameter: ts.Identifier,
-  ) => HelperExactAppendPlan[];
-  getHelperProjectedUsagePlans: (
-    callable: ts.FunctionLikeDeclaration,
-    parameter: ts.Identifier,
-  ) => HelperProjectedUsagePlan[];
 } {
   const {
     project,
@@ -74,21 +52,72 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
     trackedObjectsById,
     parameterMeaningfulUse,
     parameterSummaryCache,
+    helperExecutionSnapshotCache,
     helperExactAppendPlanCache,
     helperProjectedUsagePlanCache,
     higherOrderCallableReturnSummaryCache,
   } = options;
 
-  const addExactReadPath = (
+  const observeHigherOrderCallableReturnSummaryShape = (
     summary: HigherOrderCallableReturnSummary,
+  ): void => {
+    void summary.exactReadPaths;
+    void summary.boundaryReason;
+  };
+
+  const observeBoundedHelperExecutionStepShape = (step: BoundedHelperExecutionStep): void => {
+    switch (step.kind) {
+      case "projected-iteration-binding":
+        void step.statement;
+        void step.relativeCollectionPath;
+        void step.elementSymbolKey;
+        return;
+      case "alias-write":
+        void step.statement;
+        void step.targetSymbolKey;
+        void step.sourceSymbolKey;
+        void step.operator;
+        return;
+      case "exact-append-mutation":
+        void step.call;
+        void step.sourceFile;
+        void step.methodName;
+        void step.relativeCollectionPath;
+        void step.slotPlans;
+        return;
+      case "spread-materialization-prerequisite":
+        void step.expression;
+        void step.sourceSymbolKey;
+        return;
+      case "returned-carrier-emission":
+        void step.statement;
+        void step.sourceSymbolKey;
+        return;
+    }
+  };
+
+  const EMPTY_HIGHER_ORDER_CALLABLE_RETURN_SUMMARY = new HigherOrderCallableReturnSummaryState();
+  observeHigherOrderCallableReturnSummaryShape(EMPTY_HIGHER_ORDER_CALLABLE_RETURN_SUMMARY);
+
+  const createHigherOrderCallableReturnSummary = (
+    exactReadPaths: PathSegment[][],
+    boundaryReason?: string,
+  ): HigherOrderCallableReturnSummary => {
+    const summary = new HigherOrderCallableReturnSummaryState(exactReadPaths, boundaryReason);
+    observeHigherOrderCallableReturnSummaryShape(summary);
+    return summary;
+  };
+
+  const addExactReadPath = (
+    exactReadPaths: PathSegment[][],
     segments: PathSegment[],
   ): void => {
     const serialized = serializePath(segments);
-    if (summary.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
+    if (exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
       return;
     }
 
-    summary.exactReadPaths.push(segments);
+    exactReadPaths.push(segments);
   };
 
   const collectDirectReadPath = (identifier: ts.Identifier): PathSegment[] | undefined => {
@@ -120,23 +149,24 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
     const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
     const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
     if (!parameterSymbolKey || !callable.body) {
-      return { exactReadPaths: [] };
+      return EMPTY_HIGHER_ORDER_CALLABLE_RETURN_SUMMARY;
     }
 
     const cached = higherOrderCallableReturnSummaryCache.get(parameterSymbolKey);
     if (cached !== undefined) {
-      return cached ?? { exactReadPaths: [] };
+      return cached ?? EMPTY_HIGHER_ORDER_CALLABLE_RETURN_SUMMARY;
     }
 
     higherOrderCallableReturnSummaryCache.set(parameterSymbolKey, null);
-    const summary: HigherOrderCallableReturnSummary = { exactReadPaths: [] };
+    const exactReadPaths: PathSegment[][] = [];
+    let boundaryReason: string | undefined;
     const callableAliasKeys = new Set<string>([parameterSymbolKey]);
     const returnArrayAliasKeys = new Set<string>();
     const returnValueAliasKeys = new Set<string>();
 
     const setBoundary = (reason: string): void => {
-      if (!summary.boundaryReason) {
-        summary.boundaryReason = reason;
+      if (!boundaryReason) {
+        boundaryReason = reason;
       }
     };
 
@@ -205,7 +235,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
         parameterMeaningfulUse,
         parameterSummaryCache,
       );
-      consumerSummary.exactReadPaths.forEach((path) => addExactReadPath(summary, path));
+      consumerSummary.exactReadPaths.forEach((path) => addExactReadPath(exactReadPaths, path));
       if (consumerSummary.boundaryReason) {
         setBoundary(`higher-order helper return escapes exact analysis through ${consumerSummary.boundaryReason}`);
       }
@@ -253,7 +283,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       if (
         !ts.isCallExpression(current)
         || !ts.isPropertyAccessExpression(current.expression)
-        || current.expression.name.text !== "map"
+        || current.expression.name.text !== TRACKING_METHOD_NAME.map
       ) {
         return false;
       }
@@ -284,7 +314,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
     };
 
     const visit = (node: ts.Node): void => {
-      if (summary.boundaryReason && summary.exactReadPaths.length === 0) {
+      if (boundaryReason && exactReadPaths.length === 0) {
         return;
       }
 
@@ -380,7 +410,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       if (ts.isIdentifier(node) && isReturnValueAliasIdentifier(node)) {
         const directReadPath = collectDirectReadPath(node);
         if (directReadPath) {
-          addExactReadPath(summary, directReadPath);
+          addExactReadPath(exactReadPaths, directReadPath);
         }
       }
 
@@ -398,6 +428,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
     };
 
     ts.forEachChild(callable.body, visit);
+    const summary = createHigherOrderCallableReturnSummary(exactReadPaths, boundaryReason);
     higherOrderCallableReturnSummaryCache.set(parameterSymbolKey, summary);
     return summary;
   };
@@ -409,6 +440,192 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
     )
       ? getAnalyzableCallableBinding(project, unwrapped)
       : undefined;
+  };
+
+  const getBoundedHelperExecutionSnapshot = (
+    callable: ts.FunctionLikeDeclaration,
+    parameter: ts.Identifier,
+  ): BoundedHelperExecutionSnapshot | undefined => {
+    const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
+    const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
+    if (!parameterSymbolKey || !callable.body) {
+      return undefined;
+    }
+
+    const cached = helperExecutionSnapshotCache.get(parameterSymbolKey);
+    if (cached !== undefined) {
+      return cached ?? undefined;
+    }
+
+    const summary = summarizeHelperParameterUse(
+      project,
+      callable,
+      parameter,
+      parameterMeaningfulUse,
+      parameterSummaryCache,
+    );
+    const orderedSteps: BoundedHelperExecutionStep[] = [];
+    const queuedStepsByStart = new Map<number, BoundedHelperExecutionStep[]>();
+
+    const appendStep = (step: BoundedHelperExecutionStep): void => {
+      observeBoundedHelperExecutionStepShape(step);
+      orderedSteps.push(step);
+    };
+
+    const queueStep = (start: number, step: BoundedHelperExecutionStep): void => {
+      observeBoundedHelperExecutionStepShape(step);
+      const queuedSteps = queuedStepsByStart.get(start);
+      if (queuedSteps) {
+        queuedSteps.push(step);
+        return;
+      }
+
+      queuedStepsByStart.set(start, [step]);
+    };
+
+    const flushQueuedSteps = (start: number): void => {
+      const queuedSteps = queuedStepsByStart.get(start);
+      if (!queuedSteps) {
+        return;
+      }
+
+      queuedStepsByStart.delete(start);
+      for (const step of queuedSteps) {
+        orderedSteps.push(step);
+      }
+    };
+
+    for (const plan of getHelperProjectedUsagePlans(callable, parameter)) {
+      queueStep(plan.statement.getStart(), {
+        kind: "projected-iteration-binding",
+        statement: plan.statement,
+        relativeCollectionPath: [...plan.relativeCollectionPath],
+        elementSymbolKey: plan.elementSymbolKey,
+      });
+    }
+
+    for (const plan of getHelperExactAppendPlans(callable, parameter)) {
+      queueStep(plan.call.getStart(), {
+        kind: "exact-append-mutation",
+        call: plan.call,
+        sourceFile: plan.sourceFile,
+        methodName: plan.methodName,
+        relativeCollectionPath: [...plan.relativeCollectionPath],
+        slotPlans: [...plan.slotPlans],
+      });
+    }
+
+    const captureSymbolKey = (identifier: ts.Identifier): string | undefined => {
+      const symbol = project.checker.getSymbolAtLocation(identifier);
+      return symbol ? getCanonicalSymbolKey(project, symbol) : undefined;
+    };
+
+    const visitHelperExecution = (candidate: ts.Node): void => {
+      if (candidate !== callable.body && ts.isFunctionLike(candidate)) {
+        return;
+      }
+
+      flushQueuedSteps(candidate.getStart());
+
+      if (ts.isVariableDeclaration(candidate) && ts.isIdentifier(candidate.name) && candidate.initializer) {
+        const initializer = unwrapExpression(candidate.initializer);
+        if (ts.isIdentifier(initializer)) {
+          const targetSymbolKey = captureSymbolKey(candidate.name);
+          const sourceSymbolKey = captureSymbolKey(initializer);
+          const statement = ts.findAncestor(candidate, ts.isStatement);
+          if (targetSymbolKey && sourceSymbolKey && statement) {
+            appendStep({
+              kind: "alias-write",
+              statement,
+              targetSymbolKey,
+              sourceSymbolKey,
+              operator: "assign",
+            });
+          }
+        }
+      }
+
+      if (
+        ts.isBinaryExpression(candidate)
+        && ts.isIdentifier(candidate.left)
+        && (
+          candidate.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          || candidate.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken
+        )
+      ) {
+        const right = unwrapExpression(candidate.right);
+        if (ts.isIdentifier(right)) {
+          const targetSymbolKey = captureSymbolKey(candidate.left);
+          const sourceSymbolKey = captureSymbolKey(right);
+          const statement = ts.findAncestor(candidate, ts.isStatement);
+          if (targetSymbolKey && sourceSymbolKey && statement) {
+            appendStep({
+              kind: "alias-write",
+              statement,
+              targetSymbolKey,
+              sourceSymbolKey,
+              operator: candidate.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken
+                ? "coalesce-assign"
+                : "assign",
+            });
+          }
+        }
+      }
+
+      if (ts.isObjectLiteralExpression(candidate)) {
+        for (const property of candidate.properties) {
+          if (!ts.isSpreadAssignment(property)) {
+            continue;
+          }
+
+          const expression = unwrapExpression(property.expression);
+          if (!ts.isIdentifier(expression)) {
+            continue;
+          }
+
+          const sourceSymbolKey = captureSymbolKey(expression);
+          if (sourceSymbolKey) {
+            appendStep({
+              kind: "spread-materialization-prerequisite",
+              expression: property.expression,
+              sourceSymbolKey,
+            });
+          }
+        }
+      }
+
+      if (ts.isReturnStatement(candidate) && candidate.expression) {
+        const returned = unwrapExpression(candidate.expression);
+        appendStep({
+          kind: "returned-carrier-emission",
+          statement: candidate,
+          sourceSymbolKey: ts.isIdentifier(returned) ? captureSymbolKey(returned) : undefined,
+        });
+      }
+
+      ts.forEachChild(candidate, visitHelperExecution);
+    };
+
+    ts.forEachChild(callable.body, visitHelperExecution);
+    const steps: BoundedHelperExecutionStep[] = [];
+    for (const step of orderedSteps) {
+      observeBoundedHelperExecutionStepShape(step);
+      steps.push(step);
+    }
+    for (const step of steps) {
+      observeBoundedHelperExecutionStepShape(step);
+    }
+
+    const snapshot = summary.boundaryReason || summary.exactReadPaths.length > 0 || steps.length > 0
+      ? {
+        exactReadPaths: summary.exactReadPaths.map((path) => [...path]),
+        boundaryReason: summary.boundaryReason,
+        steps,
+      }
+      : undefined;
+
+    helperExecutionSnapshotCache.set(parameterSymbolKey, snapshot ?? null);
+    return snapshot;
   };
 
   const getHelperExactAppendPlans = (
@@ -444,7 +661,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       if (
         ts.isCallExpression(candidate)
         && ts.isPropertyAccessExpression(candidate.expression)
-        && (candidate.expression.name.text === "push" || candidate.expression.name.text === "unshift")
+        && TRACKING_ARRAY_EXACT_APPEND_METHODS.has(candidate.expression.name.text)
       ) {
         const resolvedReceiver = resolveTrackedObjectAccess(
           project,
@@ -460,7 +677,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
           if (
             receiverBinding.trackedObject.id === baseBinding.trackedObject.id
             && receiverPrefix === basePrefix
-            && receiverCollection?.kind === "array"
+            && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
           ) {
             const slotPlans: ExactAppendSlotPlan[] = [];
             let exactStructuredAppend = candidate.arguments.length > 0;
@@ -484,7 +701,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
               plans.push({
                 call: candidate,
                 sourceFile: helperSourceFile,
-                methodName: candidate.expression.name.text,
+                methodName: candidate.expression.name.text as TrackingAppendMethodName,
                 relativeCollectionPath: receiverBinding.prefix.slice(baseBinding.prefix.length),
                 slotPlans,
               });
@@ -546,7 +763,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
           if (
             receiverBinding.trackedObject.id === baseBinding.trackedObject.id
             && receiverPrefix === basePrefix
-            && receiverCollection?.kind === "array"
+            && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
           ) {
             plans.push({
               statement: candidate.statement,
@@ -567,8 +784,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
 
   return {
     getHigherOrderCallableReturnSummary,
+    getBoundedHelperExecutionSnapshot,
     resolveCallableArgumentBinding,
-    getHelperExactAppendPlans,
-    getHelperProjectedUsagePlans,
   };
 }

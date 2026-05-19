@@ -1,36 +1,19 @@
 import ts from "typescript";
 
 import { getSuppressionAudit } from "../../suppressions.js";
-import type {
-  ProjectContext,
-  SuppressionContext,
-} from "../../types.js";
-import {
-  getSymbolKey,
-  isReadLikeUse,
-} from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
+import { FINDING_KIND } from "../../shared/finding-vocabulary.js";
+import { SKIP_CATEGORY } from "../../shared/skip-category-vocabulary.js";
+import type { ProjectContext, SuppressionContext } from "../../types.js";
+import { getSymbolKey, isReadLikeUse } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import {
-  addAudit,
-  addFinding,
-  addSkipped,
-  type AnalysisState,
-} from "../analysis-state.js";
+import { addAudit, addFinding, addSkipped, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 import { isTrackablePureExpression } from "./trackable-structures.js";
-import type {
-  ValueAccess,
-} from "./model.js";
-import {
-  getCallArgumentUse,
-  getIgnoredResultReason,
-  isExportedVariableDeclaration,
-} from "./semantics.js";
-import {
-  getControlFlowDepth,
-  getControlFlowSignature,
-  getFunctionDepth,
-} from "./syntax.js";
+import { TRACKING_ACCESS_KIND } from "./vocabulary.js";
+import type { ValueAccess } from "./model.js";
+import { getCallArgumentUse, getIgnoredResultReason, isExportedVariableDeclaration } from "./semantics.js";
+import { getControlFlowDepth, getControlFlowSignature, getFunctionDepth } from "./syntax.js";
 import { createValueLivenessStageContext } from "./value-liveness-context.js";
 
 /**
@@ -107,6 +90,8 @@ export function analyzeValueLiveness(
       parameterMeaningfulUse,
       callablePurity,
     } = sourceFileContext;
+    const findings = state.findings;
+    const kept = state.kept;
     const valueAnalysisCaches = {
       parameterMeaningfulUse,
       callablePurity,
@@ -140,9 +125,9 @@ export function analyzeValueLiveness(
         const flowSignature = getControlFlowSignature(node);
         if (symbol && node.initializer) {
           pushAccess(getSymbolKey(symbol), {
-            entity: makeEntity(project.rootPath, "assignment", sourceFile, node.name, node.name.text),
+            entity: makeEntity(project.rootPath, ENTITY_KIND.assignment, sourceFile, node.name, node.name.text),
             position: node.name.getStart(sourceFile),
-            kind: "write",
+            kind: TRACKING_ACCESS_KIND.write,
             mayObservePreviousValue: false,
             nestedWrite: false,
             controlFlowDepth,
@@ -160,9 +145,9 @@ export function analyzeValueLiveness(
           const flowSignature = getControlFlowSignature(node);
           const symbolKey = getSymbolKey(symbol);
           pushAccess(getSymbolKey(symbol), {
-            entity: makeEntity(project.rootPath, "assignment", sourceFile, node.left, tracked.name),
+            entity: makeEntity(project.rootPath, ENTITY_KIND.assignment, sourceFile, node.left, tracked.name),
             position: node.left.getStart(sourceFile),
-            kind: node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? "write" : "read-write",
+            kind: node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? TRACKING_ACCESS_KIND.write : TRACKING_ACCESS_KIND.readWrite,
             mayObservePreviousValue:
               node.operatorToken.kind !== ts.SyntaxKind.EqualsToken
               || expressionMayObservePreviousValue(project, node.right, symbolKey),
@@ -185,9 +170,9 @@ export function analyzeValueLiveness(
           const functionDepth = getFunctionDepth(node);
           const flowSignature = getControlFlowSignature(node);
           pushAccess(getSymbolKey(symbol), {
-            entity: makeEntity(project.rootPath, "assignment", sourceFile, node.operand, tracked.name),
+            entity: makeEntity(project.rootPath, ENTITY_KIND.assignment, sourceFile, node.operand, tracked.name),
             position: node.operand.getStart(sourceFile),
-            kind: "read-write",
+            kind: TRACKING_ACCESS_KIND.readWrite,
             mayObservePreviousValue: true,
             nestedWrite: functionDepth > tracked.declarationDepth,
             controlFlowDepth: getControlFlowDepth(node),
@@ -212,18 +197,18 @@ export function analyzeValueLiveness(
           node.expression.getText(sourceFile),
         );
         const suppression = getSuppressionAudit(project, suppressionContext, entity, node.expression);
-        if (addAudit(state.kept, suppression)) {
+        if (addAudit(kept, suppression)) {
           return ts.forEachChild(node, visit);
         }
 
-        addFinding(
-          state,
+        findings.push({
+          id: entity.id,
+          kind: FINDING_KIND.unusedValue,
           entity,
-          "unused-value",
-          ignoredResultReason ?? "side-effect-neutral expression result is discarded",
-          ignoredResultReason ? `Ignored result ${entity.name}` : `Unused value ${entity.name}`,
-          "review",
-        );
+          reason: ignoredResultReason ?? "side-effect-neutral expression result is discarded",
+          message: ignoredResultReason ? `Ignored result ${entity.name}` : `Unused value ${entity.name}`,
+          suggestion: "review",
+        });
       }
 
       if (ts.isIdentifier(node)) {
@@ -239,11 +224,11 @@ export function analyzeValueLiveness(
 
         const symbolKey = getSymbolKey(symbol);
         const callArgumentUse = getCallArgumentUse(project, node, valueAnalysisCaches);
-        if (callArgumentUse === "read") {
+        if (callArgumentUse === TRACKING_ACCESS_KIND.read) {
           pushAccess(symbolKey, {
-            entity: makeEntity(project.rootPath, "assignment", sourceFile, tracked.declaration, tracked.name),
+            entity: makeEntity(project.rootPath, ENTITY_KIND.assignment, sourceFile, tracked.declaration, tracked.name),
             position: node.getStart(sourceFile),
-            kind: "read",
+            kind: TRACKING_ACCESS_KIND.read,
             mayObservePreviousValue: false,
             nestedWrite: false,
             controlFlowDepth: getControlFlowDepth(node),
@@ -258,9 +243,9 @@ export function analyzeValueLiveness(
 
         if (isReadLikeUse(node)) {
           pushAccess(symbolKey, {
-            entity: makeEntity(project.rootPath, "assignment", sourceFile, tracked.declaration, tracked.name),
+            entity: makeEntity(project.rootPath, ENTITY_KIND.assignment, sourceFile, tracked.declaration, tracked.name),
             position: node.getStart(sourceFile),
-            kind: "read",
+            kind: TRACKING_ACCESS_KIND.read,
             mayObservePreviousValue: false,
             nestedWrite: false,
             controlFlowDepth: getControlFlowDepth(node),
@@ -290,19 +275,19 @@ export function analyzeValueLiveness(
         && !next.mayObservePreviousValue;
 
       for (const access of ordered) {
-        if (access.kind === "read") {
+        if (access.kind === TRACKING_ACCESS_KIND.read) {
           hasAnyRead = true;
           pendingWrite = undefined;
           continue;
         }
 
-        if (access.kind === "read-write") {
+        if (access.kind === TRACKING_ACCESS_KIND.readWrite) {
           hasAnyRead = true;
           pendingWrite = access;
           continue;
         }
 
-        if (access.kind === "write") {
+        if (access.kind === TRACKING_ACCESS_KIND.write) {
           if (pendingWrite && canProveOverwrite(pendingWrite, access)) {
             const suppression = getSuppressionAudit(
               project,
@@ -314,7 +299,7 @@ export function analyzeValueLiveness(
               addFinding(
                 state,
                 pendingWrite.entity,
-                "dead-store",
+                FINDING_KIND.deadStore,
                 "assigned value is overwritten before any supported read occurs",
                 `Dead store for ${binding.name}`,
               );
@@ -325,8 +310,8 @@ export function analyzeValueLiveness(
           continue;
         }
 
-        if (access.kind === "escape" && pendingWrite) {
-          addSkipped(state, pendingWrite.entity, "opaque-object-call", access.escapeReason ?? "value escaped exact analysis");
+        if (access.kind === TRACKING_ACCESS_KIND.escape && pendingWrite) {
+          addSkipped(state, pendingWrite.entity, SKIP_CATEGORY.opaqueObjectCall, access.escapeReason ?? "value escaped exact analysis");
           pendingWrite = undefined;
         }
       }
@@ -342,7 +327,7 @@ export function analyzeValueLiveness(
           addFinding(
             state,
             pendingWrite.entity,
-            "write-only-state",
+            FINDING_KIND.writeOnlyState,
             "outer-scope write never becomes observable through a supported read",
             `Write-only state for ${binding.name}`,
           );

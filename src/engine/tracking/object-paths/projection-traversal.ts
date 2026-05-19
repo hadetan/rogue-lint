@@ -1,34 +1,14 @@
 import ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SkipCategory,
-  TrackedObject,
-} from "../../../types.js";
+import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { serializePath } from "../../../shared/path-utils.js";
-import {
-  getBindingSymbolKey,
-  resolveProjectionAccess,
-  resolveTrackedObjectAccess,
-} from "../access.js";
-import { sameTrackedBinding } from "../bindings.js";
-import type {
-  ArrayProjectionBinding,
-  CallableReturnSummary,
-  ProjectedArrayUsageContext,
-  TrackedObjectBinding,
-} from "../model.js";
+import { getBindingSymbolKey, resolveProjectionAccess, resolveTrackedObjectAccess } from "../access.js";
+import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import type { ArrayProjectionBinding, CallableReturnSummary, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
 import { classifySupportedCallArgumentUse } from "../semantics.js";
-import {
-  getProjectionBinding,
-  resolveExactPathAlias,
-} from "../state.js";
-import {
-  isAssignmentLeft,
-  visitProjectedArrayUsage,
-} from "./projections.js";
+import { getProjectionBinding, resolveExactPathAlias } from "../state.js";
+import { isAssignmentLeft, visitProjectedArrayUsage } from "./projections.js";
 import type { ObjectPathOverlayState } from "./overlay.js";
 
 interface ProjectionTraversalHandlerOptions {
@@ -100,21 +80,33 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
     projection: ArrayProjectionBinding,
     suffix: PathSegment[],
   ): ArrayProjectionBinding | undefined => {
-    const baseBinding: TrackedObjectBinding = {
-      trackedObject: projection.trackedObject,
-      prefix: [],
-    };
     let nestedTrackedObject: TrackedObject | undefined;
     let nestedSourcePath: PathSegment[] | undefined;
     const nestedElementPaths: PathSegment[][] = [];
 
     for (const candidatePath of projection.elementPaths) {
-      const fullPath = [...candidatePath, ...suffix];
-      const resolvedAlias = resolveExactPathAlias(baseBinding, fullPath, trackedObjectsById);
-      const targetTrackedObject = resolvedAlias.binding.trackedObject;
-      const targetPath = sameTrackedBinding(resolvedAlias.binding, baseBinding)
-        ? fullPath
-        : resolvedAlias.binding.prefix;
+      let resolvedBinding: TrackedObjectBinding = {
+        trackedObject: projection.trackedObject,
+        prefix: candidatePath,
+      };
+
+      const rootAlias = resolveExactPathAlias(resolvedBinding, [], trackedObjectsById);
+      if (!sameTrackedBinding(rootAlias.binding, resolvedBinding)) {
+        resolvedBinding = rootAlias.binding;
+      }
+
+      for (const segment of suffix) {
+        const aliased = resolveExactPathAlias(resolvedBinding, [segment], trackedObjectsById);
+        if (!sameTrackedBinding(aliased.binding, resolvedBinding)) {
+          resolvedBinding = aliased.binding;
+          continue;
+        }
+
+        resolvedBinding = extendTrackedBinding(resolvedBinding, [segment]);
+      }
+
+      const targetTrackedObject = resolvedBinding.trackedObject;
+      const targetPath = resolvedBinding.prefix;
       const nestedProjection = getProjectionBinding(targetTrackedObject, targetPath);
       if (!nestedProjection) {
         continue;
@@ -167,6 +159,7 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
           },
           trackedObjectsById,
           overlayState,
+          trackedBySymbolId,
         );
       } else {
         markObservedSubtree(
@@ -211,6 +204,7 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
         },
         trackedObjectsById,
         overlayState,
+        trackedBySymbolId,
       );
       return;
     }

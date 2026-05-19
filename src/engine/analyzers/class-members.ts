@@ -4,8 +4,9 @@ import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { summarizeReferenceUsage } from "../../references.js";
 import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import { addAudit, addFinding, addSkipped, type AnalysisState } from "../analysis-state.js";
+import { addAudit, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
 import { buildPublicSurfaceAudit, createReferenceKey } from "./support.js";
 
@@ -24,6 +25,10 @@ export function analyzeClassMembers(
       continue;
     }
 
+    const findings = state.findings;
+    const kept = state.kept;
+    const skipped = state.skipped;
+
     const visit = (node: ts.Node): void => {
       if (ts.isClassDeclaration(node) && node.name) {
         const className = node.name.text;
@@ -40,7 +45,7 @@ export function analyzeClassMembers(
 
           const entity = makeEntity(
             project.rootPath,
-            "class-member",
+            ENTITY_KIND.classMember,
             sourceFile,
             memberNameNode,
             memberName,
@@ -48,12 +53,12 @@ export function analyzeClassMembers(
           );
 
           if (artifacts.publicSurfaceIds.has(entity.id)) {
-            addAudit(state.kept, buildPublicSurfaceAudit(entity));
+            addAudit(kept, buildPublicSurfaceAudit(entity));
             continue;
           }
 
           const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
-          if (addAudit(state.kept, suppression)) {
+          if (addAudit(kept, suppression)) {
             continue;
           }
 
@@ -62,12 +67,28 @@ export function analyzeClassMembers(
             : false;
 
           if (classHasDecorators || memberHasDecorators) {
-            addSkipped(state, entity, "decorator-visibility", "member skipped because decorators can make it externally visible");
+            skipped.push({
+              id: entity.id,
+              kind: entity.kind,
+              name: entity.name,
+              owner: entity.owner,
+              reason: "member skipped because decorators can make it externally visible",
+              category: "decorator-visibility",
+              location: entity.location,
+            });
             continue;
           }
 
           if (ts.isPropertyDeclaration(member) && member.name && ts.isComputedPropertyName(member.name)) {
-            addSkipped(state, entity, "computed-member-name", "member skipped because computed property names are dynamic");
+            skipped.push({
+              id: entity.id,
+              kind: entity.kind,
+              name: entity.name,
+              owner: entity.owner,
+              reason: "member skipped because computed property names are dynamic",
+              category: "computed-member-name",
+              location: entity.location,
+            });
             continue;
           }
 
@@ -87,15 +108,16 @@ export function analyzeClassMembers(
             continue;
           }
 
-          addFinding(
-            state,
+          findings.push({
+            id: entity.id,
+            kind: "unused-class-member",
             entity,
-            "unused-class-member",
-            usage.writes > 0
+            reason: usage.writes > 0
               ? "eligible class member is written but never read"
               : "eligible class member has no non-declaration references",
-            `Unused class member ${className}.${memberName}`,
-          );
+            message: `Unused class member ${className}.${memberName}`,
+            suggestion: "remove",
+          });
         }
       }
 

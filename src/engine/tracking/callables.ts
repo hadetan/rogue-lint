@@ -1,7 +1,9 @@
 import ts from "typescript";
 
 import type { ProjectContext } from "../../types.js";
+import { samePath } from "../../shared/path-utils.js";
 import {
+  type TrackingMapDiff,
   getCanonicalSymbol,
   getCanonicalSymbolKey,
   sameTrackedBinding,
@@ -12,6 +14,7 @@ import type {
   CallableReturnSummary,
   TrackedObjectBinding,
 } from "./model.js";
+import { TRACKING_RETURN_SUMMARY_KIND } from "./vocabulary.js";
 
 /**
  * Callable-binding and return-summary helpers shared across the tracking kernel.
@@ -21,11 +24,55 @@ import type {
  */
 
 export function getCallableReturnBinding(summary: CallableReturnSummary | undefined): TrackedObjectBinding | undefined {
-  if (!summary || summary.kind === "value" || summary.kind === "opaque") {
+  if (
+    !summary
+    || summary.kind === TRACKING_RETURN_SUMMARY_KIND.value
+    || summary.kind === TRACKING_RETURN_SUMMARY_KIND.opaque
+  ) {
     return undefined;
   }
 
   return summary.binding;
+}
+
+function cloneTrackedBinding(binding: TrackedObjectBinding): TrackedObjectBinding {
+  return {
+    trackedObject: binding.trackedObject,
+    prefix: [...binding.prefix],
+  };
+}
+
+function sameCallableReturnBinding(left: TrackedObjectBinding, right: TrackedObjectBinding): boolean {
+  if (sameTrackedBinding(left, right)) {
+    return true;
+  }
+
+  if (!samePath(left.prefix, right.prefix)) {
+    return false;
+  }
+
+  const leftReportingOwnerId = left.trackedObject.reportingOwnerId ?? left.trackedObject.id;
+  const rightReportingOwnerId = right.trackedObject.reportingOwnerId ?? right.trackedObject.id;
+  return leftReportingOwnerId === rightReportingOwnerId
+    || (
+      left.trackedObject.canonicalSymbolKey !== undefined
+      && right.trackedObject.canonicalSymbolKey !== undefined
+      && left.trackedObject.canonicalSymbolKey === right.trackedObject.canonicalSymbolKey
+    );
+}
+
+export function cloneCallableReturnSummary(summary: CallableReturnSummary): CallableReturnSummary {
+  if (
+    summary.kind === TRACKING_RETURN_SUMMARY_KIND.value
+    || summary.kind === TRACKING_RETURN_SUMMARY_KIND.opaque
+  ) {
+    return { kind: summary.kind };
+  }
+
+  return {
+    kind: summary.kind,
+    binding: cloneTrackedBinding(summary.binding),
+  };
 }
 
 function sameCallableReturnSummary(left: CallableReturnSummary, right: CallableReturnSummary): boolean {
@@ -39,29 +86,154 @@ function sameCallableReturnSummary(left: CallableReturnSummary, right: CallableR
     return true;
   }
 
-  return sameTrackedBinding(leftBinding, rightBinding);
+  return sameCallableReturnBinding(leftBinding, rightBinding);
 }
 
-export function sameCallableReturnSummaryMap(
+export function joinCallableReturnSummaries(
+  current: CallableReturnSummary | undefined,
+  next: CallableReturnSummary | undefined,
+): {
+  summary: CallableReturnSummary | undefined;
+  widened: boolean;
+  reason?: string;
+} {
+  if (!current) {
+    return {
+      summary: next ? cloneCallableReturnSummary(next) : undefined,
+      widened: false,
+    };
+  }
+
+  if (!next) {
+    if (current.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
+      return {
+        summary: { kind: "opaque" },
+        widened: false,
+      };
+    }
+
+    return {
+      summary: { kind: "opaque" },
+      widened: true,
+      reason: "missing follow-up summary widened to opaque",
+    };
+  }
+
+  if (sameCallableReturnSummary(current, next)) {
+    return {
+      summary: cloneCallableReturnSummary(current),
+      widened: false,
+    };
+  }
+
+  if (current.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
+    return {
+      summary: { kind: "opaque" },
+      widened: false,
+    };
+  }
+
+  if (next.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
+    return {
+      summary: { kind: "opaque" },
+      widened: true,
+      reason: "unsupported summary widened to opaque",
+    };
+  }
+
+  if (
+    current.kind === TRACKING_RETURN_SUMMARY_KIND.value
+    && next.kind === TRACKING_RETURN_SUMMARY_KIND.value
+  ) {
+    return {
+      summary: { kind: "value" },
+      widened: false,
+    };
+  }
+
+  const currentBinding = getCallableReturnBinding(current);
+  const nextBinding = getCallableReturnBinding(next);
+  if (!currentBinding && nextBinding) {
+    return {
+      summary: cloneCallableReturnSummary(next),
+      widened: false,
+    };
+  }
+
+  if (currentBinding && !nextBinding) {
+    return {
+      summary: cloneCallableReturnSummary(current),
+      widened: false,
+    };
+  }
+
+  if (currentBinding && nextBinding && sameCallableReturnBinding(currentBinding, nextBinding)) {
+    if (
+      current.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+      || next.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+    ) {
+      return {
+        summary: {
+          kind: "returned-alias",
+          binding: cloneTrackedBinding(currentBinding),
+        },
+        widened:
+          current.kind !== TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+          || next.kind !== TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
+        reason: current.kind !== next.kind
+          ? "mixed summary kinds for the same binding widened to returned-alias"
+          : undefined,
+      };
+    }
+
+    return {
+      summary: {
+        kind: "structured",
+        binding: cloneTrackedBinding(currentBinding),
+      },
+      widened: false,
+    };
+  }
+
+  return {
+    summary: { kind: "opaque" },
+    widened: true,
+    reason: "conflicting precise summaries widened to opaque",
+  };
+}
+
+export function diffCallableReturnSummaryMaps(
   left: Map<string, CallableReturnSummary>,
   right: Map<string, CallableReturnSummary>,
-): boolean {
-  if (left.size !== right.size) {
-    return false;
-  }
+  sampleLimit: number,
+  heartbeat?: () => void,
+): TrackingMapDiff {
+  let changedCount = 0;
+  const sampleKeys: string[] = [];
+  const keys = new Set<string>([...left.keys(), ...right.keys()]);
+  let heartbeatCounter = 0;
 
-  for (const [symbolKey, summary] of left) {
-    const other = right.get(symbolKey);
-    if (other === undefined) {
-      return false;
+  for (const key of keys) {
+    heartbeatCounter += 1;
+    if (heartbeatCounter >= 2048) {
+      heartbeatCounter = 0;
+      heartbeat?.();
     }
 
-    if (!sameCallableReturnSummary(summary, other)) {
-      return false;
+    const current = left.get(key);
+    const next = right.get(key);
+    if (!current || !next || !sameCallableReturnSummary(current, next)) {
+      changedCount += 1;
+      if (sampleKeys.length < sampleLimit) {
+        sampleKeys.push(key);
+      }
     }
   }
 
-  return true;
+  return {
+    changedCount,
+    sampleKeys,
+  };
 }
 
 function getFunctionLikeDeclarationFromDeclaration(declaration: ts.Declaration): ts.FunctionLikeDeclaration | undefined {
@@ -102,14 +274,22 @@ function getFunctionLikeDeclarationFromDeclaration(declaration: ts.Declaration):
 }
 
 function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLikeDeclaration | undefined {
+  let fallback: ts.FunctionLikeDeclaration | undefined;
+
   for (const declaration of symbol.declarations ?? []) {
     const callable = getFunctionLikeDeclarationFromDeclaration(declaration);
-    if (callable) {
+    if (!callable) {
+      continue;
+    }
+
+    if (callable.body) {
       return callable;
     }
+
+    fallback ??= callable;
   }
 
-  return undefined;
+  return fallback;
 }
 
 function getCallableSymbol(project: ProjectContext, expression: ts.LeftHandSideExpression): ts.Symbol | undefined {
