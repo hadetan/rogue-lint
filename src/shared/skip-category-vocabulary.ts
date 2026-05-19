@@ -27,3 +27,31 @@ export const SKIP_CATEGORY = {
   objectRest: "object-rest",
   arrayRest: "array-rest",
 } as const;
+
+function observeSkipCategorySurface(): void {
+  void SKIP_CATEGORY.decoratorVisibility;
+  void SKIP_CATEGORY.computedMemberName;
+  void SKIP_CATEGORY.computedPropertyName;
+  void SKIP_CATEGORY.computedPropertyAccess;
+  void SKIP_CATEGORY.dynamicArrayIndex;
+  void SKIP_CATEGORY.arrayAtCall;
+  void SKIP_CATEGORY.arrayAppendMutation;
+  void SKIP_CATEGORY.arrayMutation;
+  void SKIP_CATEGORY.arrayTruncateMutation;
+  void SKIP_CATEGORY.arrayReplacementMutation;
+  void SKIP_CATEGORY.arrayReorderMutation;
+  void SKIP_CATEGORY.arrayRebuildMutation;
+  void SKIP_CATEGORY.arrayOpaqueMutation;
+  void SKIP_CATEGORY.arrayCallbackEscape;
+  void SKIP_CATEGORY.objectSpread;
+  void SKIP_CATEGORY.arraySpread;
+  void SKIP_CATEGORY.returnedObject;
+  void SKIP_CATEGORY.reflectiveEnumeration;
+  void SKIP_CATEGORY.serialization;
+  void SKIP_CATEGORY.opaqueObjectCall;
+  void SKIP_CATEGORY.spreadEscape;
+  void SKIP_CATEGORY.objectRest;
+  void SKIP_CATEGORY.arrayRest;
+}
+
+observeSkipCategorySurface();

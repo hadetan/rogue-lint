@@ -3,7 +3,6 @@ import ts from "typescript";
 import type { PathSegment, ProjectContext, TrackedObject } from "../../../types.js";
 import { serializePath } from "../../../shared/path-utils.js";
 import { isReadLikeUse } from "../../../compiler/ast-utils.js";
-import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { getBindingSymbolKey, resolveProjectionAccess } from "../access.js";
 import { extendTrackedBinding, getCanonicalSymbolKey, sameTrackedBinding } from "../bindings.js";
 import type { ArrayProjectionBinding, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
@@ -228,7 +227,7 @@ export function visitProjectedArrayUsage(
             current.expression,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
+            projected.boundaryCategory ?? "array-callback-escape",
             projected.boundaryReason ?? "array projection escapes exact local analysis",
             true,
           );
@@ -257,7 +256,7 @@ export function visitProjectedArrayUsage(
               current.expression.expression,
               projectedReceiver.projection.sourcePath,
               projectedReceiver.projection.sourcePath,
-              projectedReceiver.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
+              projectedReceiver.boundaryCategory ?? "array-callback-escape",
               projectedReceiver.boundaryReason ?? "array callback escapes exact local analysis",
               true,
             );
@@ -315,7 +314,7 @@ export function visitProjectedArrayUsage(
             argument,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
+            projected.boundaryCategory ?? "array-callback-escape",
             projected.boundaryReason ?? "array callback escapes exact local analysis",
             true,
           );
@@ -352,7 +351,7 @@ export function visitProjectedArrayUsage(
             argument,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            SKIP_CATEGORY.arrayCallbackEscape,
+            "array-callback-escape",
             "array callback escapes exact local analysis",
             true,
           );
@@ -387,7 +386,7 @@ export function visitProjectedArrayUsage(
             current,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
+            projected.boundaryCategory ?? "array-callback-escape",
             projected.boundaryReason ?? "array callback escapes exact local analysis",
             true,
           );
@@ -409,7 +408,7 @@ export function visitProjectedArrayUsage(
             current,
             projected.projection.sourcePath,
             projected.projection.sourcePath,
-            projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
+            projected.boundaryCategory ?? "array-callback-escape",
             projected.boundaryReason ?? "array callback escapes exact local analysis",
             true,
           );

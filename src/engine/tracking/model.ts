@@ -126,7 +126,7 @@ export interface ResolvedProjectionAccess {
   boundaryReason?: string;
 }
 
-export type HelperParameterEffectKind = (typeof TRACKING_HELPER_PARAMETER_EFFECT_KIND)[keyof typeof TRACKING_HELPER_PARAMETER_EFFECT_KIND];
+type HelperParameterEffectKind = (typeof TRACKING_HELPER_PARAMETER_EFFECT_KIND)[keyof typeof TRACKING_HELPER_PARAMETER_EFFECT_KIND];
 
 export interface HelperParameterSummary {
   effectKinds: Set<HelperParameterEffectKind>;

@@ -20,6 +20,7 @@ export interface TrackingSafetyEvaluation {
     elapsedMs: number;
     trackedBindings: number;
     returnSummaries: number;
+    stageTimingsMs: Readonly<Record<string, number>>;
   };
   budgets: {
     maxPasses: number;
@@ -65,6 +66,7 @@ function observeTrackingSafetyEvaluationShape(evaluation: TrackingSafetyEvaluati
   void evaluation.metrics.elapsedMs;
   void evaluation.metrics.trackedBindings;
   void evaluation.metrics.returnSummaries;
+  void evaluation.metrics.stageTimingsMs;
 
   void evaluation.budgets.maxPasses;
   void evaluation.budgets.maxBindingChanges;
@@ -161,6 +163,7 @@ function evaluateTrackingSafetySummary(
       elapsedMs: runtimeSummary.convergence.elapsedMs,
       trackedBindings: runtimeSummary.totals.trackedBindings,
       returnSummaries: runtimeSummary.totals.returnSummaries,
+      stageTimingsMs: runtimeSummary.stageTimingsMs,
     },
     budgets: {
       maxPasses: normalizedBudgets.maxPasses,

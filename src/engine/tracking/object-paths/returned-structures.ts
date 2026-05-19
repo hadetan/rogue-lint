@@ -2,9 +2,8 @@ import ts from "typescript";
 
 import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { isSerializedPathWithin, serializePath } from "../../../shared/path-utils.js";
-import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { resolveTrackedObjectAccess } from "../access.js";
-import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import { extendTrackedBinding, getCanonicalSymbolKey, sameTrackedBinding } from "../bindings.js";
 import { getAnalyzableCallableBindingFromDeclaration, getCallableReturnBinding } from "../callables.js";
 import type { CallableReturnSummary, TrackedObjectBinding } from "../model.js";
 import { isTrackablePureExpression } from "../trackable-structures.js";
@@ -31,6 +30,7 @@ interface ReturnedStructureHandlerOptions {
     reason: string,
     detailHint?: string,
   ) => void;
+  resolveBoundedHelperReturnBinding?: (expression: ts.CallExpression) => TrackedObjectBinding | undefined;
 }
 
 interface PubliclyReachableCallableIdsOptions {
@@ -139,7 +139,33 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
     trackedObjectsById,
     markObservedSubtree,
     markEscaped,
+    resolveBoundedHelperReturnBinding,
   } = options;
+
+  const isReturnedParameterIdentifier = (
+    callable: ts.FunctionLikeDeclaration | undefined,
+    expression: ts.Expression,
+  ): boolean => {
+    const returned = unwrapExpression(expression);
+    if (!callable || !ts.isIdentifier(returned)) {
+      return false;
+    }
+
+    const returnedSymbol = project.checker.getSymbolAtLocation(returned);
+    const returnedKey = returnedSymbol ? getCanonicalSymbolKey(project, returnedSymbol) : undefined;
+    if (!returnedKey) {
+      return false;
+    }
+
+    return callable.parameters.some((parameter) => {
+      if (!ts.isIdentifier(parameter.name)) {
+        return false;
+      }
+
+      const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+      return Boolean(parameterSymbol && getCanonicalSymbolKey(project, parameterSymbol) === returnedKey);
+    });
+  };
 
   const isFiniteKeyExpression = (expression: ts.Expression): boolean => {
     const unwrapped = unwrapExpression(expression);
@@ -315,13 +341,22 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
 
   const markObservedReturnedExpression = (expression: ts.Expression): void => {
     const unwrapped = unwrapExpression(expression);
-    const resolved = resolveTrackedObjectAccess(
-      project,
-      unwrapped,
-      trackedBySymbolId,
-      functionReturnSummaries,
-      trackedObjectsById,
-    );
+    const helperReturnBinding = ts.isCallExpression(unwrapped)
+      ? resolveBoundedHelperReturnBinding?.(unwrapped)
+      : undefined;
+    const resolved = helperReturnBinding
+      ? {
+        binding: helperReturnBinding,
+        segments: [],
+        dynamic: false as const,
+      }
+      : resolveTrackedObjectAccess(
+          project,
+          unwrapped,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
 
     if (resolved && !resolved.dynamic) {
       markObservedSubtree(
@@ -553,16 +588,25 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
       return;
     }
 
-    const resolved = resolveTrackedObjectAccess(
-      project,
-      node.expression,
-      trackedBySymbolId,
-      functionReturnSummaries,
-      trackedObjectsById,
-    );
     const enclosingFunction = ts.findAncestor(node, (candidate): candidate is ts.FunctionLikeDeclaration => ts.isFunctionLike(candidate));
     const callable = enclosingFunction ? getAnalyzableCallableBindingFromDeclaration(project, enclosingFunction) : undefined;
     const publicCallable = enclosingFunction ? isPublicCallable(enclosingFunction) : false;
+    const helperReturnBinding = ts.isCallExpression(unwrapExpression(node.expression))
+      ? resolveBoundedHelperReturnBinding?.(unwrapExpression(node.expression) as ts.CallExpression)
+      : undefined;
+    const resolved = helperReturnBinding
+      ? {
+        binding: helperReturnBinding,
+        segments: [],
+        dynamic: false as const,
+      }
+      : resolveTrackedObjectAccess(
+          project,
+          node.expression,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
     const propagated = callable ? getCallableReturnBinding(functionReturnSummaries.get(callable.symbolKey)) : undefined;
     const returnBinding = resolved && !resolved.dynamic
       ? extendTrackedBinding(resolved.binding, resolved.segments)
@@ -570,7 +614,11 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
     const publicReturnBinding = getPublicReturnBinding(node);
     const returnedExpression = unwrapExpression(node.expression);
     const returnedStructureStaysExact = Boolean(
+      helperReturnBinding
+      || isReturnedParameterIdentifier(enclosingFunction, returnedExpression)
+      || (
       (returnBinding && propagated && sameTrackedBinding(propagated, returnBinding))
+      )
       || isExactStructuredReturnExpression(callable, returnedExpression),
     );
     if (publicReturnBinding) {
@@ -583,7 +631,7 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
       if (!publicCallable && !returnedStructureStaysExact) {
         markEscapedAggregateLiteralBindings(
           returnedExpression,
-          SKIP_CATEGORY.returnedObject,
+          "returned-object",
           "stored inside returned aggregate literal beyond exact local analysis",
         );
       }
@@ -593,7 +641,7 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
       markEscaped(
         returnBinding.trackedObject,
         returnBinding.prefix,
-        SKIP_CATEGORY.returnedObject,
+        "returned-object",
         "returned object escapes local analysis",
       );
     }

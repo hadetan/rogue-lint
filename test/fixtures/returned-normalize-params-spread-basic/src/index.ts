@@ -11,22 +11,24 @@ type Check = {
 };
 
 function normalizeParams(_params: Params | string | undefined): Partial<Check> {
-  const params: any = typeof _params === "string" ? { message: _params } : (_params ?? {});
+  const params: Params = typeof _params === "string" ? { message: _params } : (_params ?? {});
 
   if (params.message !== undefined) {
     if (params.error !== undefined) {
       throw new Error("Cannot specify both message and error");
     }
+
     params.error = params.message;
   }
 
-  delete params.message;
+  const { message: _message, ...rest } = params;
 
-  if (typeof params.error === "string") {
-    return { ...params, error: () => params.error };
+  if (typeof rest.error === "string") {
+    const error = rest.error;
+    return { ...rest, error: () => error };
   }
 
-  return params;
+  return rest;
 }
 
 function buildCheck(params?: Params | string): Check {

@@ -5,10 +5,10 @@ import { getSymbolKey, hasModifier, isReadLikeUse } from "../../compiler/ast-uti
 import { toRelative } from "../../shared/path-utils.js";
 import { indexSegment, propertySegment, serializePath } from "../../shared/path-utils.js";
 import { HelperParameterSummaryState } from "./model.js";
-import type { CallableReturnSummary, HelperParameterEffectKind, HelperParameterSummary, ValueAnalysisCaches } from "./model.js";
+import type { CallableReturnSummary, HelperParameterSummary, ValueAnalysisCaches } from "./model.js";
 import { getCanonicalSymbol, getCanonicalSymbolKey, getStaticGlobalThisPropertyName } from "./bindings.js";
-import { getObjectBackedRetainedBindingSlotKeyFromAccess, isSupportedRetainedBindingContainerType } from "./retained-bindings.js";
 import { getAnalyzableCallableBinding, getAnalyzableCallableBindingFromDeclaration, resolveAnalyzableFunctionDeclaration } from "./callables.js";
+import { getObjectBackedRetainedBindingSlotKeyFromAccess, isSupportedRetainedBindingContainerType } from "./retained-bindings.js";
 import { isTrackablePureExpression } from "./trackable-structures.js";
 import { ASSIGNMENT_OPERATORS, getStaticObjectLiteralPropertyName, isPureObjectConstructorExpression, unwrapExpression } from "./syntax.js";
 import {
@@ -90,24 +90,19 @@ function getHelperLocationText(project: ProjectContext, sourceFile: ts.SourceFil
   return `${toRelative(project.rootPath, sourceFile.fileName)}:${line + 1}:${character + 1}`;
 }
 
-function addHelperParameterEffect(summary: HelperParameterSummary, effect: HelperParameterEffectKind): void {
-  summary.effectKinds.add(effect);
-}
-
-function addHelperParameterExactReadPath(summary: HelperParameterSummary, path: PathSegment[]): void {
-  const serialized = serializePath(path);
-  if (summary.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
-    return;
-  }
-  summary.exactReadPaths.push(path);
-}
-
 function mergeHelperParameterSummary(
   summary: HelperParameterSummary,
   nested: HelperParameterSummary,
 ): void {
-  nested.effectKinds.forEach((effect) => addHelperParameterEffect(summary, effect));
-  nested.exactReadPaths.forEach((path) => addHelperParameterExactReadPath(summary, path));
+  nested.effectKinds.forEach((effect) => summary.effectKinds.add(effect));
+  for (const path of nested.exactReadPaths) {
+    const serialized = serializePath(path);
+    if (summary.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
+      continue;
+    }
+
+    summary.exactReadPaths.push(path);
+  }
 }
 
 function pathStartsWith(path: PathSegment[], prefix: PathSegment[]): boolean {
@@ -200,22 +195,28 @@ function trySummarizeAggregateLiteralForwarding(
   const remapped = new HelperParameterSummaryState();
   let matched = false;
 
-  nestedSummary.exactReadPaths.forEach((path) => {
+  for (const path of nestedSummary.exactReadPaths) {
     if (!pathStartsWith(path, forwarding.path)) {
-      return;
+      continue;
     }
 
     matched = true;
-    addHelperParameterExactReadPath(remapped, path.slice(forwarding.path.length));
-  });
+    const remappedPath = path.slice(forwarding.path.length);
+    const serialized = serializePath(remappedPath);
+    if (remapped.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
+      continue;
+    }
+
+    remapped.exactReadPaths.push(remappedPath);
+  }
 
   if (!matched) {
     return undefined;
   }
 
-  addHelperParameterEffect(remapped, TRACKING_HELPER_PARAMETER_EFFECT_KIND.read);
+  remapped.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.read);
   if (nestedSummary.effectKinds.has(TRACKING_HELPER_PARAMETER_EFFECT_KIND.returnedAlias)) {
-    addHelperParameterEffect(remapped, TRACKING_HELPER_PARAMETER_EFFECT_KIND.returnedAlias);
+    remapped.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.returnedAlias);
   }
 
   return remapped;
@@ -226,7 +227,7 @@ function markHelperParameterBoundary(
   node: ts.Node,
   reason: string,
 ): void {
-  addHelperParameterEffect(summary, TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape);
+  summary.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape);
   if (!summary.boundaryReason) {
     summary.boundaryNode = node;
     summary.boundaryReason = reason;
@@ -754,7 +755,7 @@ export function summarizeHelperParameterUse(
       parameterName,
       "helper parameter cannot be resolved for exact analysis",
     );
-    addHelperParameterEffect(summary, "opaque-escape");
+    summary.effectKinds.add("opaque-escape");
     return summary;
   }
 
@@ -766,7 +767,7 @@ export function summarizeHelperParameterUse(
       parameterName,
       "recursive same-project helper forwarding prevents exact helper lifecycle analysis",
     );
-    addHelperParameterEffect(summary, "opaque-escape");
+    summary.effectKinds.add("opaque-escape");
     return summary;
   }
   if (cached !== undefined) {
@@ -799,7 +800,7 @@ export function summarizeHelperParameterUse(
 
   const handleTrackedAssignment = (left: ts.Expression): boolean => {
     if (getStaticGlobalThisPropertyName(left)) {
-      addHelperParameterEffect(summary, "retained-binding");
+      summary.effectKinds.add("retained-binding");
       return true;
     }
 
@@ -807,7 +808,7 @@ export function summarizeHelperParameterUse(
       (ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left))
       && getObjectBackedRetainedBindingSlotKeyFromAccess(project, left)
     ) {
-      addHelperParameterEffect(summary, "retained-binding");
+      summary.effectKinds.add("retained-binding");
       return true;
     }
 
@@ -816,7 +817,7 @@ export function summarizeHelperParameterUse(
       return false;
     }
 
-    addHelperParameterEffect(summary, "retained-binding");
+    summary.effectKinds.add("retained-binding");
     if (isSymbolDeclaredWithinFunction(target, declaration)) {
       if (ts.isIdentifier(left)) {
         addAliasSymbol(left);
@@ -871,7 +872,7 @@ export function summarizeHelperParameterUse(
         markHelperParameterBoundary(summary, node, "helper rebinds this value through an unsupported pattern");
         return;
       }
-      addHelperParameterEffect(summary, "retained-binding");
+      summary.effectKinds.add("retained-binding");
       addAliasSymbol(node.name);
     }
 
@@ -898,13 +899,13 @@ export function summarizeHelperParameterUse(
 
     if (ts.isReturnStatement(node) && node.expression) {
       if (isTrackedAliasIdentifier(node.expression)) {
-        addHelperParameterEffect(summary, "returned-alias");
+        summary.effectKinds.add("returned-alias");
       }
       if (
         (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression))
         && isTrackedAliasIdentifier(node.expression.expression)
       ) {
-        addHelperParameterEffect(summary, "returned-alias");
+        summary.effectKinds.add("returned-alias");
       }
     }
 
@@ -913,7 +914,14 @@ export function summarizeHelperParameterUse(
 
       const exactReadPaths = getExactHelperReadPaths(project, node);
       if (exactReadPaths) {
-        exactReadPaths.forEach((path) => addHelperParameterExactReadPath(summary, path));
+        for (const path of exactReadPaths) {
+          const serialized = serializePath(path);
+          if (summary.exactReadPaths.some((candidate) => serializePath(candidate) === serialized)) {
+            continue;
+          }
+
+          summary.exactReadPaths.push(path);
+        }
       }
 
       if (
@@ -941,7 +949,7 @@ export function summarizeHelperParameterUse(
             && argumentIndex === 1
             && isSupportedRetainedBindingContainerType(project, parent.expression.expression)
           ) {
-            addHelperParameterEffect(summary, "retained-binding");
+            summary.effectKinds.add("retained-binding");
             return;
           }
 
@@ -958,7 +966,7 @@ export function summarizeHelperParameterUse(
           }
 
           const nestedSummary = summarizeHelperParameterUse(project, callable, nestedParameter.name, cache, summaryCache);
-          nestedSummary.effectKinds.forEach((effect) => addHelperParameterEffect(summary, effect));
+          nestedSummary.effectKinds.forEach((effect) => summary.effectKinds.add(effect));
           if (nestedSummary.boundaryReason) {
             markHelperParameterBoundary(summary, nestedSummary.boundaryNode ?? parent, nestedSummary.boundaryReason);
           }
@@ -982,7 +990,7 @@ export function summarizeHelperParameterUse(
           || ARRAY_REORDER_METHODS.has(methodName)
           || methodName === TRACKING_ARRAY_INDEX_ACCESS_METHOD
         ) {
-          addHelperParameterEffect(summary, WHOLE_ARRAY_CONSUMPTION_METHODS.has(methodName) ? "read" : "mutation");
+          summary.effectKinds.add(WHOLE_ARRAY_CONSUMPTION_METHODS.has(methodName) ? "read" : "mutation");
           return;
         }
       }
@@ -994,7 +1002,7 @@ export function summarizeHelperParameterUse(
         && parent.parent.left === parent
         && parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        addHelperParameterEffect(summary, "mutation");
+        summary.effectKinds.add("mutation");
         return;
       }
 
@@ -1005,7 +1013,7 @@ export function summarizeHelperParameterUse(
         && parent.parent.left === parent
         && parent.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
       ) {
-        addHelperParameterEffect(summary, "mutation");
+        summary.effectKinds.add("mutation");
         return;
       }
 
@@ -1014,9 +1022,9 @@ export function summarizeHelperParameterUse(
         callablePurity: new Map(),
       });
       if (callArgumentUse === TRACKING_ACCESS_KIND.read) {
-        addHelperParameterEffect(summary, "read");
+        summary.effectKinds.add("read");
       } else if (isUpdateRead(node) || isReadLikeUse(node)) {
-        addHelperParameterEffect(summary, TRACKING_HELPER_PARAMETER_EFFECT_KIND.read);
+        summary.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.read);
       }
     }
 
@@ -1042,7 +1050,7 @@ export function summarizeHelperParameterUse(
       || summary.boundaryReason === "helper stores this value in an unsupported retained location"
     )
   ) {
-    addHelperParameterEffect(summary, TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape);
+    summary.effectKinds.add(TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape);
     summary.boundaryNode = directStorageNode;
     summary.boundaryReason = "helper stores this value by reference beyond exact local analysis";
   }
@@ -1052,7 +1060,7 @@ export function summarizeHelperParameterUse(
 
 export function buildHelperBoundaryReason(
   project: ProjectContext,
-  summary: HelperParameterSummary,
+  summary: Pick<HelperParameterSummary, "boundaryNode" | "boundaryReason">,
   fallback: string,
 ): string {
   if (!summary.boundaryReason || !summary.boundaryNode) {

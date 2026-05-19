@@ -121,6 +121,9 @@ export type TrackedObjectStructuralRole = (typeof TRACKING_STRUCTURAL_ROLE)[keyo
 export interface TrackedObject {
   id: string;
   reportingOwnerId?: string;
+  derivedStateRevision: number;
+  specializationSourceRevision?: number;
+  specializationBindingSignature?: string;
   canonicalSymbolKey: string;
   rootName: string;
   sourceFile: string;

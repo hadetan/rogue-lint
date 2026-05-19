@@ -1,14 +1,13 @@
 import ts from "typescript";
 
 import { getSuppressionAudit } from "../../../suppressions.js";
-import type { EntityRecord, PathSegment, ProjectContext, SkipCategory, SuppressionContext, TrackedObject } from "../../../types.js";
-import { ENTITY_KIND } from "../../../shared/entity-vocabulary.js";
+import type { AuditRecord, EntityRecord, FindingRecord, PathSegment, ProjectContext, SkipCategory, SuppressionContext, TrackedObject } from "../../../types.js";
 import { FINDING_KIND } from "../../../shared/finding-vocabulary.js";
 import { makeEntity } from "../../../shared/entity-utils.js";
 import { PATH_SEGMENT_KIND } from "../../../shared/path-vocabulary.js";
 import { indexSegment, renderPathWithRoot } from "../../../shared/path-utils.js";
 import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
-import { addAudit, addFinding, type AnalysisState } from "../../analysis-state.js";
+import { addAudit } from "../../analysis-state.js";
 import { getAccessPath, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, getBindingByNode } from "../bindings.js";
 import type { CallableReturnSummary, ExactAppendSlotPlan, TrackedObjectBinding } from "../model.js";
@@ -42,7 +41,7 @@ function buildReadExpressionEntity(
 ): EntityRecord {
   return makeEntity(
     project.rootPath,
-    ENTITY_KIND.expression,
+    "expression",
     sourceFile,
     node,
     renderPathWithRoot(trackedObject.rootName, fullPath),
@@ -79,7 +78,8 @@ export function recordArrayBoundary(
 export function maybeReportInvalidatedRead(
   project: ProjectContext,
   sourceFile: ts.SourceFile,
-  state: AnalysisState,
+  findings: FindingRecord[],
+  kept: AuditRecord[],
   suppressionContext: SuppressionContext,
   overlayState: ObjectPathOverlayState,
   trackedObject: TrackedObject,
@@ -101,21 +101,21 @@ export function maybeReportInvalidatedRead(
 
   const entity = buildReadExpressionEntity(project, trackedObject, sourceFile, node, fullPath);
   const suppression = getSuppressionAudit(project, suppressionContext, entity, node);
-  if (addAudit(state.kept, suppression)) {
+  if (addAudit(kept, suppression)) {
     return;
   }
 
   const renderedPath = renderPathWithRoot(trackedObject.rootName, fullPath);
-  addFinding(
-    state,
+  findings.push({
+    id: entity.id,
+    kind: invalidated.findingKind,
     entity,
-    invalidated.findingKind,
-    invalidated.reason,
-    invalidated.findingKind === FINDING_KIND.invalidatedRead
+    reason: invalidated.reason,
+    message: invalidated.findingKind === FINDING_KIND.invalidatedRead
       ? `Invalidated read of ${renderedPath}`
       : `Stale read after mutation of ${renderedPath}`,
-    "review",
-  );
+    suggestion: "remove",
+  });
 }
 
 export function handleTrackedArrayMutation(

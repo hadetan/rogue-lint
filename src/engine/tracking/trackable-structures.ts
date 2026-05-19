@@ -158,7 +158,7 @@ export function isTrackableReturnObjectStructure(node: ts.ObjectLiteralExpressio
 /**
  * Reports whether a local object or array literal can remain exact in the tracked graph.
  */
-export function isTrackableObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression): boolean {
+function isTrackableObjectStructure(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression): boolean {
   if (ts.isObjectLiteralExpression(node)) {
     return node.properties.every((property) => {
       if (ts.isSpreadAssignment(property)) {

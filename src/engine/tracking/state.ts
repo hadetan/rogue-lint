@@ -21,6 +21,18 @@ import type { ArrayProjectionBinding, ExactAppendSlotPlan, TrackedObjectBinding,
  * and projection helpers so both heavy stages reuse the same state-transition rules.
  */
 
+export function bumpTrackedObjectDerivedStateRevision(trackedObject: TrackedObject): void {
+  trackedObject.derivedStateRevision += 1;
+}
+
+function observeTrackedValueFateShape(record: TrackedObject["valueFates"][number]): void {
+  void record.fate;
+  void record.path;
+  void record.reason;
+  void record.relatedObjectId;
+  void record.relatedPath;
+}
+
 export function addValueFate(
   trackedObject: TrackedObject,
   fate: TrackedValueFate,
@@ -41,20 +53,24 @@ export function addValueFate(
     }
   }
 
-  trackedObject.valueFates.push({
+  const record: TrackedObject["valueFates"][number] = {
     fate,
     path,
     reason,
     relatedObjectId,
     relatedPath,
-  });
+  };
+  observeTrackedValueFateShape(record);
+  trackedObject.valueFates.push(record);
 }
 
 function clearExactAliasesWithin(trackedObject: TrackedObject, segments: PathSegment[]): void {
   const prefix = serializePath(segments);
   for (const key of [...trackedObject.exactPathAliases.keys()]) {
     if (isSerializedPathWithin(key, prefix)) {
-      trackedObject.exactPathAliases.delete(key);
+      if (trackedObject.exactPathAliases.delete(key)) {
+        bumpTrackedObjectDerivedStateRevision(trackedObject);
+      }
     }
   }
 }
@@ -65,12 +81,23 @@ export function registerExactPathAlias(
   sourceBinding: TrackedObjectBinding,
   reason: string,
 ): void {
-  receiver.exactPathAliases.set(serializePath(receiverPath), {
+  const serializedReceiverPath = serializePath(receiverPath);
+  const existingAlias = receiver.exactPathAliases.get(serializedReceiverPath);
+  if (
+    existingAlias
+    && existingAlias.sourceObjectId === sourceBinding.trackedObject.id
+    && samePath(existingAlias.sourcePath, sourceBinding.prefix)
+  ) {
+    return;
+  }
+
+  receiver.exactPathAliases.set(serializedReceiverPath, {
     fate: TRACKING_VALUE_FATE.insertedByReference,
     sourceObjectId: sourceBinding.trackedObject.id,
     sourcePath: sourceBinding.prefix,
     observed: false,
   });
+  bumpTrackedObjectDerivedStateRevision(receiver);
   addValueFate(
     receiver,
     TRACKING_VALUE_FATE.insertedByReference,
@@ -156,7 +183,7 @@ export function buildCollectionBoundaryEntity(
 ): EntityRecord {
   return makeEntity(
     project.rootPath,
-    "collection-boundary",
+    ENTITY_KIND.collectionBoundary,
     sourceFile,
     node,
     renderPathWithRoot(trackedObject.rootName, segments),
@@ -405,6 +432,7 @@ export function markEscaped(
   reason: string,
 ): void {
   trackedObject.escapedPaths.set(serializePath(segments), { category, reason });
+  bumpTrackedObjectDerivedStateRevision(trackedObject);
   setPlaceState(trackedObject, segments, TRACKING_PLACE_STATE.escaped);
   addValueFate(trackedObject, TRACKING_VALUE_FATE.escapedOpaquely, segments, reason);
   if (!(category === SKIP_CATEGORY.opaqueObjectCall && segments.length === 0)) {

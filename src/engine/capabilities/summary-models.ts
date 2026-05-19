@@ -2,7 +2,7 @@ import type { ProjectContext, SkipCategory } from "../../types.js";
 import { SKIP_CATEGORY } from "../../shared/skip-category-vocabulary.js";
 
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import { VALUE_LIVENESS_TRACKING_STAGE } from "../tracking/contracts.js";
+import { TRACKING_GRAPH_BUILD_TRACKING_STAGE } from "../tracking/contracts.js";
 import type { CallableReturnSummary } from "../tracking/model.js";
 import { TRACKING_RETURN_SUMMARY_KIND } from "../tracking/vocabulary.js";
 import type {
@@ -11,9 +11,20 @@ import type {
   AnalysisCapabilityObligationRecord,
 } from "./types.js";
 import {
-  ANALYSIS_CAPABILITY_DETAIL_LABEL,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_ARRAY_AT_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_CALLBACK_TRANSPORT_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_COMPUTED_KEY_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_DYNAMIC_INDEX_BOUNDARY,
   ANALYSIS_CAPABILITY_FALLBACK_BOUNDARY_LABEL,
   ANALYSIS_CAPABILITY_ID,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_MUTATION_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_TRANSPORT_BOUNDARY,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_PROMISE_ALL_TRANSPORT,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_RETURNED_STRUCTURE,
 } from "./vocabulary.js";
 
 interface AnalysisCapabilitySummaryRegistry {
@@ -24,7 +35,7 @@ function hasSameProjectTransportSummary(artifacts: AnalysisArtifacts): boolean {
   let returnSummaries: ReadonlyMap<string, CallableReturnSummary>;
 
   try {
-    returnSummaries = artifacts.getTrackingStageArtifacts(VALUE_LIVENESS_TRACKING_STAGE).returnSummaries.byCallableId;
+    returnSummaries = artifacts.getTrackingStageArtifacts(TRACKING_GRAPH_BUILD_TRACKING_STAGE).returnSummaries.byCallableId;
   } catch {
     return false;
   }
@@ -60,23 +71,23 @@ function getCapabilityDetailHintLabel(
 
   switch (capabilityId) {
     case ANALYSIS_CAPABILITY_ID.helperTransport:
-      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperTransport)) {
-        return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperTransport;
+      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT)) {
+        return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT;
       }
-      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperRetainedStorage)) {
-        return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperRetainedStorage;
+      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE)) {
+        return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE;
       }
-      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperEscape)) {
-        return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperEscape;
+      if (detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE)) {
+        return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE;
       }
       return undefined;
     case ANALYSIS_CAPABILITY_ID.finiteKeyedAccess:
-      return detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL.boundedFiniteKeyRead)
-        ? ANALYSIS_CAPABILITY_DETAIL_LABEL.boundedFiniteKeyRead
+      return detailHint.startsWith(ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ)
+        ? ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ
         : undefined;
     case ANALYSIS_CAPABILITY_ID.returnedStructureTransport:
       return detailHint.startsWith("Promise.all()")
-        ? ANALYSIS_CAPABILITY_DETAIL_LABEL.promiseAllTransport
+        ? ANALYSIS_CAPABILITY_DETAIL_LABEL_PROMISE_ALL_TRANSPORT
         : undefined;
     default:
       return undefined;
@@ -95,22 +106,22 @@ function getCapabilityBoundaryCategoryLabel(
     case ANALYSIS_CAPABILITY_ID.helperTransport:
       switch (category) {
         case SKIP_CATEGORY.arrayCallbackEscape:
-          return ANALYSIS_CAPABILITY_DETAIL_LABEL.callbackTransportBoundary;
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_CALLBACK_TRANSPORT_BOUNDARY;
         case SKIP_CATEGORY.arrayOpaqueMutation:
-          return ANALYSIS_CAPABILITY_DETAIL_LABEL.opaqueHelperMutationBoundary;
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_MUTATION_BOUNDARY;
         case SKIP_CATEGORY.opaqueObjectCall:
-          return ANALYSIS_CAPABILITY_DETAIL_LABEL.opaqueHelperTransportBoundary;
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_TRANSPORT_BOUNDARY;
         default:
           return undefined;
       }
     case ANALYSIS_CAPABILITY_ID.finiteKeyedAccess:
       switch (category) {
         case SKIP_CATEGORY.arrayAtCall:
-          return ANALYSIS_CAPABILITY_DETAIL_LABEL.arrayAtBoundary;
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_ARRAY_AT_BOUNDARY;
         case SKIP_CATEGORY.computedPropertyAccess:
-          return ANALYSIS_CAPABILITY_DETAIL_LABEL.computedKeyBoundary;
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_COMPUTED_KEY_BOUNDARY;
         case SKIP_CATEGORY.dynamicArrayIndex:
-          return ANALYSIS_CAPABILITY_DETAIL_LABEL.dynamicIndexBoundary;
+          return ANALYSIS_CAPABILITY_DETAIL_LABEL_DYNAMIC_INDEX_BOUNDARY;
         default:
           return undefined;
       }
@@ -130,7 +141,7 @@ export function getCapabilityObligationDetailLabel(
   }
 
   if (capabilityId === ANALYSIS_CAPABILITY_ID.returnedStructureTransport && registry.hasSameProjectReturnedStructureTransport) {
-    return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectReturnedStructure;
+    return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_RETURNED_STRUCTURE;
   }
 
   return undefined;

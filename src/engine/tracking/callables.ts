@@ -107,13 +107,13 @@ export function joinCallableReturnSummaries(
   if (!next) {
     if (current.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
       return {
-        summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
+        summary: { kind: "opaque" },
         widened: false,
       };
     }
 
     return {
-      summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
+      summary: { kind: "opaque" },
       widened: true,
       reason: "missing follow-up summary widened to opaque",
     };
@@ -128,14 +128,14 @@ export function joinCallableReturnSummaries(
 
   if (current.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
     return {
-      summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
+      summary: { kind: "opaque" },
       widened: false,
     };
   }
 
   if (next.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
     return {
-      summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
+      summary: { kind: "opaque" },
       widened: true,
       reason: "unsupported summary widened to opaque",
     };
@@ -146,7 +146,7 @@ export function joinCallableReturnSummaries(
     && next.kind === TRACKING_RETURN_SUMMARY_KIND.value
   ) {
     return {
-      summary: { kind: TRACKING_RETURN_SUMMARY_KIND.value },
+      summary: { kind: "value" },
       widened: false,
     };
   }
@@ -174,7 +174,7 @@ export function joinCallableReturnSummaries(
     ) {
       return {
         summary: {
-          kind: TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
+          kind: "returned-alias",
           binding: cloneTrackedBinding(currentBinding),
         },
         widened:
@@ -188,7 +188,7 @@ export function joinCallableReturnSummaries(
 
     return {
       summary: {
-        kind: TRACKING_RETURN_SUMMARY_KIND.structured,
+        kind: "structured",
         binding: cloneTrackedBinding(currentBinding),
       },
       widened: false,
@@ -196,7 +196,7 @@ export function joinCallableReturnSummaries(
   }
 
   return {
-    summary: { kind: TRACKING_RETURN_SUMMARY_KIND.opaque },
+    summary: { kind: "opaque" },
     widened: true,
     reason: "conflicting precise summaries widened to opaque",
   };
@@ -206,12 +206,20 @@ export function diffCallableReturnSummaryMaps(
   left: Map<string, CallableReturnSummary>,
   right: Map<string, CallableReturnSummary>,
   sampleLimit: number,
+  heartbeat?: () => void,
 ): TrackingMapDiff {
   let changedCount = 0;
   const sampleKeys: string[] = [];
   const keys = new Set<string>([...left.keys(), ...right.keys()]);
+  let heartbeatCounter = 0;
 
   for (const key of keys) {
+    heartbeatCounter += 1;
+    if (heartbeatCounter >= 2048) {
+      heartbeatCounter = 0;
+      heartbeat?.();
+    }
+
     const current = left.get(key);
     const next = right.get(key);
     if (!current || !next || !sameCallableReturnSummary(current, next)) {

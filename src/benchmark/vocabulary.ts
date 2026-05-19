@@ -31,11 +31,12 @@ const BENCHMARK_GAP_PRIORITY_SCOPE = {
   knownSkip: "known-skip",
   knownSkipGrowth: "known-skip-growth",
   unexpectedFinding: "unexpected-finding",
-  unexpectedDiagnostic: "unexpected-diagnostic",
   unexpectedSkip: "unexpected-skip",
 } as const;
 
-export type BenchmarkGapPriorityScope = (typeof BENCHMARK_GAP_PRIORITY_SCOPE)[keyof typeof BENCHMARK_GAP_PRIORITY_SCOPE];
+export type BenchmarkGapPriorityScope =
+  | (typeof BENCHMARK_GAP_PRIORITY_SCOPE)[keyof typeof BENCHMARK_GAP_PRIORITY_SCOPE]
+  | typeof BENCHMARK_DIAGNOSTIC_GAP_PRIORITY_SCOPE;
 
 export const BENCHMARK_FINDING_GAP_PRIORITY_SCOPE = {
   accepted: BENCHMARK_GAP_PRIORITY_SCOPE.acceptedFinding,
@@ -53,63 +54,38 @@ export const BENCHMARK_SKIP_GAP_PRIORITY_SCOPE = {
 
 export type BenchmarkSkipGapPriorityScope = (typeof BENCHMARK_SKIP_GAP_PRIORITY_SCOPE)[keyof typeof BENCHMARK_SKIP_GAP_PRIORITY_SCOPE];
 
-export const BENCHMARK_DIAGNOSTIC_GAP_PRIORITY_SCOPE = BENCHMARK_GAP_PRIORITY_SCOPE.unexpectedDiagnostic;
-
-const BENCHMARK_GAP_PRIORITY_SCOPE_DETAILS = [
-  {
-    scope: BENCHMARK_GAP_PRIORITY_SCOPE.acceptedFindingGrowth,
-    rank: 0,
-    label: "accepted finding growth",
-  },
-  {
-    scope: BENCHMARK_GAP_PRIORITY_SCOPE.knownSkipGrowth,
-    rank: 0,
-    label: "known skip growth",
-  },
-  {
-    scope: BENCHMARK_GAP_PRIORITY_SCOPE.unexpectedFinding,
-    rank: 1,
-    label: "unexpected finding",
-  },
-  {
-    scope: BENCHMARK_GAP_PRIORITY_SCOPE.unexpectedDiagnostic,
-    rank: 1,
-    label: "unexpected diagnostic",
-  },
-  {
-    scope: BENCHMARK_GAP_PRIORITY_SCOPE.unexpectedSkip,
-    rank: 1,
-    label: "unexpected skip",
-  },
-  {
-    scope: BENCHMARK_GAP_PRIORITY_SCOPE.acceptedFinding,
-    rank: 2,
-    label: "accepted finding",
-  },
-  {
-    scope: BENCHMARK_GAP_PRIORITY_SCOPE.knownSkip,
-    rank: 2,
-    label: "known skip",
-  },
-] as const satisfies ReadonlyArray<{
-  scope: BenchmarkGapPriorityScope;
-  rank: number;
-  label: string;
-}>;
-
-function getBenchmarkGapPriorityScopeDetail(scope: BenchmarkGapPriorityScope): (typeof BENCHMARK_GAP_PRIORITY_SCOPE_DETAILS)[number] {
-  const detail = BENCHMARK_GAP_PRIORITY_SCOPE_DETAILS.find((candidate) => candidate.scope === scope);
-  if (!detail) {
-    throw new Error(`Unknown benchmark gap priority scope: ${scope}`);
-  }
-
-  return detail;
-}
+export const BENCHMARK_DIAGNOSTIC_GAP_PRIORITY_SCOPE = "unexpected-diagnostic" as const;
 
 export function getBenchmarkGapPriorityRank(scope: BenchmarkGapPriorityScope): number {
-  return getBenchmarkGapPriorityScopeDetail(scope).rank;
+  switch (scope) {
+    case BENCHMARK_GAP_PRIORITY_SCOPE.acceptedFindingGrowth:
+    case BENCHMARK_GAP_PRIORITY_SCOPE.knownSkipGrowth:
+      return 0;
+    case BENCHMARK_GAP_PRIORITY_SCOPE.unexpectedFinding:
+    case BENCHMARK_DIAGNOSTIC_GAP_PRIORITY_SCOPE:
+    case BENCHMARK_GAP_PRIORITY_SCOPE.unexpectedSkip:
+      return 1;
+    case BENCHMARK_GAP_PRIORITY_SCOPE.acceptedFinding:
+    case BENCHMARK_GAP_PRIORITY_SCOPE.knownSkip:
+      return 2;
+  }
 }
 
 export function formatBenchmarkGapPriorityScope(scope: BenchmarkGapPriorityScope): string {
-  return getBenchmarkGapPriorityScopeDetail(scope).label;
+  switch (scope) {
+    case BENCHMARK_GAP_PRIORITY_SCOPE.acceptedFindingGrowth:
+      return "accepted finding growth";
+    case BENCHMARK_GAP_PRIORITY_SCOPE.knownSkipGrowth:
+      return "known skip growth";
+    case BENCHMARK_GAP_PRIORITY_SCOPE.unexpectedFinding:
+      return "unexpected finding";
+    case BENCHMARK_DIAGNOSTIC_GAP_PRIORITY_SCOPE:
+      return "unexpected diagnostic";
+    case BENCHMARK_GAP_PRIORITY_SCOPE.unexpectedSkip:
+      return "unexpected skip";
+    case BENCHMARK_GAP_PRIORITY_SCOPE.acceptedFinding:
+      return "accepted finding";
+    case BENCHMARK_GAP_PRIORITY_SCOPE.knownSkip:
+      return "known skip";
+  }
 }

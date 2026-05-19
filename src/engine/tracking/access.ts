@@ -40,6 +40,7 @@ import {
   getCallableReturnBinding,
 } from "./callables.js";
 import {
+  bumpTrackedObjectDerivedStateRevision,
   getCollectionInfo,
   getConcreteProjectionPaths,
   getTrackedArrayLength,
@@ -48,6 +49,7 @@ import {
   registerExactPathAlias,
   resolveExactPathAlias,
 } from "./state.js";
+import { materializeTrackedLiteralAtPath } from "./literal-materialization.js";
 import {
   getObjectBackedRetainedBindingSlotKeyFromAccess,
   getRetainedBindingContainerSlotKey,
@@ -56,6 +58,7 @@ import {
 import { visitResolvedSpreadPropertySegments } from "./spread-support.js";
 import { unwrapExpression } from "./syntax.js";
 import {
+  TRACKING_CALL_SITE_SPECIALIZATION_KIND,
   TRACKING_ARRAY_END_REMOVAL_METHODS,
   TRACKING_ARRAY_INDEX_ACCESS_METHOD,
   TRACKING_COLLECTION_KIND,
@@ -73,6 +76,19 @@ import {
  * both heavy analyzer stages.
  */
 
+let trackingAccessHeartbeat: (() => void) | undefined;
+
+export function withTrackingAccessHeartbeat<T>(heartbeat: (() => void) | undefined, work: () => T): T {
+  const previousHeartbeat = trackingAccessHeartbeat;
+  trackingAccessHeartbeat = heartbeat;
+
+  try {
+    return work();
+  } finally {
+    trackingAccessHeartbeat = previousHeartbeat;
+  }
+}
+
 function hasExactTrackedPath(trackedObject: TrackedObject, segments: PathSegment[]): boolean {
   const joinedPath = serializePath(segments);
   return trackedObject.nodes.has(joinedPath)
@@ -87,39 +103,16 @@ function cloneTrackedObjectForCallSite(base: TrackedObject, id: string): Tracked
     ...base,
     id,
     reportingOwnerId: base.reportingOwnerId ?? base.id,
-    nodes: new Map([...base.nodes.entries()].map(([key, value]) => [key, {
-      entity: value.entity,
-      fullPath: [...value.fullPath],
-      origin: value.origin,
-    }])),
-    callablePaths: new Map([...base.callablePaths.entries()].map(([key, value]) => [key, {
-      symbolKey: value.symbolKey,
-      declaration: value.declaration,
-    }])),
-    descendantNodeKeys: new Map([...base.descendantNodeKeys.entries()].map(([key, value]) => [key, [...value]])),
-    collections: new Map([...base.collections.entries()].map(([key, value]) => [key, {
-      kind: value.kind,
-      path: [...value.path],
-      childPaths: value.childPaths.map((childPath) => [...childPath]),
-      arrayLength: value.arrayLength,
-    }])),
-    collectionStates: new Map([...base.collectionStates.entries()].map(([key, value]) => [key, {
-      path: [...value.path],
-      epoch: value.epoch,
-      arrayLength: value.arrayLength,
-    }])),
-    collectionBoundaries: new Map([...base.collectionBoundaries.entries()].map(([key, value]) => [key, {
-      entity: value.entity,
-      path: [...value.path],
-      category: value.category,
-      reason: value.reason,
-    }])),
-    invalidatedCollectionPaths: new Set(base.invalidatedCollectionPaths),
-    invalidatedPaths: new Map([...base.invalidatedPaths.entries()].map(([key, value]) => [key, {
-      reason: value.reason,
-      findingKind: value.findingKind,
-    }])),
-    placeStates: new Map(base.placeStates),
+    specializationSourceRevision: base.derivedStateRevision,
+    nodes: base.nodes,
+    callablePaths: base.callablePaths,
+    descendantNodeKeys: base.descendantNodeKeys,
+    collections: base.collections,
+    collectionStates: base.collectionStates,
+    collectionBoundaries: base.collectionBoundaries,
+    invalidatedCollectionPaths: base.invalidatedCollectionPaths,
+    invalidatedPaths: base.invalidatedPaths,
+    placeStates: base.placeStates,
     observedSubtrees: new Set(),
     escapedPaths: new Map([...base.escapedPaths.entries()].map(([key, value]) => [key, {
       category: value.category,
@@ -129,50 +122,52 @@ function cloneTrackedObjectForCallSite(base: TrackedObject, id: string): Tracked
       ...alias,
       sourcePath: [...alias.sourcePath],
     }])),
-    valueFates: base.valueFates.map((valueFate) => ({
-      ...valueFate,
-      path: [...valueFate.path],
-      relatedPath: valueFate.relatedPath ? [...valueFate.relatedPath] : undefined,
-    })),
+    valueFates: [],
     reads: new Set(),
     writes: new Set(),
   };
 }
 
+function getCallSiteTrackedObjectId(
+  trackedObjectId: string,
+  specializationKind: (typeof TRACKING_CALL_SITE_SPECIALIZATION_KIND)[keyof typeof TRACKING_CALL_SITE_SPECIALIZATION_KIND],
+  sourceFile: string,
+  position: number,
+): string {
+  const specializationSuffix = `:${specializationKind}:${sourceFile}:${position}`;
+  return trackedObjectId.endsWith(specializationSuffix)
+    ? trackedObjectId
+    : `${trackedObjectId}${specializationSuffix}`;
+}
+
+function getSpecializationBindingSignature(
+  specializedBindings: Map<string, TrackedObjectBinding>,
+): string {
+  if (specializedBindings.size === 0) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  for (const [symbolKey, binding] of specializedBindings) {
+    parts.push(`${symbolKey}:${binding.trackedObject.id}:${serializePath(binding.prefix)}`);
+  }
+
+  parts.sort();
+  return parts.join("|");
+}
+
 function syncTrackedObjectForCallSite(target: TrackedObject, source: TrackedObject): void {
-  target.nodes = new Map([...source.nodes.entries()].map(([key, value]) => [key, {
-    entity: value.entity,
-    fullPath: [...value.fullPath],
-    origin: value.origin,
-  }]));
-  target.callablePaths = new Map([...source.callablePaths.entries()].map(([key, value]) => [key, {
-    symbolKey: value.symbolKey,
-    declaration: value.declaration,
-  }]));
-  target.descendantNodeKeys = new Map([...source.descendantNodeKeys.entries()].map(([key, value]) => [key, [...value]]));
-  target.collections = new Map([...source.collections.entries()].map(([key, value]) => [key, {
-    kind: value.kind,
-    path: [...value.path],
-    childPaths: value.childPaths.map((childPath) => [...childPath]),
-    arrayLength: value.arrayLength,
-  }]));
-  target.collectionStates = new Map([...source.collectionStates.entries()].map(([key, value]) => [key, {
-    path: [...value.path],
-    epoch: value.epoch,
-    arrayLength: value.arrayLength,
-  }]));
-  target.collectionBoundaries = new Map([...source.collectionBoundaries.entries()].map(([key, value]) => [key, {
-    entity: value.entity,
-    path: [...value.path],
-    category: value.category,
-    reason: value.reason,
-  }]));
-  target.invalidatedCollectionPaths = new Set(source.invalidatedCollectionPaths);
-  target.invalidatedPaths = new Map([...source.invalidatedPaths.entries()].map(([key, value]) => [key, {
-    reason: value.reason,
-    findingKind: value.findingKind,
-  }]));
-  target.placeStates = new Map(source.placeStates);
+  target.nodes = source.nodes;
+  target.callablePaths = source.callablePaths;
+  target.descendantNodeKeys = source.descendantNodeKeys;
+  target.collections = source.collections;
+  target.collectionStates = source.collectionStates;
+  target.collectionBoundaries = source.collectionBoundaries;
+  target.invalidatedCollectionPaths = source.invalidatedCollectionPaths;
+  target.invalidatedPaths = source.invalidatedPaths;
+  target.placeStates = source.placeStates;
+  target.specializationSourceRevision = source.derivedStateRevision;
+  target.observedSubtrees = new Set();
   target.escapedPaths = new Map([...source.escapedPaths.entries()].map(([key, value]) => [key, {
     category: value.category,
     reason: value.reason,
@@ -181,11 +176,9 @@ function syncTrackedObjectForCallSite(target: TrackedObject, source: TrackedObje
     ...alias,
     sourcePath: [...alias.sourcePath],
   }]));
-  target.valueFates = source.valueFates.map((valueFate) => ({
-    ...valueFate,
-    path: [...valueFate.path],
-    relatedPath: valueFate.relatedPath ? [...valueFate.relatedPath] : undefined,
-  }));
+  target.valueFates = [];
+  target.reads = new Set();
+  target.writes = new Set();
 }
 
 function collapseExactBindingPrefix(
@@ -193,8 +186,17 @@ function collapseExactBindingPrefix(
   trackedObjectsById: Map<string, TrackedObject>,
 ): TrackedObjectBinding {
   let current = binding;
+  const seen = new Set<string>();
 
   while (current.prefix.length > 0) {
+    trackingAccessHeartbeat?.();
+
+    const bindingKey = `${current.trackedObject.id}:${serializePath(current.prefix)}`;
+    if (seen.has(bindingKey)) {
+      break;
+    }
+    seen.add(bindingKey);
+
     const baseBinding = new TrackedObjectBindingRecord(current.trackedObject, []);
     const aliased = resolveExactPathAlias(baseBinding, current.prefix, trackedObjectsById);
     if (sameTrackedBinding(aliased.binding, baseBinding)) {
@@ -250,10 +252,9 @@ function getStructuredReturnLiterals(
     return [];
   }
 
-  const literals: Array<ts.ObjectLiteralExpression | ts.ArrayLiteralExpression> = [];
+  const literalsByStart = new Map<number, ts.ObjectLiteralExpression | ts.ArrayLiteralExpression>();
   let returnKind: "object" | "array" | undefined;
   let unsupported = false;
-  const seen = new Set<number>();
 
   const visit = (node: ts.Node): void => {
     if (unsupported) {
@@ -285,10 +286,7 @@ function getStructuredReturnLiterals(
       returnKind = nextKind;
 
       const literalStart = nextLiteral.getStart();
-      if (!seen.has(literalStart)) {
-        seen.add(literalStart);
-        literals.push(nextLiteral);
-      }
+      literalsByStart.set(literalStart, nextLiteral);
       return;
     }
 
@@ -296,7 +294,7 @@ function getStructuredReturnLiterals(
   };
 
   ts.forEachChild(callable.declaration.body, visit);
-  return unsupported ? [] : literals;
+  return unsupported ? [] : Array.from(literalsByStart.values());
 }
 
 function getTrackedStructuredReturnBinding(
@@ -307,10 +305,20 @@ function getTrackedStructuredReturnBinding(
   const canonicalSymbolKey = `${callable.symbolKey}:return:${ts.isObjectLiteralExpression(literal)
     ? TRACKING_COLLECTION_KIND.object
     : TRACKING_COLLECTION_KIND.array}`;
-  const exactMatch = [...trackedObjectsById.values()].find((trackedObject) => (
-    trackedObject.canonicalSymbolKey === canonicalSymbolKey && trackedObject.reportingOwnerId === undefined
-  ));
-  const fallbackMatch = exactMatch ?? [...trackedObjectsById.values()].find((trackedObject) => trackedObject.canonicalSymbolKey === canonicalSymbolKey);
+  let fallbackMatch: TrackedObject | undefined;
+
+  for (const trackedObject of trackedObjectsById.values()) {
+    if (trackedObject.canonicalSymbolKey !== canonicalSymbolKey) {
+      continue;
+    }
+
+    if (trackedObject.reportingOwnerId === undefined) {
+      return new TrackedObjectBindingRecord(trackedObject, []);
+    }
+
+    fallbackMatch ??= trackedObject;
+  }
+
   return fallbackMatch ? new TrackedObjectBindingRecord(fallbackMatch, []) : undefined;
 }
 
@@ -445,7 +453,9 @@ function registerSpecializedStructuredReturnAliases(
           visitResolvedSpreadPropertySegments(spreadBinding, (spreadSegment) => {
             const escapedPath = serializePath([...segments, spreadSegment]);
             if (trackedObject.escapedPaths.get(escapedPath)?.category === SKIP_CATEGORY.objectSpread) {
-              trackedObject.escapedPaths.delete(escapedPath);
+              if (trackedObject.escapedPaths.delete(escapedPath)) {
+                bumpTrackedObjectDerivedStateRevision(trackedObject);
+              }
             }
             registerExactPathAlias(
               trackedObject,
@@ -463,7 +473,9 @@ function registerSpecializedStructuredReturnAliases(
           if (!hasRemainingOpaqueSpread) {
             const escapedPath = serializePath(segments);
             if (trackedObject.escapedPaths.get(escapedPath)?.category === SKIP_CATEGORY.objectSpread) {
-              trackedObject.escapedPaths.delete(escapedPath);
+              if (trackedObject.escapedPaths.delete(escapedPath)) {
+                bumpTrackedObjectDerivedStateRevision(trackedObject);
+              }
             }
           }
         }
@@ -638,7 +650,12 @@ function specializeReturnedAliasBinding(
     return binding;
   }
 
-  const callSiteId = `${binding.trackedObject.id}:returned-call:${node.getSourceFile().fileName}:${node.getStart()}`;
+  const callSiteId = getCallSiteTrackedObjectId(
+    binding.trackedObject.id,
+    TRACKING_CALL_SITE_SPECIALIZATION_KIND.returnedCall,
+    node.getSourceFile().fileName,
+    node.getStart(),
+  );
   const existing = trackedObjectsById.get(callSiteId);
   if (existing) {
     syncTrackedObjectForCallSite(existing, binding.trackedObject);
@@ -765,11 +782,41 @@ export function getCallSiteStructuredReturnBinding(
     return remappedBinding;
   }
 
-  const callSiteId = `${binding.trackedObject.id}:call:${node.getSourceFile().fileName}:${node.getStart()}`;
+  const shouldMaterializeSpecializedNodes = structuredLiterals.length > 1;
+
+  const specializationBindingSignature = getSpecializationBindingSignature(specializedBindings);
+
+  const callSiteId = getCallSiteTrackedObjectId(
+    binding.trackedObject.id,
+    TRACKING_CALL_SITE_SPECIALIZATION_KIND.call,
+    node.getSourceFile().fileName,
+    node.getStart(),
+  );
   const existing = trackedObjectsById.get(callSiteId);
   if (existing) {
+    if (
+      existing.specializationSourceRevision === binding.trackedObject.derivedStateRevision
+      && existing.specializationBindingSignature === specializationBindingSignature
+    ) {
+      return new TrackedObjectBindingRecord(existing, []);
+    }
+
     syncTrackedObjectForCallSite(existing, binding.trackedObject);
+    existing.specializationBindingSignature = specializationBindingSignature;
     for (const literal of literals) {
+      if (shouldMaterializeSpecializedNodes) {
+        materializeTrackedLiteralAtPath(
+          project,
+          existing,
+          node.getSourceFile(),
+          literal,
+          binding.trackedObject.rootName,
+          [],
+          localBindings,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+      }
       registerSpecializedStructuredReturnAliases(
         project,
         existing,
@@ -785,9 +832,23 @@ export function getCallSiteStructuredReturnBinding(
   }
 
   const specialized = cloneTrackedObjectForCallSite(binding.trackedObject, callSiteId);
+  specialized.specializationBindingSignature = specializationBindingSignature;
   trackedObjectsById.set(callSiteId, specialized);
 
   for (const literal of literals) {
+    if (shouldMaterializeSpecializedNodes) {
+      materializeTrackedLiteralAtPath(
+        project,
+        specialized,
+        node.getSourceFile(),
+        literal,
+        binding.trackedObject.rootName,
+        [],
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+    }
     registerSpecializedStructuredReturnAliases(
       project,
       specialized,
@@ -817,9 +878,18 @@ export function getCallSiteStructuredArgumentBinding(
     return undefined;
   }
 
-  const callSiteId = `${baseBinding.trackedObject.id}:arg:${node.getSourceFile().fileName}:${argument.getStart()}`;
+  const callSiteId = getCallSiteTrackedObjectId(
+    baseBinding.trackedObject.id,
+    TRACKING_CALL_SITE_SPECIALIZATION_KIND.arg,
+    node.getSourceFile().fileName,
+    argument.getStart(),
+  );
   const existing = trackedObjectsById.get(callSiteId);
   if (existing) {
+    if (existing.specializationSourceRevision === baseBinding.trackedObject.derivedStateRevision) {
+      return new TrackedObjectBindingRecord(existing, []);
+    }
+
     syncTrackedObjectForCallSite(existing, baseBinding.trackedObject);
     registerSpecializedStructuredReturnAliases(
       project,
@@ -924,6 +994,7 @@ function getConstructedInstanceBinding(
   const existing = trackedObjectsById.get(instanceId);
   const trackedObject: TrackedObject = existing ?? {
     id: instanceId,
+    derivedStateRevision: 0,
     canonicalSymbolKey: classSymbol ? getSymbolKey(classSymbol) : instanceId,
     rootName: `${instanceName}()`,
     sourceFile: node.getSourceFile().fileName,
@@ -948,6 +1019,7 @@ function getConstructedInstanceBinding(
   if (!existing) {
     trackedObjectsById.set(instanceId, trackedObject);
   } else {
+    trackedObject.derivedStateRevision += 1;
     resetConstructedInstanceTracking(trackedObject);
   }
 
@@ -1144,6 +1216,8 @@ export function resolveTrackedObjectAccess(
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): ResolvedTrackedObjectAccess | undefined {
+  trackingAccessHeartbeat?.();
+
   if (ts.isAwaitExpression(node)) {
     return resolveTrackedObjectAccess(project, node.expression, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
   }
@@ -1400,7 +1474,7 @@ export function resolveTrackedObjectAccess(
           binding: receiver.binding,
           segments: receiver.segments,
           dynamic: true,
-          boundaryCategory: SKIP_CATEGORY.arrayAtCall,
+          boundaryCategory: "array-at-call",
           boundaryReason: "non-literal .at(...) prevents exact array slot analysis",
           viaAliasObjectId: receiver.viaAliasObjectId,
           viaAliasPath: receiver.viaAliasPath,
@@ -1792,7 +1866,7 @@ export function resolveProjectionAccess(
         projection: receiver.projection,
         suffix: receiver.suffix,
         dynamic: true,
-        boundaryCategory: SKIP_CATEGORY.arrayAtCall,
+        boundaryCategory: "array-at-call",
         boundaryReason: "non-literal .at(...) prevents exact array slot analysis",
       };
     }

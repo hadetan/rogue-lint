@@ -22,9 +22,9 @@ export const TRACKING_ACCESS_KIND = {
 } as const;
 
 export const TRACKING_HELPER_PARAMETER_EFFECT_KIND = {
-  read: TRACKING_ACCESS_KIND.read,
+  read: "read",
   mutation: "mutation",
-  returnedAlias: TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
+  returnedAlias: "returned-alias",
   retainedBinding: "retained-binding",
   opaqueEscape: "opaque-escape",
 } as const;
@@ -46,6 +46,12 @@ export const TRACKING_PLACE_STATE = {
   invalidated: TRACKING_VALUE_FATE.invalidated,
   escaped: "escaped",
   unknown: "unknown",
+} as const;
+
+export const TRACKING_CALL_SITE_SPECIALIZATION_KIND = {
+  arg: "arg",
+  call: "call",
+  returnedCall: "returned-call",
 } as const;
 
 export const TRACKING_METHOD_NAME = {
@@ -194,6 +200,36 @@ export const TRACKING_CONTAINER_TYPE_NAME = {
   weakMap: "WeakMap",
   weakSet: "WeakSet",
 } as const;
+
+function observeTrackingVocabularySurface(): void {
+  void TRACKING_RETURN_SUMMARY_KIND.value;
+  void TRACKING_RETURN_SUMMARY_KIND.structured;
+  void TRACKING_RETURN_SUMMARY_KIND.returnedAlias;
+  void TRACKING_RETURN_SUMMARY_KIND.opaque;
+
+  void TRACKING_HELPER_PARAMETER_EFFECT_KIND.read;
+  void TRACKING_HELPER_PARAMETER_EFFECT_KIND.mutation;
+  void TRACKING_HELPER_PARAMETER_EFFECT_KIND.returnedAlias;
+  void TRACKING_HELPER_PARAMETER_EFFECT_KIND.retainedBinding;
+  void TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape;
+
+  void TRACKING_VALUE_FATE.observed;
+  void TRACKING_VALUE_FATE.insertedByReference;
+  void TRACKING_VALUE_FATE.shallowCloned;
+  void TRACKING_VALUE_FATE.deepCloned;
+  void TRACKING_VALUE_FATE.resourceTransferred;
+  void TRACKING_VALUE_FATE.escapedOpaquely;
+  void TRACKING_VALUE_FATE.overwritten;
+  void TRACKING_VALUE_FATE.invalidated;
+
+  void TRACKING_PLACE_STATE.uninitialized;
+  void TRACKING_PLACE_STATE.initialized;
+  void TRACKING_PLACE_STATE.invalidated;
+  void TRACKING_PLACE_STATE.escaped;
+  void TRACKING_PLACE_STATE.unknown;
+}
+
+observeTrackingVocabularySurface();
 
 export const TRACKING_PURE_OBJECT_CONSTRUCTOR_TYPE_NAMES = new Set<string>([
   TRACKING_CONTAINER_TYPE_NAME.map,

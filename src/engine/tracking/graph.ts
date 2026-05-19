@@ -23,6 +23,7 @@ import {
   getForwardedParameterBindings,
   resolveAnalyzableCallableBinding,
   resolveTrackedObjectAccess,
+  withTrackingAccessHeartbeat,
 } from "./access.js";
 import {
   getObjectBackedRetainedBindingSlotKeyFromAccess,
@@ -43,8 +44,10 @@ import type {
   TrackingStageArtifacts,
 } from "./contracts.js";
 import {
+  getTrackingDiagnosticFromError,
   OBJECT_PATHS_TRACKING_STAGE,
   TRACKING_CONTRACT_DIAGNOSTIC_CODE,
+  TRACKING_GRAPH_BUILD_TRACKING_STAGE,
   TRACKING_ALIAS_OWNER,
   TRACKING_BINDINGS_OWNER,
   TRACKING_BOUNDARY_OWNER,
@@ -63,10 +66,9 @@ import {
 } from "./syntax.js";
 import {
   getTrackableStructuredLiteralExpression,
-  isTrackableObjectStructure,
 } from "./trackable-structures.js";
-import { materializeTrackedLiteralAtPath } from "./literal-materialization.js";
-import { createReturnSummaryCollector } from "./return-summaries.js";
+import { materializeTrackedLiteralAtPath, withTrackingLiteralMaterializationHeartbeat } from "./literal-materialization.js";
+import { createReturnSummaryCollector, withTrackingReturnSummaryHeartbeat } from "./return-summaries.js";
 import {
   TRACKING_COLLECTION_KIND,
   TRACKING_RETAINED_BINDING_WRITE_METHOD,
@@ -88,15 +90,43 @@ const HELPER_METADATA_ARRAY_ROOT_NAMES = new Set([
   "propertyNames",
   "segments",
 ]);
-
-const HELPER_METADATA_ARRAY_TYPE_TEXTS = new Set([
-  "PathSegment[]",
-  "PathSegment[][]",
-  "string[]",
-]);
+const _TRACKED_OBJECT_STRUCTURAL_ROLE_FIELD = "structuralRole" as const;
 
 function normalizeTrackedRootName(name: string): string {
   return name.endsWith("()") ? name.slice(0, -2) : name;
+}
+
+function isPathSegmentType(type: ts.Type): boolean {
+  const symbol = type.aliasSymbol ?? type.getSymbol();
+  return symbol?.getName() === "PathSegment";
+}
+
+function isHelperMetadataArrayType(project: ProjectContext, type: ts.Type | undefined): boolean {
+  if (!type) {
+    return false;
+  }
+
+  const apparentType = project.checker.getApparentType(type);
+  if (!project.checker.isArrayType(apparentType)) {
+    return false;
+  }
+
+  const [elementType] = project.checker.getTypeArguments(apparentType as ts.TypeReference);
+  if (!elementType) {
+    return false;
+  }
+
+  const apparentElementType = project.checker.getApparentType(elementType);
+  if ((apparentElementType.flags & ts.TypeFlags.StringLike) !== 0 || isPathSegmentType(apparentElementType)) {
+    return true;
+  }
+
+  if (!project.checker.isArrayType(apparentElementType)) {
+    return false;
+  }
+
+  const [nestedElementType] = project.checker.getTypeArguments(apparentElementType as ts.TypeReference);
+  return Boolean(nestedElementType) && isPathSegmentType(project.checker.getApparentType(nestedElementType));
 }
 
 function classifyHelperMetadataArrayRole(
@@ -104,7 +134,7 @@ function classifyHelperMetadataArrayRole(
   node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
   name: string,
   anchor: ts.Node,
-): TrackedObject["structuralRole"] | undefined {
+): TrackedObject[typeof _TRACKED_OBJECT_STRUCTURAL_ROLE_FIELD] | undefined {
   if (!ts.isArrayLiteralExpression(node)) {
     return undefined;
   }
@@ -113,16 +143,11 @@ function classifyHelperMetadataArrayRole(
     return undefined;
   }
 
-  const typeTexts = new Set<string>();
-  typeTexts.add(project.checker.typeToString(project.checker.getTypeAtLocation(anchor)).replace(/\s+/g, ""));
-  typeTexts.add(project.checker.typeToString(project.checker.getTypeAtLocation(node)).replace(/\s+/g, ""));
-
-  const contextualType = project.checker.getContextualType(node);
-  if (contextualType) {
-    typeTexts.add(project.checker.typeToString(contextualType).replace(/\s+/g, ""));
-  }
-
-  return [...typeTexts].some((typeText) => HELPER_METADATA_ARRAY_TYPE_TEXTS.has(typeText))
+  return (
+    isHelperMetadataArrayType(project, project.checker.getTypeAtLocation(anchor))
+    || isHelperMetadataArrayType(project, project.checker.getTypeAtLocation(node))
+    || isHelperMetadataArrayType(project, project.checker.getContextualType(node))
+  )
     ? TRACKING_STRUCTURAL_ROLE.structuralRecordArray
     : undefined;
 }
@@ -149,6 +174,7 @@ export function buildTrackedObjects(
       returnSummaries: [] as string[],
     },
   };
+  const helperMetadataArrayRoleCache = new Map<string, TrackedObject[typeof _TRACKED_OBJECT_STRUCTURAL_ROLE_FIELD] | null>();
 
   const recordWideningReason = (target: string[], reason: string | undefined): void => {
     if (!reason || target.includes(reason) || target.length >= wideningSampleLimit) {
@@ -157,6 +183,74 @@ export function buildTrackedObjects(
 
     target.push(reason);
   };
+
+  const getCallSiteSpecializationCount = (): number => {
+    let count = 0;
+
+    for (const trackedObject of trackedObjectsById.values()) {
+      if (trackedObject.reportingOwnerId && trackedObject.reportingOwnerId !== trackedObject.id) {
+        count += 1;
+      }
+    }
+
+    return count;
+  };
+
+  const observeTrackedObjectShape = (trackedObject: TrackedObject): void => {
+    void trackedObject.id;
+    void trackedObject.derivedStateRevision;
+    void trackedObject.canonicalSymbolKey;
+    void trackedObject.rootName;
+    void trackedObject.sourceFile;
+    void trackedObject.rootEntity;
+    void trackedObject.structuralRole;
+    void trackedObject.nodes;
+    void trackedObject.callablePaths;
+    void trackedObject.descendantNodeKeys;
+    void trackedObject.collections;
+    void trackedObject.collectionStates;
+    void trackedObject.collectionBoundaries;
+    void trackedObject.invalidatedCollectionPaths;
+    void trackedObject.invalidatedPaths;
+    void trackedObject.placeStates;
+    void trackedObject.observedSubtrees;
+    void trackedObject.escapedPaths;
+    void trackedObject.exactPathAliases;
+    void trackedObject.valueFates;
+    void trackedObject.reads;
+    void trackedObject.writes;
+  };
+
+  const observeTrackingConvergenceOptionsShape = (currentOptions: TrackingConvergenceOptions): void => {
+    void currentOptions.warningPassThreshold;
+    void currentOptions.maxPasses;
+    void currentOptions.churnSampleLimit;
+    void currentOptions.tracePasses;
+    void currentOptions.maxPassElapsedMs;
+    void currentOptions.maxPassTrackedObjectRegistryGrowth;
+    void currentOptions.maxPassCallSiteSpecializationGrowth;
+    void currentOptions.maxPassLiteralBindingCacheGrowth;
+    void currentOptions.maxPassReturnLiteralBindingCacheGrowth;
+    void currentOptions.getSolverStateMetrics;
+  };
+
+  const attachTrackingGraphBuildStage = (
+    diagnostic: TrackingContractDiagnostic,
+  ): TrackingContractDiagnostic => (
+    diagnostic.stage
+      ? diagnostic
+      : {
+          ...diagnostic,
+          stage: TRACKING_GRAPH_BUILD_TRACKING_STAGE,
+        }
+  );
+
+  const getSolverStateMetrics = () => ({
+    trackedObjectRegistryEntries: trackedObjectsById.size,
+    callSiteSpecializations: getCallSiteSpecializationCount(),
+    literalBindingCacheEntries: trackedLiteralBindings.size,
+    returnLiteralBindingCacheEntries: trackedReturnLiteralBindings.size,
+  });
 
   const stabilizeFunctionReturnSummaries = (
     currentSummaries: ReadonlyMap<string, CallableReturnSummary>,
@@ -206,20 +300,33 @@ export function buildTrackedObjects(
         trackedBySymbolId,
         functionReturnSummaries,
         trackedObjectsById,
-        { registerAliases: true },
+        { materializeNodes: false, registerAliases: true },
       );
       return existing;
+    }
+
+    let structuralRole = classifyTrackedObjectStructuralRole(node);
+    if (structuralRole === undefined) {
+      const cacheKey = `${sourceFile.fileName}:${node.pos}:${anchor.pos}:${name}`;
+      const cachedRole = helperMetadataArrayRoleCache.get(cacheKey);
+
+      if (cachedRole !== undefined || helperMetadataArrayRoleCache.has(cacheKey)) {
+        structuralRole = cachedRole ?? undefined;
+      } else {
+        structuralRole = classifyHelperMetadataArrayRole(project, node, name, anchor);
+        helperMetadataArrayRoleCache.set(cacheKey, structuralRole ?? null);
+      }
     }
 
     const rootEntity = makeEntity(project.rootPath, kind, sourceFile, anchor, name);
     const trackedObject: TrackedObject = {
       id: rootEntity.id,
+      derivedStateRevision: 0,
       canonicalSymbolKey: symbolKey,
       rootName: name,
       sourceFile: sourceFile.fileName,
       rootEntity,
-      structuralRole: classifyTrackedObjectStructuralRole(node)
-        ?? classifyHelperMetadataArrayRole(project, node, name, anchor),
+      structuralRole,
       nodes: new Map(),
       callablePaths: new Map(),
       descendantNodeKeys: new Map(),
@@ -236,6 +343,7 @@ export function buildTrackedObjects(
       reads: new Set(),
       writes: new Set(),
     };
+    observeTrackedObjectShape(trackedObject);
     trackedObjectsById.set(trackedObject.id, trackedObject);
     materializeTrackedLiteralAtPath(
       project,
@@ -273,231 +381,253 @@ export function buildTrackedObjects(
     createTrackedBindingForLiteral,
   });
 
-  const computeNextTrackingState = (): TrackingConvergenceState => {
+  const computeNextTrackingState = (heartbeat: () => void): TrackingConvergenceState => {
     const nextTrackedBySymbolId = new Map<string, TrackedObjectBinding>();
     const conflictedTrackedSymbolIds = new Set<string>();
+    let heartbeatCounter = 0;
 
-    for (const sourceFile of project.sourceFiles) {
-      if (!reachableFiles.has(sourceFile.fileName)) {
-        continue;
+    const maybeHeartbeat = (): void => {
+      heartbeatCounter += 1;
+      if (heartbeatCounter >= 2048) {
+        heartbeatCounter = 0;
+        heartbeat();
       }
+    };
 
-      const visit = (node: ts.Node): void => {
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-          const symbol = project.checker.getSymbolAtLocation(node.name);
-          if (!symbol) {
-            return ts.forEachChild(node, visit);
+    withTrackingAccessHeartbeat(heartbeat, () => {
+      withTrackingLiteralMaterializationHeartbeat(heartbeat, () => {
+        for (const sourceFile of project.sourceFiles) {
+          if (!reachableFiles.has(sourceFile.fileName)) {
+            continue;
           }
 
-          if (
-            (ts.isObjectLiteralExpression(node.initializer) || ts.isArrayLiteralExpression(node.initializer))
-            && isTrackableObjectStructure(node.initializer)
-          ) {
-            const symbolKey = getCanonicalSymbolKey(project, symbol);
-            const returnedAliasCallable = resolveStructuredReturnAliasCallable(node);
-            const returnedAliasLiteral = returnedAliasCallable
-              ? getTrackableStructuredLiteral(node.initializer, { allowArraySpreadBoundary: true })
-              : undefined;
-            const binding = createTrackedBindingForLiteral(
-              returnedAliasCallable && returnedAliasLiteral
-                ? `${returnedAliasCallable.symbolKey}:return:${ts.isObjectLiteralExpression(returnedAliasLiteral) ? TRACKING_COLLECTION_KIND.object : TRACKING_COLLECTION_KIND.array}`
-                : symbolKey,
-              sourceFile,
-              returnedAliasLiteral ?? node.initializer,
-              returnedAliasCallable ? `${getAnalyzableCallableName(returnedAliasCallable)}()` : node.name.text,
-              returnedAliasCallable
-                ? ENTITY_KIND.expression
-                : isExportedVariableDeclaration(node)
-                  ? ENTITY_KIND.export
-                  : ENTITY_KIND.local,
-              returnedAliasLiteral ?? node.name,
-            );
+          maybeHeartbeat();
 
-            mergeTrackedBinding(nextTrackedBySymbolId, conflictedTrackedSymbolIds, symbolKey, binding);
-          } else {
-            const resolved = resolveTrackedObjectAccess(
-              project,
-              node.initializer,
-              trackedBySymbolId,
-              functionReturnSummaries,
-              trackedObjectsById,
-            );
-            if (resolved && !resolved.dynamic) {
-              mergeTrackedBinding(
-                nextTrackedBySymbolId,
-                conflictedTrackedSymbolIds,
-                getCanonicalSymbolKey(project, symbol),
-                extendTrackedBinding(resolved.binding, resolved.segments),
-              );
-            }
-          }
-        }
+          const visit = (node: ts.Node): void => {
+            maybeHeartbeat();
 
-        if (
-          ts.isBinaryExpression(node)
-          && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        ) {
-          const resolved = resolveTrackedObjectAccess(
-            project,
-            node.right,
-            trackedBySymbolId,
-            functionReturnSummaries,
-            trackedObjectsById,
-          );
-          const globalThisProperty = getStaticGlobalThisPropertyName(node.left);
-          if (globalThisProperty && (!resolved || resolved.dynamic)) {
-            conflictedTrackedSymbolIds.add(getGlobalThisBindingKey(globalThisProperty));
-            nextTrackedBySymbolId.delete(getGlobalThisBindingKey(globalThisProperty));
-          } else if (globalThisProperty && resolved && !resolved.dynamic) {
-            mergeTrackedBinding(
-              nextTrackedBySymbolId,
-              conflictedTrackedSymbolIds,
-              getGlobalThisBindingKey(globalThisProperty),
-              extendTrackedBinding(resolved.binding, resolved.segments),
-            );
-          } else if (ts.isIdentifier(node.left)) {
-            const target = project.checker.getSymbolAtLocation(node.left);
-            if (target && resolved && !resolved.dynamic) {
-              mergeTrackedBinding(
-                nextTrackedBySymbolId,
-                conflictedTrackedSymbolIds,
-                getCanonicalSymbolKey(project, target),
-                extendTrackedBinding(resolved.binding, resolved.segments),
-              );
-            }
-          } else if (
-            (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
-            && resolved
-            && !resolved.dynamic
-          ) {
-            const slotKey = getObjectBackedRetainedBindingSlotKeyFromAccess(project, node.left);
-            if (slotKey) {
-              mergeTrackedBinding(
-                nextTrackedBySymbolId,
-                conflictedTrackedSymbolIds,
-                slotKey,
-                extendTrackedBinding(resolved.binding, resolved.segments),
-              );
-            }
-          }
-        }
-
-        if (ts.isCallExpression(node)) {
-          const analyzableCallable = resolveAnalyzableCallableBinding(
-            project,
-            node.expression,
-            trackedBySymbolId,
-            functionReturnSummaries,
-            trackedObjectsById,
-          );
-          if (analyzableCallable) {
-            node.arguments.forEach((argument, index) => {
-              const parameter = analyzableCallable.declaration.parameters[index];
-              if (!parameter || !ts.isIdentifier(parameter.name)) {
-                return;
+            if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+              const symbol = project.checker.getSymbolAtLocation(node.name);
+              if (!symbol) {
+                return ts.forEachChild(node, visit);
               }
 
-              const structuredLiteral = getTrackableStructuredLiteralExpression(argument);
-              if (!structuredLiteral) {
-                return;
+              const structuredLiteral = getTrackableStructuredLiteralExpression(node.initializer);
+
+              if (structuredLiteral) {
+                const symbolKey = getCanonicalSymbolKey(project, symbol);
+                const returnedAliasCallable = resolveStructuredReturnAliasCallable(node);
+                const returnedAliasLiteral = returnedAliasCallable
+                  ? getTrackableStructuredLiteral(node.initializer, { allowArraySpreadBoundary: true })
+                  : undefined;
+                const binding = createTrackedBindingForLiteral(
+                  returnedAliasCallable && returnedAliasLiteral
+                    ? `${returnedAliasCallable.symbolKey}:return:${ts.isObjectLiteralExpression(returnedAliasLiteral) ? TRACKING_COLLECTION_KIND.object : TRACKING_COLLECTION_KIND.array}`
+                    : symbolKey,
+                  sourceFile,
+                  returnedAliasLiteral ?? structuredLiteral,
+                  returnedAliasCallable ? `${getAnalyzableCallableName(returnedAliasCallable)}()` : node.name.text,
+                  returnedAliasCallable
+                    ? "expression"
+                    : isExportedVariableDeclaration(node)
+                      ? ENTITY_KIND.export
+                      : ENTITY_KIND.local,
+                  returnedAliasLiteral ?? node.name,
+                );
+
+                mergeTrackedBinding(nextTrackedBySymbolId, conflictedTrackedSymbolIds, symbolKey, binding);
+              } else {
+                const resolved = resolveTrackedObjectAccess(
+                  project,
+                  node.initializer,
+                  trackedBySymbolId,
+                  functionReturnSummaries,
+                  trackedObjectsById,
+                );
+                if (resolved && !resolved.dynamic) {
+                  mergeTrackedBinding(
+                    nextTrackedBySymbolId,
+                    conflictedTrackedSymbolIds,
+                    getCanonicalSymbolKey(project, symbol),
+                    extendTrackedBinding(resolved.binding, resolved.segments),
+                  );
+                }
               }
-
-              const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
-              if (!parameterSymbol) {
-                return;
-              }
-
-              const symbolKey = getCanonicalSymbolKey(project, parameterSymbol);
-              const binding = createTrackedBindingForLiteral(
-                symbolKey,
-                sourceFile,
-                structuredLiteral,
-                parameter.name.text,
-                ENTITY_KIND.expression,
-                argument,
-              );
-              mergeTrackedBinding(
-                nextTrackedBySymbolId,
-                conflictedTrackedSymbolIds,
-                symbolKey,
-                binding,
-              );
-            });
-          }
-
-          if (
-            ts.isPropertyAccessExpression(node.expression)
-            && node.expression.name.text === TRACKING_RETAINED_BINDING_WRITE_METHOD
-            && node.arguments.length >= 2
-            && isLocallyOwnedRetainedBindingContainer(project, node.expression.expression)
-          ) {
-            const slotKey = getRetainedBindingContainerSlotKey(project, node.expression.expression, node.arguments[0]!);
-            const resolved = resolveTrackedObjectAccess(
-              project,
-              node.arguments[1]!,
-              trackedBySymbolId,
-              functionReturnSummaries,
-              trackedObjectsById,
-            );
-            if (slotKey && resolved && !resolved.dynamic) {
-              mergeTrackedBinding(
-                nextTrackedBySymbolId,
-                conflictedTrackedSymbolIds,
-                slotKey,
-                extendTrackedBinding(resolved.binding, resolved.segments),
-              );
             }
-          }
 
-          for (const forwarded of getForwardedParameterBindings(
-            project,
-            node,
-            trackedBySymbolId,
-            functionReturnSummaries,
-            trackedObjectsById,
-          )) {
-            mergeTrackedBinding(
-              nextTrackedBySymbolId,
-              conflictedTrackedSymbolIds,
-              forwarded.paramSymbolKey,
-              forwarded.binding,
-            );
-          }
+            if (
+              ts.isBinaryExpression(node)
+              && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            ) {
+              const resolved = resolveTrackedObjectAccess(
+                project,
+                node.right,
+                trackedBySymbolId,
+                functionReturnSummaries,
+                trackedObjectsById,
+              );
+              const globalThisProperty = getStaticGlobalThisPropertyName(node.left);
+              if (globalThisProperty && (!resolved || resolved.dynamic)) {
+                conflictedTrackedSymbolIds.add(getGlobalThisBindingKey(globalThisProperty));
+                nextTrackedBySymbolId.delete(getGlobalThisBindingKey(globalThisProperty));
+              } else if (globalThisProperty && resolved && !resolved.dynamic) {
+                mergeTrackedBinding(
+                  nextTrackedBySymbolId,
+                  conflictedTrackedSymbolIds,
+                  getGlobalThisBindingKey(globalThisProperty),
+                  extendTrackedBinding(resolved.binding, resolved.segments),
+                );
+              } else if (ts.isIdentifier(node.left)) {
+                const target = project.checker.getSymbolAtLocation(node.left);
+                if (target && resolved && !resolved.dynamic) {
+                  mergeTrackedBinding(
+                    nextTrackedBySymbolId,
+                    conflictedTrackedSymbolIds,
+                    getCanonicalSymbolKey(project, target),
+                    extendTrackedBinding(resolved.binding, resolved.segments),
+                  );
+                }
+              } else if (
+                (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left))
+                && resolved
+                && !resolved.dynamic
+              ) {
+                const slotKey = getObjectBackedRetainedBindingSlotKeyFromAccess(project, node.left);
+                if (slotKey) {
+                  mergeTrackedBinding(
+                    nextTrackedBySymbolId,
+                    conflictedTrackedSymbolIds,
+                    slotKey,
+                    extendTrackedBinding(resolved.binding, resolved.segments),
+                  );
+                }
+              }
+            }
+
+            if (ts.isCallExpression(node)) {
+              const analyzableCallable = resolveAnalyzableCallableBinding(
+                project,
+                node.expression,
+                trackedBySymbolId,
+                functionReturnSummaries,
+                trackedObjectsById,
+              );
+              if (analyzableCallable) {
+                node.arguments.forEach((argument, index) => {
+                  const parameter = analyzableCallable.declaration.parameters[index];
+                  if (!parameter || !ts.isIdentifier(parameter.name)) {
+                    return;
+                  }
+
+                  const structuredLiteral = getTrackableStructuredLiteralExpression(argument);
+                  if (!structuredLiteral) {
+                    return;
+                  }
+
+                  const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+                  if (!parameterSymbol) {
+                    return;
+                  }
+
+                  const symbolKey = getCanonicalSymbolKey(project, parameterSymbol);
+                  const binding = createTrackedBindingForLiteral(
+                    symbolKey,
+                    sourceFile,
+                    structuredLiteral,
+                    parameter.name.text,
+                    "expression",
+                    argument,
+                  );
+                  mergeTrackedBinding(
+                    nextTrackedBySymbolId,
+                    conflictedTrackedSymbolIds,
+                    symbolKey,
+                    binding,
+                  );
+                });
+              }
+
+              if (
+                ts.isPropertyAccessExpression(node.expression)
+                && node.expression.name.text === TRACKING_RETAINED_BINDING_WRITE_METHOD
+                && node.arguments.length >= 2
+                && isLocallyOwnedRetainedBindingContainer(project, node.expression.expression)
+              ) {
+                const slotKey = getRetainedBindingContainerSlotKey(project, node.expression.expression, node.arguments[0]!);
+                const resolved = resolveTrackedObjectAccess(
+                  project,
+                  node.arguments[1]!,
+                  trackedBySymbolId,
+                  functionReturnSummaries,
+                  trackedObjectsById,
+                );
+                if (slotKey && resolved && !resolved.dynamic) {
+                  mergeTrackedBinding(
+                    nextTrackedBySymbolId,
+                    conflictedTrackedSymbolIds,
+                    slotKey,
+                    extendTrackedBinding(resolved.binding, resolved.segments),
+                  );
+                }
+              }
+
+              for (const forwarded of getForwardedParameterBindings(
+                project,
+                node,
+                trackedBySymbolId,
+                functionReturnSummaries,
+                trackedObjectsById,
+              )) {
+                mergeTrackedBinding(
+                  nextTrackedBySymbolId,
+                  conflictedTrackedSymbolIds,
+                  forwarded.paramSymbolKey,
+                  forwarded.binding,
+                );
+              }
+            }
+
+            ts.forEachChild(node, visit);
+          };
+
+          ts.forEachChild(sourceFile, visit);
         }
-
-        ts.forEachChild(node, visit);
-      };
-
-      ts.forEachChild(sourceFile, visit);
-    }
+      });
+    });
 
     const nextFunctionReturnSummaries = new Map<string, CallableReturnSummary>();
-    for (const sourceFile of project.sourceFiles) {
-      if (!reachableFiles.has(sourceFile.fileName)) {
-        continue;
-      }
-
-      const visit = (node: ts.Node): void => {
-        if (
-          ts.isFunctionDeclaration(node)
-          || ts.isFunctionExpression(node)
-          || ts.isArrowFunction(node)
-          || ts.isMethodDeclaration(node)
-        ) {
-          const callable = getAnalyzableCallableBindingFromDeclaration(project, node);
-          if (callable) {
-            const summary = collectFunctionReturnSummary(node);
-            if (summary !== undefined) {
-              nextFunctionReturnSummaries.set(callable.symbolKey, summary);
-            }
-          }
+    withTrackingReturnSummaryHeartbeat(heartbeat, () => {
+      for (const sourceFile of project.sourceFiles) {
+        if (!reachableFiles.has(sourceFile.fileName)) {
+          continue;
         }
 
-        ts.forEachChild(node, visit);
-      };
+        maybeHeartbeat();
 
-      ts.forEachChild(sourceFile, visit);
-    }
+        const visit = (node: ts.Node): void => {
+          maybeHeartbeat();
+
+          if (
+            ts.isFunctionDeclaration(node)
+            || ts.isFunctionExpression(node)
+            || ts.isArrowFunction(node)
+            || ts.isMethodDeclaration(node)
+          ) {
+            const callable = getAnalyzableCallableBindingFromDeclaration(project, node);
+            if (callable) {
+              const summary = collectFunctionReturnSummary(node);
+              if (summary !== undefined) {
+                nextFunctionReturnSummaries.set(callable.symbolKey, summary);
+              }
+            }
+          }
+
+          ts.forEachChild(node, visit);
+        };
+
+        ts.forEachChild(sourceFile, visit);
+      }
+    });
 
     return {
       trackedBySymbolId: nextTrackedBySymbolId,
@@ -505,21 +635,47 @@ export function buildTrackedObjects(
     };
   };
 
-  const convergenceResult = runTrackingConvergence(
-    () => ({ trackedBySymbolId, functionReturnSummaries }),
-    computeNextTrackingState,
-    (nextState) => {
-      trackedBySymbolId.clear();
-      nextState.trackedBySymbolId.forEach((binding, symbolKey) => {
-        trackedBySymbolId.set(symbolKey, binding);
-      });
-      functionReturnSummaries.clear();
-      nextState.functionReturnSummaries.forEach((summary, symbolKey) => {
-        functionReturnSummaries.set(symbolKey, summary);
-      });
-    },
-    options,
-  );
+  const convergenceResult = (() => {
+    try {
+      const convergenceOptions: TrackingConvergenceOptions = { ...options };
+      convergenceOptions.getSolverStateMetrics = getSolverStateMetrics;
+      observeTrackingConvergenceOptionsShape(convergenceOptions);
+
+      return runTrackingConvergence(
+        () => ({ trackedBySymbolId, functionReturnSummaries }),
+        computeNextTrackingState,
+        (nextState, heartbeat) => {
+          let heartbeatCounter = 0;
+          const maybeHeartbeat = (): void => {
+            heartbeatCounter += 1;
+            if (heartbeatCounter >= 2048) {
+              heartbeatCounter = 0;
+              heartbeat();
+            }
+          };
+
+          trackedBySymbolId.clear();
+          nextState.trackedBySymbolId.forEach((binding, symbolKey) => {
+            maybeHeartbeat();
+            trackedBySymbolId.set(symbolKey, binding);
+          });
+          functionReturnSummaries.clear();
+          nextState.functionReturnSummaries.forEach((summary, symbolKey) => {
+            maybeHeartbeat();
+            functionReturnSummaries.set(symbolKey, summary);
+          });
+        },
+        convergenceOptions,
+      );
+    } catch (error) {
+      const diagnostic = getTrackingDiagnosticFromError(error);
+      if (diagnostic && !diagnostic.stage) {
+        diagnostic.stage = TRACKING_GRAPH_BUILD_TRACKING_STAGE;
+      }
+
+      throw error;
+    }
+  })();
 
   const runtimeSummary: MutableTrackingRuntimeSummary = {
     seed: {
@@ -556,15 +712,20 @@ export function buildTrackedObjects(
       returnSummaries: functionReturnSummaries.size,
       trackedObjects: trackedObjectsById.size,
     },
+    solverState: getSolverStateMetrics(),
+    stageTimingsMs: {
+      [TRACKING_GRAPH_BUILD_TRACKING_STAGE]: convergenceResult.elapsedMs,
+      [VALUE_LIVENESS_TRACKING_STAGE]: 0,
+      [OBJECT_PATHS_TRACKING_STAGE]: 0,
+    },
     stageRequests: {
+      [TRACKING_GRAPH_BUILD_TRACKING_STAGE]: 0,
       [VALUE_LIVENESS_TRACKING_STAGE]: 0,
       [OBJECT_PATHS_TRACKING_STAGE]: 0,
     },
   };
 
-  const diagnostics: TrackingContractDiagnostic[] = [
-    ...convergenceResult.diagnostics,
-  ];
+  const diagnostics: TrackingContractDiagnostic[] = convergenceResult.diagnostics.map(attachTrackingGraphBuildStage);
 
   const observeTrackingSnapshotShape = (currentSnapshot: MutableTrackingSnapshot): void => {
     void currentSnapshot.sharedFacts.bindings.owner;
@@ -583,6 +744,7 @@ export function buildTrackedObjects(
     void artifacts.diagnostics;
     void artifacts.debugTrace;
     void artifacts.runtimeSummary;
+    void artifacts.recordStageTiming;
     void artifacts.getStageArtifacts;
   };
 
@@ -617,7 +779,22 @@ export function buildTrackedObjects(
     diagnostics: snapshot.solverState.diagnostics,
     debugTrace: convergenceResult.debugTrace,
     runtimeSummary: snapshot.solverState.runtimeSummary,
+    recordStageTiming(stage: TrackingStage, elapsedMs: number): void {
+      snapshot.solverState.runtimeSummary.stageTimingsMs[stage] = elapsedMs;
+    },
     getStageArtifacts<TStage extends TrackingStage>(stage: TStage): Extract<TrackingStageArtifacts, { stage: TStage }> {
+      if (stage === TRACKING_GRAPH_BUILD_TRACKING_STAGE) {
+        snapshot.solverState.runtimeSummary.stageRequests[TRACKING_GRAPH_BUILD_TRACKING_STAGE] += 1;
+        return {
+          stage,
+          bindings: snapshot.sharedFacts.bindings,
+          returnSummaries: snapshot.sharedFacts.returnSummaries,
+          aliases: snapshot.sharedFacts.aliases,
+          boundaries: snapshot.sharedFacts.boundaries,
+          runtimeSummary: snapshot.solverState.runtimeSummary,
+        } as unknown as Extract<TrackingStageArtifacts, { stage: TStage }>;
+      }
+
       if (stage === VALUE_LIVENESS_TRACKING_STAGE) {
         snapshot.solverState.runtimeSummary.stageRequests[VALUE_LIVENESS_TRACKING_STAGE] += 1;
         return {

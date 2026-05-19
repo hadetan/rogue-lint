@@ -1,3 +1,5 @@
+import { reviewedLiteralExclusions } from "./reviewed-exclusions.js";
+
 /**
  * Repository-owned ratchet configuration for repeated literal validation.
  *
@@ -9,5 +11,5 @@ export const repoLiteralOwnershipConfig = {
   excludeGlobs: [],
   enforceUnownedDuplicates: true,
   ownedLiteralRules: [],
-  reviewedLiteralExclusions: [],
+  reviewedLiteralExclusions,
 };

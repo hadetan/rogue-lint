@@ -3,7 +3,6 @@ import ts from "typescript";
 import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { serializePath } from "../../../shared/path-utils.js";
-import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { getBindingSymbolKey, resolveProjectionAccess, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
 import type { ArrayProjectionBinding, CallableReturnSummary, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
@@ -181,7 +180,7 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
         node.expression,
         projected.projection.sourcePath,
         projected.projection.sourcePath,
-        projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
+        projected.boundaryCategory ?? "array-callback-escape",
         projected.boundaryReason ?? "array projection escapes exact local analysis",
         true,
       );
@@ -243,7 +242,7 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
         node,
         projected.projection.sourcePath,
         projected.projection.sourcePath,
-        projected.boundaryCategory ?? SKIP_CATEGORY.arrayCallbackEscape,
+        projected.boundaryCategory ?? "array-callback-escape",
         projected.boundaryReason ?? "array projection escapes exact local analysis",
         true,
       );

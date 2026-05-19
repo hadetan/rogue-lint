@@ -148,9 +148,40 @@ describe("analysis capability providers", () => {
           returnSummaries: { owner: "return-summary-convergence", byCallableId: new Map() },
           runtimeSummary: {
             seed: { reachableFileCount: 0, reachableSourceFileCount: 0 },
-            convergence: { passes: 0, warningPassThreshold: 0, maxPasses: 0, warned: false },
+            convergence: {
+              passes: 0,
+              warningPassThreshold: 0,
+              maxPasses: 0,
+              warned: false,
+              elapsedMs: 0,
+              churn: {
+                bindingChanges: 0,
+                bindingChangedPasses: 0,
+                returnSummaryChanges: 0,
+                returnSummaryChangedPasses: 0,
+              },
+              widening: {
+                bindingChanges: 0,
+                returnSummaryChanges: 0,
+                reasons: {
+                  bindings: [],
+                  returnSummaries: [],
+                },
+              },
+              unstableSamples: {
+                bindings: [],
+                returnSummaries: [],
+              },
+            },
             totals: { trackedBindings: 0, returnSummaries: 0, trackedObjects: 0 },
-            stageRequests: { "value-liveness": 0, "object-paths": 0 },
+            solverState: {
+              trackedObjectRegistryEntries: 0,
+              callSiteSpecializations: 0,
+              literalBindingCacheEntries: 0,
+              returnLiteralBindingCacheEntries: 0,
+            },
+            stageTimingsMs: { "tracking-graph-build": 0, "value-liveness": 0, "object-paths": 0 },
+            stageRequests: { "tracking-graph-build": 0, "value-liveness": 0, "object-paths": 0 },
           },
         }),
       } as AnalysisArtifacts,

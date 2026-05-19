@@ -9,17 +9,14 @@ import { TRACKING_COLLECTION_KIND } from "./vocabulary.js";
 /**
  * Returns the exact property segments that remain visible through a resolved object spread binding.
  */
-export function visitResolvedSpreadPropertySegments(
-  binding: TrackedObjectBinding,
-  visit: (segment: PathSegment) => void,
-): boolean {
+export function getResolvedSpreadPropertyNames(binding: TrackedObjectBinding): string[] | undefined {
   const collection = getCollectionInfo(binding.trackedObject, binding.prefix);
   if (!collection || collection.kind !== TRACKING_COLLECTION_KIND.object) {
-    return false;
+    return undefined;
   }
 
+  const names: string[] = [];
   const seen = new Set<string>();
-  let visited = false;
 
   for (const childPath of collection.childPaths) {
     if (childPath.length !== binding.prefix.length + 1) {
@@ -28,18 +25,38 @@ export function visitResolvedSpreadPropertySegments(
 
     const segment = childPath[binding.prefix.length];
     if (!segment || segment.kind !== PATH_SEGMENT_KIND.property) {
-      return false;
+      return undefined;
     }
 
-    const key = `${segment.kind}:${segment.value}`;
-    if (seen.has(key)) {
+    if (seen.has(segment.value)) {
       continue;
     }
 
-    seen.add(key);
-    visited = true;
-    visit(segment);
+    seen.add(segment.value);
+    names.push(segment.value);
   }
 
-  return visited;
+  return names.length > 0 ? names : undefined;
+}
+
+/**
+ * Returns the exact property segments that remain visible through a resolved object spread binding.
+ */
+export function visitResolvedSpreadPropertySegments(
+  binding: TrackedObjectBinding,
+  visit: (segment: PathSegment) => void,
+): boolean {
+  const propertyNames = getResolvedSpreadPropertyNames(binding);
+  if (!propertyNames) {
+    return false;
+  }
+
+  for (const propertyName of propertyNames) {
+    visit({
+      kind: PATH_SEGMENT_KIND.property,
+      value: propertyName,
+    });
+  }
+
+  return true;
 }

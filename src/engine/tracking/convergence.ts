@@ -15,11 +15,24 @@ export type TrackingConvergenceState = {
   functionReturnSummaries: Map<string, CallableReturnSummary>;
 };
 
+type TrackingConvergenceSolverStateMetrics = {
+  trackedObjectRegistryEntries: number;
+  callSiteSpecializations: number;
+  literalBindingCacheEntries: number;
+  returnLiteralBindingCacheEntries: number;
+};
+
 export type TrackingConvergenceOptions = {
   warningPassThreshold?: number;
   maxPasses?: number;
   churnSampleLimit?: number;
   tracePasses?: boolean;
+  maxPassElapsedMs?: number;
+  maxPassTrackedObjectRegistryGrowth?: number;
+  maxPassCallSiteSpecializationGrowth?: number;
+  maxPassLiteralBindingCacheGrowth?: number;
+  maxPassReturnLiteralBindingCacheGrowth?: number;
+  getSolverStateMetrics?: () => TrackingConvergenceSolverStateMetrics;
 };
 
 type TrackingConvergenceResult = {
@@ -46,13 +59,26 @@ type TrackingConvergenceResult = {
   diagnostics: TrackingContractDiagnostic[];
 };
 
+function observeTrackingContractDiagnosticShape(diagnostic: TrackingContractDiagnostic): void {
+  diagnostic.code;
+  diagnostic.message;
+  diagnostic.stage;
+  diagnostic.details;
+}
+
 class TrackingConvergenceError extends Error {
   readonly diagnostic: TrackingContractDiagnostic;
+  readonly debugTrace?: TrackingConvergenceDebugTrace;
 
-  constructor(message: string, details?: TrackingContractDiagnosticDetails) {
+  constructor(
+    message: string,
+    details?: TrackingContractDiagnosticDetails,
+    debugTrace?: TrackingConvergenceDebugTrace,
+  ) {
     super(message);
     this.name = "TrackingConvergenceError";
     this.diagnostic = createConvergenceGuardExceeded(message, details);
+    this.debugTrace = debugTrace;
   }
 }
 
@@ -61,6 +87,20 @@ interface NormalizedTrackingConvergenceOptions {
   maxPasses: number;
   churnSampleLimit: number;
   tracePasses: boolean;
+  maxPassElapsedMs?: number;
+  maxPassTrackedObjectRegistryGrowth?: number;
+  maxPassCallSiteSpecializationGrowth?: number;
+  maxPassLiteralBindingCacheGrowth?: number;
+  maxPassReturnLiteralBindingCacheGrowth?: number;
+  getSolverStateMetrics?: () => TrackingConvergenceSolverStateMetrics;
+}
+
+function normalizeOptionalBudget(value: number | undefined, minimum: number): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return Math.max(minimum, Math.floor(value));
 }
 
 function normalizeOptions(options: TrackingConvergenceOptions | undefined): NormalizedTrackingConvergenceOptions {
@@ -69,6 +109,12 @@ function normalizeOptions(options: TrackingConvergenceOptions | undefined): Norm
     maxPasses: Math.max(1, options?.maxPasses ?? 50),
     churnSampleLimit: Math.max(1, options?.churnSampleLimit ?? 5),
     tracePasses: options?.tracePasses ?? false,
+    maxPassElapsedMs: normalizeOptionalBudget(options?.maxPassElapsedMs, 1),
+    maxPassTrackedObjectRegistryGrowth: normalizeOptionalBudget(options?.maxPassTrackedObjectRegistryGrowth, 0),
+    maxPassCallSiteSpecializationGrowth: normalizeOptionalBudget(options?.maxPassCallSiteSpecializationGrowth, 0),
+    maxPassLiteralBindingCacheGrowth: normalizeOptionalBudget(options?.maxPassLiteralBindingCacheGrowth, 0),
+    maxPassReturnLiteralBindingCacheGrowth: normalizeOptionalBudget(options?.maxPassReturnLiteralBindingCacheGrowth, 0),
+    getSolverStateMetrics: options?.getSolverStateMetrics,
   };
 }
 
@@ -92,14 +138,133 @@ function buildDiagnosticDetails(
   returnSummaryChanges: number,
   bindingSamples: readonly string[],
   returnSummarySamples: readonly string[],
+  extraDetails: Partial<TrackingContractDiagnosticDetails> = {},
 ): TrackingContractDiagnosticDetails {
   return {
     elapsedMs,
     bindingChanges,
     returnSummaryChanges,
+    ...extraDetails,
     bindingSamples: [...bindingSamples],
     returnSummarySamples: [...returnSummarySamples],
   };
+}
+
+function computeSolverStateGrowth(
+  baseline: TrackingConvergenceSolverStateMetrics | undefined,
+  current: TrackingConvergenceSolverStateMetrics | undefined,
+): TrackingConvergenceSolverStateMetrics | undefined {
+  if (!baseline || !current) {
+    return undefined;
+  }
+
+  return {
+    trackedObjectRegistryEntries: Math.max(0, current.trackedObjectRegistryEntries - baseline.trackedObjectRegistryEntries),
+    callSiteSpecializations: Math.max(0, current.callSiteSpecializations - baseline.callSiteSpecializations),
+    literalBindingCacheEntries: Math.max(0, current.literalBindingCacheEntries - baseline.literalBindingCacheEntries),
+    returnLiteralBindingCacheEntries: Math.max(0, current.returnLiteralBindingCacheEntries - baseline.returnLiteralBindingCacheEntries),
+  };
+}
+
+function describeSolverStateGrowth(growth: TrackingConvergenceSolverStateMetrics | undefined): string {
+  if (!growth) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  if (growth.trackedObjectRegistryEntries > 0) {
+    parts.push(`${growth.trackedObjectRegistryEntries} tracked-object registry entries`);
+  }
+  if (growth.callSiteSpecializations > 0) {
+    parts.push(`${growth.callSiteSpecializations} call-site specializations`);
+  }
+  if (growth.literalBindingCacheEntries > 0) {
+    parts.push(`${growth.literalBindingCacheEntries} literal-binding cache entries`);
+  }
+  if (growth.returnLiteralBindingCacheEntries > 0) {
+    parts.push(`${growth.returnLiteralBindingCacheEntries} return-literal cache entries`);
+  }
+
+  return parts.length > 0 ? `; solver-state growth: ${parts.join("; ")}` : "";
+}
+
+function buildSolverStateGuardDetails(
+  pass: number,
+  elapsedMs: number,
+  currentSolverState: TrackingConvergenceSolverStateMetrics | undefined,
+  solverStateGrowth: TrackingConvergenceSolverStateMetrics | undefined,
+): Partial<TrackingContractDiagnosticDetails> {
+  return {
+    pass,
+    trackedObjectRegistryEntries: currentSolverState?.trackedObjectRegistryEntries,
+    callSiteSpecializations: currentSolverState?.callSiteSpecializations,
+    literalBindingCacheEntries: currentSolverState?.literalBindingCacheEntries,
+    returnLiteralBindingCacheEntries: currentSolverState?.returnLiteralBindingCacheEntries,
+    trackedObjectRegistryGrowth: solverStateGrowth?.trackedObjectRegistryEntries,
+    callSiteSpecializationGrowth: solverStateGrowth?.callSiteSpecializations,
+    literalBindingCacheGrowth: solverStateGrowth?.literalBindingCacheEntries,
+    returnLiteralBindingCacheGrowth: solverStateGrowth?.returnLiteralBindingCacheEntries,
+    elapsedMs,
+  };
+}
+
+function throwIfPassGuardExceeded(
+  pass: number,
+  normalized: NormalizedTrackingConvergenceOptions,
+  passStartedAt: number,
+  passStartedSolverState: TrackingConvergenceSolverStateMetrics | undefined,
+): void {
+  const elapsedMs = Date.now() - passStartedAt;
+  const currentSolverState = normalized.getSolverStateMetrics?.();
+  const solverStateGrowth = computeSolverStateGrowth(passStartedSolverState, currentSolverState);
+  const extraDetails = buildSolverStateGuardDetails(pass, elapsedMs, currentSolverState, solverStateGrowth);
+
+  if (normalized.maxPassElapsedMs !== undefined && elapsedMs > normalized.maxPassElapsedMs) {
+    throw new TrackingConvergenceError(
+      `tracking convergence pass ${pass} exceeded elapsed budget of ${normalized.maxPassElapsedMs}ms while stabilizing tracked bindings and callable return summaries${describeSolverStateGrowth(solverStateGrowth)}`,
+      buildDiagnosticDetails(elapsedMs, 0, 0, [], [], extraDetails),
+    );
+  }
+
+  if (
+    normalized.maxPassTrackedObjectRegistryGrowth !== undefined
+    && (solverStateGrowth?.trackedObjectRegistryEntries ?? 0) > normalized.maxPassTrackedObjectRegistryGrowth
+  ) {
+    throw new TrackingConvergenceError(
+      `tracking convergence pass ${pass} exceeded tracked-object registry growth budget of ${normalized.maxPassTrackedObjectRegistryGrowth}${describeSolverStateGrowth(solverStateGrowth)}`,
+      buildDiagnosticDetails(elapsedMs, 0, 0, [], [], extraDetails),
+    );
+  }
+
+  if (
+    normalized.maxPassCallSiteSpecializationGrowth !== undefined
+    && (solverStateGrowth?.callSiteSpecializations ?? 0) > normalized.maxPassCallSiteSpecializationGrowth
+  ) {
+    throw new TrackingConvergenceError(
+      `tracking convergence pass ${pass} exceeded call-site specialization growth budget of ${normalized.maxPassCallSiteSpecializationGrowth}${describeSolverStateGrowth(solverStateGrowth)}`,
+      buildDiagnosticDetails(elapsedMs, 0, 0, [], [], extraDetails),
+    );
+  }
+
+  if (
+    normalized.maxPassLiteralBindingCacheGrowth !== undefined
+    && (solverStateGrowth?.literalBindingCacheEntries ?? 0) > normalized.maxPassLiteralBindingCacheGrowth
+  ) {
+    throw new TrackingConvergenceError(
+      `tracking convergence pass ${pass} exceeded literal-binding cache growth budget of ${normalized.maxPassLiteralBindingCacheGrowth}${describeSolverStateGrowth(solverStateGrowth)}`,
+      buildDiagnosticDetails(elapsedMs, 0, 0, [], [], extraDetails),
+    );
+  }
+
+  if (
+    normalized.maxPassReturnLiteralBindingCacheGrowth !== undefined
+    && (solverStateGrowth?.returnLiteralBindingCacheEntries ?? 0) > normalized.maxPassReturnLiteralBindingCacheGrowth
+  ) {
+    throw new TrackingConvergenceError(
+      `tracking convergence pass ${pass} exceeded return-literal cache growth budget of ${normalized.maxPassReturnLiteralBindingCacheGrowth}${describeSolverStateGrowth(solverStateGrowth)}`,
+      buildDiagnosticDetails(elapsedMs, 0, 0, [], [], extraDetails),
+    );
+  }
 }
 
 function describeChurn(details: TrackingContractDiagnosticDetails): string {
@@ -122,8 +287,8 @@ function describeChurn(details: TrackingContractDiagnosticDetails): string {
 
 export function runTrackingConvergence(
   getCurrentState: () => TrackingConvergenceState,
-  computeNextState: () => TrackingConvergenceState,
-  applyNextState: (nextState: TrackingConvergenceState) => void,
+  computeNextState: (heartbeat: () => void) => TrackingConvergenceState,
+  applyNextState: (nextState: TrackingConvergenceState, heartbeat: () => void) => void,
   options?: TrackingConvergenceOptions,
 ): TrackingConvergenceResult {
   const normalized = normalizeOptions(options);
@@ -163,20 +328,29 @@ export function runTrackingConvergence(
       throw new TrackingConvergenceError(
         `tracking convergence exceeded ${normalized.maxPasses} passes while stabilizing tracked bindings and callable return summaries${describeChurn(details)}`,
         details,
+        debugTrace,
       );
     }
 
     const currentState = getCurrentState();
-    const nextState = computeNextState();
+    const passStartedAt = Date.now();
+    const passStartedSolverState = normalized.getSolverStateMetrics?.();
+    const heartbeat = (): void => {
+      throwIfPassGuardExceeded(passes, normalized, passStartedAt, passStartedSolverState);
+    };
+    const nextState = computeNextState(heartbeat);
+    heartbeat();
     const bindingDiff = diffTrackedBindingMaps(
       currentState.trackedBySymbolId,
       nextState.trackedBySymbolId,
       normalized.churnSampleLimit,
+      heartbeat,
     );
     const returnSummaryDiff = diffCallableReturnSummaryMaps(
       currentState.functionReturnSummaries,
       nextState.functionReturnSummaries,
       normalized.churnSampleLimit,
+      heartbeat,
     );
     const changed = bindingDiff.changedCount > 0 || returnSummaryDiff.changedCount > 0;
     const elapsedMs = Date.now() - startedAt;
@@ -201,6 +375,9 @@ export function runTrackingConvergence(
       returnSummaryDiff.sampleKeys,
     );
 
+    applyNextState(nextState, heartbeat);
+    heartbeat();
+
     if (debugTrace) {
       debugTrace.passTraces.push({
         pass: passes,
@@ -209,10 +386,9 @@ export function runTrackingConvergence(
         returnSummaryChanges: returnSummaryDiff.changedCount,
         bindingSamples: [...bindingDiff.sampleKeys],
         returnSummarySamples: [...returnSummaryDiff.sampleKeys],
+        solverState: normalized.getSolverStateMetrics?.(),
       });
     }
-
-    applyNextState(nextState);
 
     if (!warned && passes >= normalized.warningPassThreshold) {
       warned = true;
@@ -225,6 +401,10 @@ export function runTrackingConvergence(
     }
 
     if (!changed) {
+      for (const diagnostic of diagnostics) {
+        observeTrackingContractDiagnosticShape(diagnostic);
+      }
+
       return {
         passes,
         warningPassThreshold: normalized.warningPassThreshold,

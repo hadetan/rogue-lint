@@ -171,17 +171,35 @@ function markObservedPath(
   markObjectPathRead(overlayState, trackedObject, segments);
 }
 
-interface ProjectionAliasHop {
-  receiverTrackedObject: TrackedObject;
-  receiverPath: PathSegment[];
-}
-
 function markProjectionAliasHopObserved(
   overlayState: ObjectPathOverlayState,
-  hop: ProjectionAliasHop,
+  receiverTrackedObject: TrackedObject,
+  receiverPath: PathSegment[],
+  consumedSuffixLength: number,
+  suffix: PathSegment[],
+  mode: "self" | "subtree" | "children" | "write",
+  trackedObjectsById: Map<string, TrackedObject>,
 ): void {
-  markSerializedObservedAlias(overlayState, hop.receiverTrackedObject.id, serializePath(hop.receiverPath));
-  markObjectPathRead(overlayState, hop.receiverTrackedObject, hop.receiverPath);
+  const fullReceiverPath = [...receiverPath, ...suffix.slice(consumedSuffixLength)];
+
+  markSerializedObservedAlias(overlayState, receiverTrackedObject.id, serializePath(fullReceiverPath));
+
+  if (mode === "subtree") {
+    markObjectPathObservedSubtree(overlayState, receiverTrackedObject, fullReceiverPath, trackedObjectsById);
+    return;
+  }
+
+  if (mode === "children") {
+    markObjectPathObservedChildPaths(overlayState, receiverTrackedObject, fullReceiverPath, trackedObjectsById);
+    return;
+  }
+
+  if (mode === "write") {
+    markObjectPathWrite(overlayState, receiverTrackedObject, fullReceiverPath);
+    return;
+  }
+
+  markObjectPathRead(overlayState, receiverTrackedObject, fullReceiverPath);
 }
 
 function applyResolvedProjectionTargets(
@@ -196,30 +214,15 @@ function applyResolvedProjectionTargets(
       trackedObject: projection.trackedObject,
       prefix: elementPath,
     };
-    const aliasHops: ProjectionAliasHop[] = [];
 
     const rootAlias = resolveExactPathAlias(currentBinding, [], trackedObjectsById);
     if (rootAlias.viaAliasObjectId && rootAlias.viaAliasPath) {
-      const receiverTrackedObject = trackedObjectsById.get(rootAlias.viaAliasObjectId);
-      if (receiverTrackedObject) {
-        aliasHops.push({
-          receiverTrackedObject,
-          receiverPath: rootAlias.viaAliasPath,
-        });
-      }
       currentBinding = rootAlias.binding;
     }
 
     for (const segment of suffix) {
       const aliased = resolveExactPathAlias(currentBinding, [segment], trackedObjectsById);
       if (aliased.viaAliasObjectId && aliased.viaAliasPath) {
-        const receiverTrackedObject = trackedObjectsById.get(aliased.viaAliasObjectId);
-        if (receiverTrackedObject) {
-          aliasHops.push({
-            receiverTrackedObject,
-            receiverPath: aliased.viaAliasPath,
-          });
-        }
         currentBinding = aliased.binding;
         continue;
       }
@@ -231,8 +234,47 @@ function applyResolvedProjectionTargets(
       continue;
     }
 
-    for (const aliasHop of aliasHops) {
-      markProjectionAliasHopObserved(overlayState, aliasHop);
+    let replayBinding: TrackedObjectBinding = {
+      trackedObject: projection.trackedObject,
+      prefix: elementPath,
+    };
+    const replayRootAlias = resolveExactPathAlias(replayBinding, [], trackedObjectsById);
+    if (replayRootAlias.viaAliasObjectId && replayRootAlias.viaAliasPath) {
+      const receiverTrackedObject = trackedObjectsById.get(replayRootAlias.viaAliasObjectId);
+      if (receiverTrackedObject) {
+        markProjectionAliasHopObserved(
+          overlayState,
+          receiverTrackedObject,
+          replayRootAlias.viaAliasPath,
+          0,
+          suffix,
+          mode,
+          trackedObjectsById,
+        );
+      }
+      replayBinding = replayRootAlias.binding;
+    }
+
+    for (const [index, segment] of suffix.entries()) {
+      const replayAliased = resolveExactPathAlias(replayBinding, [segment], trackedObjectsById);
+      if (replayAliased.viaAliasObjectId && replayAliased.viaAliasPath) {
+        const receiverTrackedObject = trackedObjectsById.get(replayAliased.viaAliasObjectId);
+        if (receiverTrackedObject) {
+          markProjectionAliasHopObserved(
+            overlayState,
+            receiverTrackedObject,
+            replayAliased.viaAliasPath,
+            index + 1,
+            suffix,
+            mode,
+            trackedObjectsById,
+          );
+        }
+        replayBinding = replayAliased.binding;
+        continue;
+      }
+
+      replayBinding = extendTrackedBinding(replayBinding, [segment]);
     }
 
     if (mode === "subtree") {

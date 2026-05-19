@@ -14,12 +14,14 @@ export const TRACKING_CONTRACT_DIAGNOSTIC_CODE = {
 
 type TrackingContractDiagnosticCode = (typeof TRACKING_CONTRACT_DIAGNOSTIC_CODE)[keyof typeof TRACKING_CONTRACT_DIAGNOSTIC_CODE];
 
-export const TRACKING_STRUCTURAL_ROLE = {
-  record: "record",
-  stateHolder: "state-holder",
-  structuralRecord: "structural-record",
-  structuralRecordArray: "structural-record-array",
-} as const;
+class TrackingStructuralRoleVocabulary {
+  readonly record: "record" = "record";
+  readonly stateHolder: "state-holder" = "state-holder";
+  readonly structuralRecord: "structural-record" = "structural-record";
+  readonly structuralRecordArray: "structural-record-array" = "structural-record-array";
+}
+
+export const TRACKING_STRUCTURAL_ROLE = new TrackingStructuralRoleVocabulary();
 
 type TrackingStructuralRole = (typeof TRACKING_STRUCTURAL_ROLE)[keyof typeof TRACKING_STRUCTURAL_ROLE];
 
@@ -42,8 +44,17 @@ export type TrackingContractDiagnostic = {
 
 export type TrackingContractDiagnosticDetails = {
   readonly elapsedMs?: number;
+  readonly pass?: number;
   readonly bindingChanges?: number;
   readonly returnSummaryChanges?: number;
+  readonly trackedObjectRegistryEntries?: number;
+  readonly callSiteSpecializations?: number;
+  readonly literalBindingCacheEntries?: number;
+  readonly returnLiteralBindingCacheEntries?: number;
+  readonly trackedObjectRegistryGrowth?: number;
+  readonly callSiteSpecializationGrowth?: number;
+  readonly literalBindingCacheGrowth?: number;
+  readonly returnLiteralBindingCacheGrowth?: number;
   readonly bindingSamples?: readonly string[];
   readonly returnSummarySamples?: readonly string[];
 };
@@ -55,6 +66,12 @@ export type TrackingConvergencePassTrace = {
   readonly returnSummaryChanges: number;
   readonly bindingSamples: readonly string[];
   readonly returnSummarySamples: readonly string[];
+  readonly solverState?: {
+    readonly trackedObjectRegistryEntries: number;
+    readonly callSiteSpecializations: number;
+    readonly literalBindingCacheEntries: number;
+    readonly returnLiteralBindingCacheEntries: number;
+  };
 };
 
 export type TrackingConvergenceDebugTrace = {
@@ -139,6 +156,13 @@ export type TrackingRuntimeSummary = {
     readonly returnSummaries: number;
     readonly trackedObjects: number;
   };
+  readonly solverState: {
+    readonly trackedObjectRegistryEntries: number;
+    readonly callSiteSpecializations: number;
+    readonly literalBindingCacheEntries: number;
+    readonly returnLiteralBindingCacheEntries: number;
+  };
+  readonly stageTimingsMs: Readonly<Record<string, number>>;
   readonly stageRequests: Readonly<Record<string, number>>;
 };
 
@@ -177,6 +201,13 @@ export type MutableTrackingRuntimeSummary = {
     returnSummaries: number;
     trackedObjects: number;
   };
+  solverState: {
+    trackedObjectRegistryEntries: number;
+    callSiteSpecializations: number;
+    literalBindingCacheEntries: number;
+    returnLiteralBindingCacheEntries: number;
+  };
+  stageTimingsMs: Record<string, number>;
   stageRequests: Record<string, number>;
 };
 

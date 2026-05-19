@@ -38,12 +38,20 @@ export function diffTrackedBindingMaps(
   left: Map<string, TrackedObjectBinding>,
   right: Map<string, TrackedObjectBinding>,
   sampleLimit: number,
+  heartbeat?: () => void,
 ): TrackingMapDiff {
   let changedCount = 0;
   const sampleKeys: string[] = [];
   const keys = new Set<string>([...left.keys(), ...right.keys()]);
+  let heartbeatCounter = 0;
 
   for (const key of keys) {
+    heartbeatCounter += 1;
+    if (heartbeatCounter >= 2048) {
+      heartbeatCounter = 0;
+      heartbeat?.();
+    }
+
     const current = left.get(key);
     const next = right.get(key);
     if (!current || !next || !sameTrackedBinding(current, next)) {

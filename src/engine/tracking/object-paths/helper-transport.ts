@@ -2,17 +2,25 @@ import ts from "typescript";
 
 import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { getSymbolKey } from "../../../compiler/ast-utils.js";
-import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
+import { serializePath } from "../../../shared/path-utils.js";
 import { getCallSiteStructuredArgumentBinding, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding } from "../bindings.js";
 import { getAnalyzableCallableBindingFromDeclaration, getCallableReturnBinding } from "../callables.js";
+import type { AnalysisCapabilityFactRecord } from "../../capabilities/types.js";
 import type { CallableReturnSummary, HelperParameterSummary, ResolvedTrackedObjectAccess, TrackedObjectBinding } from "../model.js";
 import { buildHelperBoundaryReason, summarizeHelperParameterUse } from "../semantics.js";
 import { getCollectionInfo, hasTrackedChildren } from "../state.js";
-import { ANALYSIS_CAPABILITY_DETAIL_LABEL, ANALYSIS_CAPABILITY_ID } from "../../capabilities/vocabulary.js";
+import { createCapabilityFactRecordId } from "../../capabilities/types.js";
+import {
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE,
+  ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT,
+  ANALYSIS_CAPABILITY_FACT_FAMILY,
+  ANALYSIS_CAPABILITY_FACT_OUTCOME,
+  ANALYSIS_CAPABILITY_ID,
+} from "../../capabilities/vocabulary.js";
 import { TRACKING_COLLECTION_KIND, TRACKING_HELPER_PARAMETER_EFFECT_KIND } from "../vocabulary.js";
-
-type HelperTransportCapabilityId = typeof ANALYSIS_CAPABILITY_ID.helperTransport;
+import type { BoundedHelperExecutionSnapshot } from "./types.js";
 
 interface HelperTransportHandlerOptions {
   project: ProjectContext;
@@ -22,6 +30,10 @@ interface HelperTransportHandlerOptions {
   trackedObjectsById: Map<string, TrackedObject>;
   parameterMeaningfulUse: Map<string, boolean | null>;
   parameterSummaryCache: Map<string, HelperParameterSummary | null>;
+  getBoundedHelperExecutionSnapshot: (
+    callable: ts.FunctionLikeDeclaration,
+    parameter: ts.Identifier,
+  ) => BoundedHelperExecutionSnapshot | undefined;
   markExactHelperReadPath: (binding: TrackedObjectBinding, segments: PathSegment[]) => void;
   shouldReplayExactHelperReadPaths: (binding: TrackedObjectBinding) => boolean;
   replayHelperExactAppendPlans: (
@@ -36,12 +48,7 @@ interface HelperTransportHandlerOptions {
     binding: TrackedObjectBinding,
     localBindings?: Map<string, TrackedObjectBinding>,
   ) => void;
-  registerLiveCapabilityFact: (
-    trackedObject: TrackedObject,
-    segments: PathSegment[],
-    capabilityId: HelperTransportCapabilityId,
-    detailHint: string,
-  ) => void;
+  capabilityFacts: Map<string, AnalysisCapabilityFactRecord>;
   recordArrayBoundary: (
     project: ProjectContext,
     trackedObject: TrackedObject,
@@ -74,6 +81,7 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
     resolved: ResolvedTrackedObjectAccess | undefined,
     parameter: ts.ParameterDeclaration | undefined,
     analyzableCallable: ts.FunctionLikeDeclaration | undefined,
+    bindingScope?: Map<string, TrackedObjectBinding>,
   ) => boolean;
 } {
   const {
@@ -84,11 +92,12 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
     trackedObjectsById,
     parameterMeaningfulUse,
     parameterSummaryCache,
+    getBoundedHelperExecutionSnapshot,
     markExactHelperReadPath,
     shouldReplayExactHelperReadPaths,
     replayHelperExactAppendPlans,
     replayHelperProjectedUsages,
-    registerLiveCapabilityFact,
+    capabilityFacts,
     recordArrayBoundary,
     markEscaped,
   } = options;
@@ -100,18 +109,18 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
       || summary.boundaryReason?.includes("stores this value inside an aggregate literal")
       || summary.boundaryReason?.includes("unsupported retained location")
     ) {
-      return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperRetainedStorage;
+      return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE;
     }
 
     if (summary.effectKinds.has(TRACKING_HELPER_PARAMETER_EFFECT_KIND.retainedBinding)) {
-      return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperRetainedStorage;
+      return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE;
     }
 
     if (summary.effectKinds.has(TRACKING_HELPER_PARAMETER_EFFECT_KIND.opaqueEscape)) {
-      return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperEscape;
+      return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE;
     }
 
-    return ANALYSIS_CAPABILITY_DETAIL_LABEL.sameProjectHelperTransport;
+    return ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT;
   };
 
   const handleStructuredHelperArgument = (
@@ -120,14 +129,19 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
     resolved: ResolvedTrackedObjectAccess | undefined,
     parameter: ts.ParameterDeclaration | undefined,
     analyzableCallable: ts.FunctionLikeDeclaration | undefined,
+    bindingScope?: Map<string, TrackedObjectBinding>,
   ): boolean => {
     if (!parameter || !ts.isIdentifier(parameter.name) || !analyzableCallable) {
       return false;
     }
 
+    const activeBindings = bindingScope ?? trackedBySymbolId;
+
     const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
     const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
-    const baseBinding = parameterSymbolKey ? trackedBySymbolId.get(parameterSymbolKey) : undefined;
+    const baseBinding = parameterSymbolKey
+      ? activeBindings.get(parameterSymbolKey) ?? trackedBySymbolId.get(parameterSymbolKey)
+      : undefined;
     const resolvedBinding = resolved && !resolved.dynamic
       ? extendTrackedBinding(resolved.binding, resolved.segments)
       : undefined;
@@ -137,7 +151,7 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
           node,
           argument,
           baseBinding,
-          trackedBySymbolId,
+          activeBindings,
           functionReturnSummaries,
           trackedObjectsById,
         )
@@ -163,10 +177,13 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
       parameterMeaningfulUse,
       parameterSummaryCache,
     );
+    const snapshot = getBoundedHelperExecutionSnapshot(analyzableCallable, parameter.name);
+    const exactReadPaths = snapshot?.exactReadPaths ?? summary.exactReadPaths;
+    const boundaryReason = snapshot?.boundaryReason ?? summary.boundaryReason;
 
     if (shouldReplayExactHelperReadPaths(helperReplayBinding)) {
-      const localBindings = new Map(trackedBySymbolId);
-      const helperParameterBindings: Array<{ parameter: ts.Identifier; binding: TrackedObjectBinding }> = [];
+      const localBindings = new Map(activeBindings);
+      const helperParameterBindings = new Map<ts.Identifier, TrackedObjectBinding>();
 
       analyzableCallable.parameters.forEach((candidateParameter, index) => {
         if (!ts.isIdentifier(candidateParameter.name)) {
@@ -181,7 +198,7 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
         const candidateResolved = resolveTrackedObjectAccess(
           project,
           candidateArgument,
-          trackedBySymbolId,
+          activeBindings,
           functionReturnSummaries,
           trackedObjectsById,
         );
@@ -201,7 +218,7 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
         const candidateParameterSymbol = project.checker.getSymbolAtLocation(candidateParameter.name);
         const candidateParameterSymbolKey = candidateParameterSymbol ? getSymbolKey(candidateParameterSymbol) : undefined;
         const candidateBaseBinding = candidateParameterSymbolKey
-          ? trackedBySymbolId.get(candidateParameterSymbolKey)
+          ? activeBindings.get(candidateParameterSymbolKey) ?? trackedBySymbolId.get(candidateParameterSymbolKey)
           : undefined;
         const candidateResolvedBinding = extendTrackedBinding(
           candidateResolved.binding,
@@ -213,7 +230,7 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
               node,
               candidateArgument,
               candidateBaseBinding,
-              trackedBySymbolId,
+              activeBindings,
               functionReturnSummaries,
               trackedObjectsById,
             )
@@ -222,16 +239,13 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
         if (candidateParameterSymbolKey) {
           localBindings.set(candidateParameterSymbolKey, candidateReplayBinding);
         }
-        helperParameterBindings.push({
-          parameter: candidateParameter.name,
-          binding: candidateReplayBinding,
-        });
+        helperParameterBindings.set(candidateParameter.name, candidateReplayBinding);
       });
 
-      summary.exactReadPaths.forEach((readPath) => {
+      exactReadPaths.forEach((readPath) => {
         markExactHelperReadPath(helperReplayBinding, readPath);
       });
-      helperParameterBindings.forEach(({ parameter: candidateParameter, binding: candidateBinding }) => {
+      helperParameterBindings.forEach((candidateBinding, candidateParameter) => {
         if (!shouldReplayExactHelperReadPaths(candidateBinding)) {
           return;
         }
@@ -240,16 +254,29 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
       });
       replayHelperExactAppendPlans(analyzableCallable, parameter.name, helperReplayBinding, localBindings);
     }
-    if (!summary.boundaryReason && (summary.effectKinds.size > 0 || summary.exactReadPaths.length > 0)) {
-      registerLiveCapabilityFact(
-        helperReplayBinding.trackedObject,
-        fullPath,
+    if (!boundaryReason && (summary.effectKinds.size > 0 || exactReadPaths.length > 0)) {
+      const entity = helperReplayBinding.trackedObject.nodes.get(serializePath(fullPath))?.entity
+        ?? helperReplayBinding.trackedObject.rootEntity;
+      const detailHint = getHelperTransportDetailHint(summary);
+      const recordId = createCapabilityFactRecordId(
+        ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport,
+        entity,
         ANALYSIS_CAPABILITY_ID.helperTransport,
-        getHelperTransportDetailHint(summary),
+        detailHint,
       );
+      if (!capabilityFacts.has(recordId)) {
+        capabilityFacts.set(recordId, {
+          id: recordId,
+          family: ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport,
+          capabilityId: ANALYSIS_CAPABILITY_ID.helperTransport,
+          entity,
+          outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.live,
+          detailHint,
+        });
+      }
     }
     if (collectionInfo?.kind === TRACKING_COLLECTION_KIND.array) {
-      if (summary.boundaryReason) {
+      if (boundaryReason) {
         recordArrayBoundary(
           project,
           helperReplayBinding.trackedObject,
@@ -257,10 +284,13 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
           argument,
           fullPath,
           fullPath,
-          SKIP_CATEGORY.arrayOpaqueMutation,
+          "array-opaque-mutation",
           buildHelperBoundaryReason(
             project,
-            summary,
+            {
+              boundaryNode: summary.boundaryNode,
+              boundaryReason,
+            },
             "same-project helper receives this collection beyond exact local analysis",
           ),
           true,
@@ -270,22 +300,25 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
       return true;
     }
 
-    if (summary.boundaryReason) {
+    if (boundaryReason) {
       const callableBinding = getAnalyzableCallableBindingFromDeclaration(project, analyzableCallable);
       const helperReturnBinding = callableBinding
         ? getCallableReturnBinding(functionReturnSummaries.get(callableBinding.symbolKey))
         : undefined;
-      const boundaryCategory: SkipCategory = summary.boundaryReason.includes("stores this value by reference")
+      const boundaryCategory: SkipCategory = boundaryReason.includes("stores this value by reference")
         && helperReturnBinding
-        ? SKIP_CATEGORY.returnedObject
-        : SKIP_CATEGORY.opaqueObjectCall;
+        ? "returned-object"
+        : "opaque-object-call";
       markEscaped(
         helperReplayBinding.trackedObject,
         fullPath,
         boundaryCategory,
         buildHelperBoundaryReason(
           project,
-          summary,
+          {
+            boundaryNode: summary.boundaryNode,
+            boundaryReason,
+          },
           helperReplayBinding.prefix.length === 0
             ? "same-project helper receives this object beyond exact local analysis"
             : "same-project helper receives this object path beyond exact local analysis",

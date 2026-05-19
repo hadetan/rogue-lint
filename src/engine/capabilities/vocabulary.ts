@@ -36,16 +36,16 @@ export const ANALYSIS_CAPABILITY_FACT_FAMILY = {
 export type AnalysisCapabilityFactFamily = (typeof ANALYSIS_CAPABILITY_FACT_FAMILY)[keyof typeof ANALYSIS_CAPABILITY_FACT_FAMILY];
 
 export const ANALYSIS_CAPABILITY_FACT_OUTCOME = {
-  live: ANALYSIS_CAPABILITY_OUTCOME.live,
-  boundary: ANALYSIS_CAPABILITY_OUTCOME.boundary,
+  live: "live",
+  boundary: "boundary",
 } as const;
 
 export type AnalysisCapabilityFactOutcome = (typeof ANALYSIS_CAPABILITY_FACT_OUTCOME)[keyof typeof ANALYSIS_CAPABILITY_FACT_OUTCOME];
 
 export const ANALYSIS_CAPABILITY_EVIDENCE_SOURCE = {
-  finding: ANALYSIS_CAPABILITY_OUTCOME.finding,
-  kept: ANALYSIS_CAPABILITY_OUTCOME.kept,
-  skipped: ANALYSIS_CAPABILITY_OUTCOME.skipped,
+  finding: "finding",
+  kept: "kept",
+  skipped: "skipped",
   diagnostic: "diagnostic",
   obligation: "obligation",
   fact: "fact",
@@ -54,19 +54,19 @@ export const ANALYSIS_CAPABILITY_EVIDENCE_SOURCE = {
 export type AnalysisCapabilityEvidenceSource = (typeof ANALYSIS_CAPABILITY_EVIDENCE_SOURCE)[keyof typeof ANALYSIS_CAPABILITY_EVIDENCE_SOURCE];
 
 export const ANALYSIS_CAPABILITY_BOUNDARY_SOURCE = {
-  skipped: ANALYSIS_CAPABILITY_OUTCOME.skipped,
-  diagnostic: ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.diagnostic,
-  obligation: ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.obligation,
-  boundary: ANALYSIS_CAPABILITY_OUTCOME.boundary,
-  fact: ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.fact,
+  skipped: "skipped",
+  diagnostic: "diagnostic",
+  obligation: "obligation",
+  boundary: "boundary",
+  fact: "fact",
 } as const;
 
 export type AnalysisCapabilityBoundarySource = (typeof ANALYSIS_CAPABILITY_BOUNDARY_SOURCE)[keyof typeof ANALYSIS_CAPABILITY_BOUNDARY_SOURCE];
 
 export const ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE = {
-  finding: ANALYSIS_CAPABILITY_OUTCOME.finding,
-  kept: ANALYSIS_CAPABILITY_OUTCOME.kept,
-  skipped: ANALYSIS_CAPABILITY_OUTCOME.skipped,
+  finding: "finding",
+  kept: "kept",
+  skipped: "skipped",
 } as const;
 
 export type AnalysisCapabilityAttributionSource = (typeof ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE)[keyof typeof ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE];
@@ -78,17 +78,74 @@ export const ANALYSIS_CAPABILITY_FALLBACK_BOUNDARY_LABEL = {
   [ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing]: "public surface aliasing fallback",
 } as const satisfies Record<AnalysisCapabilityId, string>;
 
-export const ANALYSIS_CAPABILITY_DETAIL_LABEL = {
-  sameProjectHelperTransport: "same-project helper transport",
-  sameProjectHelperRetainedStorage: "same-project helper retained storage",
-  sameProjectHelperEscape: "same-project helper escape",
-  sameProjectReturnedStructure: "same-project helper return summary",
-  boundedFiniteKeyRead: "bounded finite key read",
-  promiseAllTransport: "Promise.all transport summary",
-  callbackTransportBoundary: "callback transport boundary",
-  opaqueHelperMutationBoundary: "opaque helper mutation boundary",
-  opaqueHelperTransportBoundary: "opaque helper transport boundary",
-  arrayAtBoundary: "array .at boundary",
-  computedKeyBoundary: "computed key boundary",
-  dynamicIndexBoundary: "dynamic index boundary",
-} as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT = "same-project helper transport" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE = "same-project helper retained storage" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE = "same-project helper escape" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_RETURNED_STRUCTURE = "same-project helper return summary" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ = "bounded finite key read" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_PROMISE_ALL_TRANSPORT = "Promise.all transport summary" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_CALLBACK_TRANSPORT_BOUNDARY = "callback transport boundary" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_MUTATION_BOUNDARY = "opaque helper mutation boundary" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_TRANSPORT_BOUNDARY = "opaque helper transport boundary" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_ARRAY_AT_BOUNDARY = "array .at boundary" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_COMPUTED_KEY_BOUNDARY = "computed key boundary" as const;
+export const ANALYSIS_CAPABILITY_DETAIL_LABEL_DYNAMIC_INDEX_BOUNDARY = "dynamic index boundary" as const;
+
+function observeAnalysisCapabilityVocabularySurface(): void {
+  void ANALYSIS_CAPABILITY_ID.finiteKeyedAccess;
+  void ANALYSIS_CAPABILITY_ID.returnedStructureTransport;
+  void ANALYSIS_CAPABILITY_ID.helperTransport;
+  void ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing;
+
+  void ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember;
+  void ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember;
+
+  void ANALYSIS_CAPABILITY_OUTCOME.finding;
+  void ANALYSIS_CAPABILITY_OUTCOME.kept;
+  void ANALYSIS_CAPABILITY_OUTCOME.skipped;
+  void ANALYSIS_CAPABILITY_OUTCOME.live;
+  void ANALYSIS_CAPABILITY_OUTCOME.boundary;
+
+  void ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport;
+  void ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess;
+
+  void ANALYSIS_CAPABILITY_FACT_OUTCOME.live;
+  void ANALYSIS_CAPABILITY_FACT_OUTCOME.boundary;
+
+  void ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.finding;
+  void ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.kept;
+  void ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.skipped;
+  void ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.diagnostic;
+  void ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.obligation;
+  void ANALYSIS_CAPABILITY_EVIDENCE_SOURCE.fact;
+
+  void ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.skipped;
+  void ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.diagnostic;
+  void ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.obligation;
+  void ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.boundary;
+  void ANALYSIS_CAPABILITY_BOUNDARY_SOURCE.fact;
+
+  void ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.finding;
+  void ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.kept;
+  void ANALYSIS_CAPABILITY_ATTRIBUTION_SOURCE.skipped;
+
+  void ANALYSIS_CAPABILITY_FALLBACK_BOUNDARY_LABEL[ANALYSIS_CAPABILITY_ID.finiteKeyedAccess];
+  void ANALYSIS_CAPABILITY_FALLBACK_BOUNDARY_LABEL[ANALYSIS_CAPABILITY_ID.returnedStructureTransport];
+  void ANALYSIS_CAPABILITY_FALLBACK_BOUNDARY_LABEL[ANALYSIS_CAPABILITY_ID.helperTransport];
+  void ANALYSIS_CAPABILITY_FALLBACK_BOUNDARY_LABEL[ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing];
+
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_TRANSPORT;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_RETAINED_STORAGE;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_HELPER_ESCAPE;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_SAME_PROJECT_RETURNED_STRUCTURE;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_PROMISE_ALL_TRANSPORT;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_CALLBACK_TRANSPORT_BOUNDARY;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_MUTATION_BOUNDARY;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_OPAQUE_HELPER_TRANSPORT_BOUNDARY;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_ARRAY_AT_BOUNDARY;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_COMPUTED_KEY_BOUNDARY;
+  void ANALYSIS_CAPABILITY_DETAIL_LABEL_DYNAMIC_INDEX_BOUNDARY;
+}
+
+observeAnalysisCapabilityVocabularySurface();

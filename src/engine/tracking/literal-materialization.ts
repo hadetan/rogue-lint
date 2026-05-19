@@ -15,7 +15,7 @@ import {
   renderPath,
   serializePath,
 } from "../../shared/path-utils.js";
-import { extendTrackedBinding } from "./bindings.js";
+import { extendTrackedBinding, sameTrackedBinding } from "./bindings.js";
 import {
   resolveAnalyzableCallableBinding,
   resolveTrackedObjectAccess,
@@ -28,13 +28,14 @@ import type {
   CallableReturnSummary,
   TrackedObjectBinding,
 } from "./model.js";
-import { visitResolvedSpreadPropertySegments } from "./spread-support.js";
+import { getResolvedSpreadPropertyNames } from "./spread-support.js";
 import { classifyTrackedObjectStructuralRole, unwrapExpression } from "./syntax.js";
 import {
   TRACKING_COLLECTION_KIND,
   TRACKING_PLACE_STATE,
 } from "./vocabulary.js";
 import {
+  bumpTrackedObjectDerivedStateRevision,
   ensureCollectionChildPath,
   getCollectionInfo,
   indexTrackedObjectNode,
@@ -45,11 +46,24 @@ import {
 } from "./state.js";
 import { TRACKING_STRUCTURAL_ROLE } from "./ownership.js";
 
-function getKnownSpreadPropertyNames(expression: ts.Expression): string[] | undefined {
+let trackingLiteralMaterializationHeartbeat: (() => void) | undefined;
+
+export function withTrackingLiteralMaterializationHeartbeat<T>(heartbeat: (() => void) | undefined, work: () => T): T {
+  const previousHeartbeat = trackingLiteralMaterializationHeartbeat;
+  trackingLiteralMaterializationHeartbeat = heartbeat;
+
+  try {
+    return work();
+  } finally {
+    trackingLiteralMaterializationHeartbeat = previousHeartbeat;
+  }
+}
+
+function getKnownSpreadPropertyNames(expression: ts.Expression): ReadonlySet<string> | undefined {
   const node = unwrapExpression(expression);
 
   if (ts.isObjectLiteralExpression(node)) {
-    const propertyNames: string[] = [];
+    const propertyNames = new Set<string>();
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
         return undefined;
@@ -66,7 +80,7 @@ function getKnownSpreadPropertyNames(expression: ts.Expression): string[] | unde
         return undefined;
       }
 
-      propertyNames.push(propertyName);
+      propertyNames.add(propertyName);
     }
 
     return propertyNames;
@@ -79,7 +93,11 @@ function getKnownSpreadPropertyNames(expression: ts.Expression): string[] | unde
       return undefined;
     }
 
-    return [...new Set([...whenTrue, ...whenFalse])];
+    const merged = new Set<string>(whenTrue);
+    for (const propertyName of whenFalse) {
+      merged.add(propertyName);
+    }
+    return merged;
   }
 
   if (ts.isBinaryExpression(node)) {
@@ -97,7 +115,11 @@ function getKnownSpreadPropertyNames(expression: ts.Expression): string[] | unde
         return undefined;
       }
 
-      return [...new Set([...left, ...right])];
+      const merged = new Set<string>(left);
+      for (const propertyName of right) {
+        merged.add(propertyName);
+      }
+      return merged;
     }
   }
 
@@ -152,97 +174,160 @@ function addTrackedObjectNode(
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): void {
-  if (segments.length > maxDepth) {
-    return;
-  }
+  type PendingLiteral = {
+    node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression;
+    segments: PathSegment[];
+    next?: PendingLiteral;
+  };
+  const observePendingLiteralShape = (pendingLiteral: PendingLiteral): void => {
+    pendingLiteral.node;
+    pendingLiteral.segments;
+    pendingLiteral.next;
+  };
+  const pendingHead: PendingLiteral = { node, segments };
+  observePendingLiteralShape(pendingHead);
+  let pendingTail = pendingHead;
 
-  if (ts.isObjectLiteralExpression(node)) {
-    if (!getCollectionInfo(trackedObject, segments)) {
-      setCollectionInfo(trackedObject, segments, TRACKING_COLLECTION_KIND.object);
+  for (let current: PendingLiteral | undefined = pendingHead; current; current = current.next) {
+    trackingLiteralMaterializationHeartbeat?.();
+    if (current.segments.length > maxDepth) {
+      continue;
     }
 
-    const registerTrackedPropertyNode = (propertyName: string, anchor: ts.Node): PathSegment[] => {
-      const fullPath = [...segments, propertySegment(propertyName)];
-      const joinedPath = serializePath(fullPath);
-      ensureCollectionChildPath(trackedObject, segments, fullPath);
-      const entity = makeEntity(
-        project.rootPath,
-        fullPath.length === 1 ? ENTITY_KIND.objectKey : ENTITY_KIND.nestedPath,
-        sourceFile,
-        anchor,
-        fullPath.length === 1 ? propertyName : renderPath(fullPath),
-        owner,
-      );
-      trackedObject.nodes.set(joinedPath, {
-        entity,
-        fullPath,
-        origin: TRACKED_OBJECT_NODE_ORIGIN.property,
-      });
-      trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
-      indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
-      return fullPath;
-    };
-
-    for (const property of node.properties) {
-      if (ts.isSpreadAssignment(property)) {
-        const resolved = resolveTrackedSpreadSource(
-          project,
-          property.expression,
-          trackedBySymbolId,
-          functionReturnSummaries,
-          trackedObjectsById,
-        );
-        if (resolved && !resolved.dynamic) {
-          const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
-          if (visitResolvedSpreadPropertySegments(spreadBinding, (spreadSegment) => {
-            if (spreadSegment.kind !== "property") {
-              return;
-            }
-
-            registerTrackedPropertyNode(spreadSegment.value, property.expression);
-          })) {
-            continue;
-          }
-        }
-
-        const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
-        if (!spreadPropertyNames) {
-          markEscaped(trackedObject, segments, SKIP_CATEGORY.objectSpread, "object spread introduces opaque properties");
-        } else {
-          for (const propertyName of spreadPropertyNames) {
-            markEscaped(
-              trackedObject,
-              [...segments, propertySegment(propertyName)],
-              SKIP_CATEGORY.objectSpread,
-              "object spread may overwrite this property",
-            );
-          }
-        }
-        continue;
+    if (ts.isObjectLiteralExpression(current.node)) {
+      if (!getCollectionInfo(trackedObject, current.segments)) {
+        setCollectionInfo(trackedObject, current.segments, TRACKING_COLLECTION_KIND.object);
       }
 
-      if (ts.isMethodDeclaration(property)) {
-        const propertyName = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+      for (const property of current.node.properties) {
+        trackingLiteralMaterializationHeartbeat?.();
+
+        if (ts.isSpreadAssignment(property)) {
+          const resolved = resolveTrackedSpreadSource(
+            project,
+            property.expression,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          if (resolved && !resolved.dynamic) {
+            const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+            const spreadPropertyNames = getResolvedSpreadPropertyNames(spreadBinding);
+            if (spreadPropertyNames) {
+              for (const spreadPropertyName of spreadPropertyNames) {
+                const fullPath = [...current.segments, propertySegment(spreadPropertyName)];
+                const joinedPath = serializePath(fullPath);
+                ensureCollectionChildPath(trackedObject, current.segments, fullPath);
+                const entity = makeEntity(
+                  project.rootPath,
+                  fullPath.length === 1 ? ENTITY_KIND.objectKey : ENTITY_KIND.nestedPath,
+                  sourceFile,
+                  property.expression,
+                  fullPath.length === 1 ? spreadPropertyName : renderPath(fullPath),
+                  owner,
+                );
+                trackedObject.nodes.set(joinedPath, {
+                  entity,
+                  fullPath,
+                  origin: TRACKED_OBJECT_NODE_ORIGIN.property,
+                });
+                trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
+                indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
+              }
+
+              continue;
+            }
+          }
+
+          const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
+          if (!spreadPropertyNames) {
+            markEscaped(trackedObject, current.segments, SKIP_CATEGORY.objectSpread, "object spread introduces opaque properties");
+          } else {
+            for (const propertyName of spreadPropertyNames) {
+              markEscaped(
+                trackedObject,
+                [...current.segments, propertySegment(propertyName)],
+                SKIP_CATEGORY.objectSpread,
+                "object spread may overwrite this property",
+              );
+            }
+          }
+          continue;
+        }
+
+        if (ts.isMethodDeclaration(property)) {
+          const propertyName = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+            ? property.name.text
+            : undefined;
+          if (!propertyName) {
+            markEscaped(
+              trackedObject,
+              current.segments,
+              "computed-property-name",
+              "computed property names are not eligible for exact analysis",
+            );
+            continue;
+          }
+
+          const callable = propertyName ? getAnalyzableCallableBindingFromDeclaration(project, property) : undefined;
+          if (propertyName && callable) {
+            trackedObject.callablePaths.set(serializePath([...current.segments, propertySegment(propertyName)]), callable);
+          }
+
+          const fullPath = [...current.segments, propertySegment(propertyName)];
+          const joinedPath = serializePath(fullPath);
+          ensureCollectionChildPath(trackedObject, current.segments, fullPath);
+          const entity = makeEntity(
+            project.rootPath,
+            fullPath.length === 1 ? ENTITY_KIND.objectKey : ENTITY_KIND.nestedPath,
+            sourceFile,
+            property.name,
+            fullPath.length === 1 ? propertyName : renderPath(fullPath),
+            owner,
+          );
+          trackedObject.nodes.set(joinedPath, {
+            entity,
+            fullPath,
+            origin: TRACKED_OBJECT_NODE_ORIGIN.method,
+          });
+          trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
+          indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
+          continue;
+        }
+
+        if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
+          continue;
+        }
+
+        const propertyName = ts.isShorthandPropertyAssignment(property)
           ? property.name.text
-          : undefined;
+          : ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+            ? property.name.text
+            : undefined;
+
         if (!propertyName) {
           markEscaped(
             trackedObject,
-            segments,
+            current.segments,
             "computed-property-name",
             "computed property names are not eligible for exact analysis",
           );
           continue;
         }
 
-        const callable = propertyName ? getAnalyzableCallableBindingFromDeclaration(project, property) : undefined;
-        if (propertyName && callable) {
-          trackedObject.callablePaths.set(serializePath([...segments, propertySegment(propertyName)]), callable);
+        if (ts.isPropertyAssignment(property)) {
+          const callableInitializer = unwrapExpression(property.initializer);
+          const callable = (ts.isFunctionExpression(callableInitializer) || ts.isArrowFunction(callableInitializer))
+            ? getAnalyzableCallableBindingFromDeclaration(project, callableInitializer)
+            : undefined;
+          if (callable) {
+            trackedObject.callablePaths.set(serializePath([...current.segments, propertySegment(propertyName)]), callable);
+          }
         }
 
-        const fullPath = [...segments, propertySegment(propertyName)];
+        const fullPath = [...current.segments, propertySegment(propertyName)];
         const joinedPath = serializePath(fullPath);
-        ensureCollectionChildPath(trackedObject, segments, fullPath);
+        ensureCollectionChildPath(trackedObject, current.segments, fullPath);
         const entity = makeEntity(
           project.rootPath,
           fullPath.length === 1 ? ENTITY_KIND.objectKey : ENTITY_KIND.nestedPath,
@@ -254,95 +339,47 @@ function addTrackedObjectNode(
         trackedObject.nodes.set(joinedPath, {
           entity,
           fullPath,
-          origin: TRACKED_OBJECT_NODE_ORIGIN.method,
+          origin: TRACKED_OBJECT_NODE_ORIGIN.property,
         });
         trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
         indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
-        continue;
-      }
 
-      if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
-        continue;
-      }
-
-      const propertyName = ts.isShorthandPropertyAssignment(property)
-        ? property.name.text
-        : ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
-          ? property.name.text
-          : undefined;
-
-      if (!propertyName) {
-        markEscaped(
-          trackedObject,
-          segments,
-          "computed-property-name",
-          "computed property names are not eligible for exact analysis",
-        );
-        continue;
-      }
-
-      if (ts.isPropertyAssignment(property)) {
-        const callableInitializer = unwrapExpression(property.initializer);
-        const callable = (ts.isFunctionExpression(callableInitializer) || ts.isArrowFunction(callableInitializer))
-          ? getAnalyzableCallableBindingFromDeclaration(project, callableInitializer)
-          : undefined;
-        if (callable) {
-          trackedObject.callablePaths.set(serializePath([...segments, propertySegment(propertyName)]), callable);
+        const initializer = ts.isShorthandPropertyAssignment(property) ? undefined : property.initializer;
+        if (initializer && (ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer))) {
+          const nextPending: PendingLiteral = {
+            node: initializer,
+            segments: fullPath,
+          };
+          observePendingLiteralShape(nextPending);
+          pendingTail.next = nextPending;
+          pendingTail = nextPending;
         }
       }
 
-      const fullPath = registerTrackedPropertyNode(propertyName, property.name);
-
-      const initializer = ts.isShorthandPropertyAssignment(property) ? undefined : property.initializer;
-      if (initializer && ts.isObjectLiteralExpression(initializer)) {
-        addTrackedObjectNode(
-          project,
-          trackedObject,
-          sourceFile,
-          initializer,
-          owner,
-          fullPath,
-          maxDepth,
-          trackedBySymbolId,
-          functionReturnSummaries,
-          trackedObjectsById,
-        );
-      }
-      if (initializer && ts.isArrayLiteralExpression(initializer)) {
-        addTrackedObjectNode(
-          project,
-          trackedObject,
-          sourceFile,
-          initializer,
-          owner,
-          fullPath,
-          maxDepth,
-          trackedBySymbolId,
-          functionReturnSummaries,
-          trackedObjectsById,
-        );
-      }
+      continue;
     }
-  } else {
-    const collection = getCollectionInfo(trackedObject, segments)
-      ?? setCollectionInfo(trackedObject, segments, TRACKING_COLLECTION_KIND.array, node.elements.length);
+
+    const collection = getCollectionInfo(trackedObject, current.segments)
+      ?? setCollectionInfo(trackedObject, current.segments, TRACKING_COLLECTION_KIND.array, current.node.elements.length);
     if (collection.kind === TRACKING_COLLECTION_KIND.array) {
       setTrackedArrayLength(
         trackedObject,
-        segments,
-        Math.max(collection.arrayLength ?? 0, node.elements.length),
+        current.segments,
+        Math.max(collection.arrayLength ?? 0, current.node.elements.length),
       );
     }
 
-    node.elements.forEach((element, index) => {
+    for (const [index, element] of current.node.elements.entries()) {
+      trackingLiteralMaterializationHeartbeat?.();
+
       if (!element || ts.isSpreadElement(element)) {
-        markEscaped(trackedObject, segments, SKIP_CATEGORY.arraySpread, "array spread introduces opaque values");
-        return;
+        markEscaped(trackedObject, current.segments, SKIP_CATEGORY.arraySpread, "array spread introduces opaque values");
+        continue;
       }
 
-      const fullPath = [...segments, indexSegment(index)];
+      const fullPath = [...current.segments, indexSegment(index)];
       const joinedPath = serializePath(fullPath);
-      ensureCollectionChildPath(trackedObject, segments, fullPath);
+      ensureCollectionChildPath(trackedObject, current.segments, fullPath);
       const entity = makeEntity(
         project.rootPath,
         fullPath.length === 1 ? ENTITY_KIND.arrayElement : ENTITY_KIND.nestedPath,
@@ -359,35 +396,16 @@ function addTrackedObjectNode(
       trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
       indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
 
-      if (ts.isObjectLiteralExpression(element)) {
-        addTrackedObjectNode(
-          project,
-          trackedObject,
-          sourceFile,
-          element,
-          owner,
-          fullPath,
-          maxDepth,
-          trackedBySymbolId,
-          functionReturnSummaries,
-          trackedObjectsById,
-        );
+      if (ts.isObjectLiteralExpression(element) || ts.isArrayLiteralExpression(element)) {
+        const nextPending: PendingLiteral = {
+          node: element,
+          segments: fullPath,
+        };
+        observePendingLiteralShape(nextPending);
+        pendingTail.next = nextPending;
+        pendingTail = nextPending;
       }
-      if (ts.isArrayLiteralExpression(element)) {
-        addTrackedObjectNode(
-          project,
-          trackedObject,
-          sourceFile,
-          element,
-          owner,
-          fullPath,
-          maxDepth,
-          trackedBySymbolId,
-          functionReturnSummaries,
-          trackedObjectsById,
-        );
-      }
-    });
+    }
   }
 }
 
@@ -401,83 +419,184 @@ function registerTrackedLiteralAliases(
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): void {
-  if (segments.length > maxDepth) {
-    return;
-  }
+  trackingLiteralMaterializationHeartbeat?.();
 
-  if (ts.isObjectLiteralExpression(node)) {
-    for (const property of node.properties) {
-      if (ts.isSpreadAssignment(property)) {
-        const resolved = resolveTrackedSpreadSource(
+  const hasSameExactAlias = (pathKey: string, binding: TrackedObjectBinding): boolean => {
+    const existingAlias = trackedObject.exactPathAliases.get(pathKey);
+    if (!existingAlias) {
+      return false;
+    }
+
+    const sourceTrackedObject = trackedObjectsById.get(existingAlias.sourceObjectId);
+    if (!sourceTrackedObject) {
+      return false;
+    }
+
+    return sameTrackedBinding(
+      {
+        trackedObject: sourceTrackedObject,
+        prefix: existingAlias.sourcePath,
+      },
+      binding,
+    );
+  };
+  type PendingLiteral = {
+    node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression;
+    segments: PathSegment[];
+    next?: PendingLiteral;
+  };
+  const observePendingLiteralShape = (pendingLiteral: PendingLiteral): void => {
+    pendingLiteral.node;
+    pendingLiteral.segments;
+    pendingLiteral.next;
+  };
+  const pendingHead: PendingLiteral = { node, segments };
+  observePendingLiteralShape(pendingHead);
+  let pendingTail = pendingHead;
+
+  for (let current: PendingLiteral | undefined = pendingHead; current; current = current.next) {
+    trackingLiteralMaterializationHeartbeat?.();
+    if (current.segments.length > maxDepth) {
+      continue;
+    }
+
+    if (ts.isObjectLiteralExpression(current.node)) {
+      for (const property of current.node.properties) {
+        trackingLiteralMaterializationHeartbeat?.();
+
+        if (ts.isSpreadAssignment(property)) {
+          const resolved = resolveTrackedSpreadSource(
+            project,
+            property.expression,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          if (resolved && !resolved.dynamic) {
+            const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+            const spreadPropertyNames = getResolvedSpreadPropertyNames(spreadBinding);
+            if (spreadPropertyNames) {
+              for (const spreadPropertyName of spreadPropertyNames) {
+                const spreadSegment = propertySegment(spreadPropertyName);
+                registerExactPathAlias(
+                  trackedObject,
+                  [...current.segments, spreadSegment],
+                  extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
+                  "object spread keeps this property exact",
+                );
+              }
+
+              continue;
+            }
+          }
+
+          const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
+          if (!spreadPropertyNames) {
+            markEscaped(trackedObject, current.segments, SKIP_CATEGORY.objectSpread, "object spread introduces opaque properties");
+          } else {
+            for (const propertyName of spreadPropertyNames) {
+              markEscaped(
+                trackedObject,
+                [...current.segments, propertySegment(propertyName)],
+                SKIP_CATEGORY.objectSpread,
+                "object spread may overwrite this property",
+              );
+            }
+          }
+          continue;
+        }
+
+        if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
+          continue;
+        }
+
+        const propertyName = ts.isShorthandPropertyAssignment(property)
+          ? property.name.text
+          : ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+            ? property.name.text
+            : undefined;
+
+        if (!propertyName) {
+          continue;
+        }
+
+        const fullPath = [...current.segments, propertySegment(propertyName)];
+        const pathKey = serializePath(fullPath);
+        const initializer = ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer;
+        const unwrapped = unwrapExpression(initializer);
+
+        if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
+          if (trackedObject.exactPathAliases.delete(pathKey)) {
+            bumpTrackedObjectDerivedStateRevision(trackedObject);
+          }
+          const nextPending: PendingLiteral = {
+            node: unwrapped,
+            segments: fullPath,
+          };
+          observePendingLiteralShape(nextPending);
+          pendingTail.next = nextPending;
+          pendingTail = nextPending;
+          continue;
+        }
+
+        const resolved = resolveTrackedObjectAccess(
           project,
-          property.expression,
+          unwrapped,
           trackedBySymbolId,
           functionReturnSummaries,
           trackedObjectsById,
         );
         if (resolved && !resolved.dynamic) {
-          const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
-          if (visitResolvedSpreadPropertySegments(spreadBinding, (spreadSegment) => {
-            registerExactPathAlias(
-              trackedObject,
-              [...segments, spreadSegment],
-              extendTrackedBinding(resolved.binding, [...resolved.segments, spreadSegment]),
-              "object spread keeps this property exact",
-            );
-          })) {
+          const aliasBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          if (hasSameExactAlias(pathKey, aliasBinding)) {
             continue;
           }
-        }
 
-        const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
-        if (!spreadPropertyNames) {
-          markEscaped(trackedObject, segments, SKIP_CATEGORY.objectSpread, "object spread introduces opaque properties");
-        } else {
-          for (const propertyName of spreadPropertyNames) {
-            markEscaped(
-              trackedObject,
-              [...segments, propertySegment(propertyName)],
-              SKIP_CATEGORY.objectSpread,
-              "object spread may overwrite this property",
-            );
+          if (trackedObject.exactPathAliases.delete(pathKey)) {
+            bumpTrackedObjectDerivedStateRevision(trackedObject);
           }
+          registerExactPathAlias(
+            trackedObject,
+            fullPath,
+            aliasBinding,
+            "returned structure keeps this nested binding exact",
+          );
+        } else if (trackedObject.exactPathAliases.delete(pathKey)) {
+          bumpTrackedObjectDerivedStateRevision(trackedObject);
         }
+      }
+
+      continue;
+    }
+
+    for (const [index, element] of current.node.elements.entries()) {
+      trackingLiteralMaterializationHeartbeat?.();
+
+      if (!element || ts.isSpreadElement(element)) {
         continue;
       }
 
-      if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) {
-        continue;
-      }
-
-      const propertyName = ts.isShorthandPropertyAssignment(property)
-        ? property.name.text
-        : ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
-          ? property.name.text
-          : undefined;
-
-      if (!propertyName) {
-        continue;
-      }
-
-      const fullPath = [...segments, propertySegment(propertyName)];
-      trackedObject.exactPathAliases.delete(serializePath(fullPath));
-      const initializer = ts.isShorthandPropertyAssignment(property) ? property.name : property.initializer;
-      const unwrapped = unwrapExpression(initializer);
+      const fullPath = [...current.segments, indexSegment(index)];
+      const pathKey = serializePath(fullPath);
+      const unwrapped = unwrapExpression(element);
 
       if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
-        registerTrackedLiteralAliases(
-          project,
-          trackedObject,
-          unwrapped,
-          fullPath,
-          maxDepth,
-          trackedBySymbolId,
-          functionReturnSummaries,
-          trackedObjectsById,
-        );
+        if (trackedObject.exactPathAliases.delete(pathKey)) {
+          bumpTrackedObjectDerivedStateRevision(trackedObject);
+        }
+        const nextPending: PendingLiteral = {
+          node: unwrapped,
+          segments: fullPath,
+        };
+        observePendingLiteralShape(nextPending);
+        pendingTail.next = nextPending;
+        pendingTail = nextPending;
         continue;
       }
 
+      if (trackedObject.exactPathAliases.delete(pathKey)) {
+        bumpTrackedObjectDerivedStateRevision(trackedObject);
+      }
       const resolved = resolveTrackedObjectAccess(
         project,
         unwrapped,
@@ -486,56 +605,23 @@ function registerTrackedLiteralAliases(
         trackedObjectsById,
       );
       if (resolved && !resolved.dynamic) {
+        const aliasBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+        if (hasSameExactAlias(pathKey, aliasBinding)) {
+          continue;
+        }
+
+        if (trackedObject.exactPathAliases.delete(pathKey)) {
+          bumpTrackedObjectDerivedStateRevision(trackedObject);
+        }
         registerExactPathAlias(
           trackedObject,
           fullPath,
-          extendTrackedBinding(resolved.binding, resolved.segments),
+          aliasBinding,
           "returned structure keeps this nested binding exact",
         );
       }
     }
-
-    return;
   }
-
-  node.elements.forEach((element, index) => {
-    if (!element || ts.isSpreadElement(element)) {
-      return;
-    }
-
-    const fullPath = [...segments, indexSegment(index)];
-    const unwrapped = unwrapExpression(element);
-
-    if (ts.isObjectLiteralExpression(unwrapped) || ts.isArrayLiteralExpression(unwrapped)) {
-      registerTrackedLiteralAliases(
-        project,
-        trackedObject,
-        unwrapped,
-        fullPath,
-        maxDepth,
-        trackedBySymbolId,
-        functionReturnSummaries,
-        trackedObjectsById,
-      );
-      return;
-    }
-
-    const resolved = resolveTrackedObjectAccess(
-      project,
-      unwrapped,
-      trackedBySymbolId,
-      functionReturnSummaries,
-      trackedObjectsById,
-    );
-    if (resolved && !resolved.dynamic) {
-      registerExactPathAlias(
-        trackedObject,
-        fullPath,
-        extendTrackedBinding(resolved.binding, resolved.segments),
-        "returned structure keeps this nested binding exact",
-      );
-    }
-  });
 }
 
 /**
@@ -551,9 +637,11 @@ export function materializeTrackedLiteralAtPath(
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
-  options: { registerAliases?: boolean } = {},
+  options: { materializeNodes?: boolean; registerAliases?: boolean } = {},
 ): void {
-  if (segments.length === 1 && segments[0]?.kind === "index") {
+  trackingLiteralMaterializationHeartbeat?.();
+
+  if ((options.materializeNodes ?? true) && segments.length === 1 && segments[0]?.kind === "index") {
     const literalRole = classifyTrackedObjectStructuralRole(node);
     if (
       literalRole === TRACKING_STRUCTURAL_ROLE.structuralRecord
@@ -567,18 +655,21 @@ export function materializeTrackedLiteralAtPath(
     }
   }
 
-  addTrackedObjectNode(
-    project,
-    trackedObject,
-    sourceFile,
-    node,
-    owner,
-    segments,
-    project.config.value.objectAnalysis.maxPathDepth,
-    trackedBySymbolId,
-    functionReturnSummaries,
-    trackedObjectsById,
-  );
+  if (options.materializeNodes ?? true) {
+    addTrackedObjectNode(
+      project,
+      trackedObject,
+      sourceFile,
+      node,
+      owner,
+      segments,
+      project.config.value.objectAnalysis.maxPathDepth,
+      trackedBySymbolId,
+      functionReturnSummaries,
+      trackedObjectsById,
+    );
+  }
+
   if (options.registerAliases === false) {
     return;
   }

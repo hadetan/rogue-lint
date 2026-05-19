@@ -28,6 +28,10 @@ export async function runCli(
     failureExitCode = resolveConfig(rootPath, cliOptions).value.failureExitCode;
     const result = await analyzeProject(cliOptions);
     writeStdout(`${renderResult(result, cliOptions.format, cliOptions.showKept)}\n`);
+    if (result.diagnostics.some((diagnostic) => diagnostic.kind === "project-error")) {
+      return result.exitCodes.failure;
+    }
+
     return result.summary.findings > 0 ? result.exitCodes.findings : 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

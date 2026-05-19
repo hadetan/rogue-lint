@@ -3,7 +3,7 @@ import ts from "typescript";
 import type { PathSegment, TrackedObject, TrackedObjectStructuralRole } from "../../types.js";
 import { PATH_SEGMENT_KIND } from "../../shared/path-vocabulary.js";
 import { TRACKING_STRUCTURAL_ROLE } from "./ownership.js";
-import { TRACKING_PURE_OBJECT_CONSTRUCTOR_TYPE_NAMES } from "./vocabulary.js";
+import { TRACKING_CALL_SITE_SPECIALIZATION_KIND, TRACKING_PURE_OBJECT_CONSTRUCTOR_TYPE_NAMES } from "./vocabulary.js";
 
 /**
  * Syntax and control-flow helpers shared across the tracking kernel.
@@ -44,6 +44,7 @@ const STRUCTURAL_RECORD_FIELD_NAMES = new Set([
   "findingKind",
   "functionReturnSummaries",
   "getStageArtifacts",
+  "recordStageTiming",
   "kind",
   "owner",
   "reads",
@@ -64,7 +65,7 @@ const STRUCTURAL_RECORD_FIELD_NAMES = new Set([
 const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
   ...STRUCTURAL_RECORD_FIELD_NAMES,
   "acceptedFindings",
-  "call",
+  TRACKING_CALL_SITE_SPECIALIZATION_KIND.call,
   "capabilityObligations",
   "callablePurity",
   "candidates",
@@ -97,6 +98,11 @@ const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
   "location",
   "maxCount",
   "message",
+  "maxPassCallSiteSpecializationGrowth",
+  "maxPassElapsedMs",
+  "maxPassLiteralBindingCacheGrowth",
+  "maxPassReturnLiteralBindingCacheGrowth",
+  "maxPassTrackedObjectRegistryGrowth",
   "methodName",
   "minCount",
   "mode",
@@ -112,6 +118,7 @@ const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
   "objectAnalysis",
   "parameterMeaningfulUse",
   "prefix",
+  "callSiteSpecializations",
   "readDirectory",
   "readFile",
   "relativeCollectionPath",
@@ -121,17 +128,25 @@ const STRUCTURAL_HELPER_FIELD_NAMES = new Set([
   "returnSummaries",
   "runtimeSummary",
   "seed",
+  "solverState",
   "sourceObservationReason",
   "sourceFile",
   "sourcePath",
   "specifier",
   "statement",
   "stageRequests",
+  "stageTimingsMs",
   "slotPlans",
   "suffix",
   "to",
   "totals",
+  "trackedObjectRegistryEntries",
   "trackedObject",
+  "trackedObjectRegistryGrowth",
+  "literalBindingCacheEntries",
+  "literalBindingCacheGrowth",
+  "returnLiteralBindingCacheEntries",
+  "returnLiteralBindingCacheGrowth",
   "warned",
   "warningPassThreshold",
   "maxPasses",
@@ -146,11 +161,21 @@ const STRUCTURAL_STATE_FIELD_NAMES = new Set([
   "diagnostics",
   "findings",
   "kept",
+  "literalBindingCacheEntries",
+  "literalBindingCacheGrowth",
   "outgoing",
   "returnSummaries",
+  "returnLiteralBindingCacheEntries",
+  "returnLiteralBindingCacheGrowth",
   "runtimeSummary",
+  "solverState",
   "stage",
+  "stageTimingsMs",
   "skipped",
+  "trackedObjectRegistryEntries",
+  "trackedObjectRegistryGrowth",
+  "callSiteSpecializations",
+  "callSiteSpecializationGrowth",
   "unresolved",
 ]);
 

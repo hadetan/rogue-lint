@@ -130,6 +130,17 @@ function createTrackingRuntimeSummary(overrides: Partial<{
       returnSummaries: overrides.returnSummaries ?? 2,
       trackedObjects: 2,
     },
+    solverState: {
+      trackedObjectRegistryEntries: 2,
+      callSiteSpecializations: 0,
+      literalBindingCacheEntries: 0,
+      returnLiteralBindingCacheEntries: 0,
+    },
+    stageTimingsMs: {
+      "tracking-graph-build": overrides.elapsedMs ?? 100,
+      "value-liveness": 0,
+      "object-paths": 0,
+    },
     stageRequests: {},
   };
 }
@@ -293,6 +304,7 @@ describe("benchmark expectation evaluation", () => {
         expect.objectContaining({ metric: "return-summary-changes" }),
       ]),
     );
+    expect(evaluation.trackingSafety?.metrics.stageTimingsMs["tracking-graph-build"]).toBeGreaterThan(0);
     expect(evaluation.failed).toBe(true);
   });
 

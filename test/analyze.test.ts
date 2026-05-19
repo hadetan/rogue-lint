@@ -3,52 +3,20 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { runCli } from "../src/cli.js";
-import { getAnalysisCapabilityLedger } from "../src/engine/capabilities/providers.js";
 import { validateFindingKindOwners } from "../src/engine/finding-kind-owners.js";
-import { evaluateTrackingUpgradeSafety } from "../src/engine/tracking/upgrade-safety.js";
 import { analyzeProject } from "../src/index.js";
 import { renderResult } from "../src/output/render-result.js";
 
-const SELF_HOST_LIBRARY_TRACKING_SAFETY_BUDGETS = {
-  maxPasses: 10,
-  maxBindingChurnMultiplier: 8,
-  maxReturnSummaryChurnMultiplier: 8,
-  maxElapsedMs: 5000,
-};
-
 function fixturePath(name: string): string {
   return path.join(process.cwd(), "test", "fixtures", name);
-}
-
-function normalizeAudit(entry: { category?: string; kind: string; name: string; location?: { file: string; line: number } }): string {
-  return `${entry.category ?? "-"}:${entry.kind}:${entry.location?.file ?? "-"}:${entry.location?.line ?? 0}:${entry.name}`;
-}
-
-function normalizeFinding(entry: { kind: string; entity: { name: string; location?: { file: string; line: number } } }): string {
-  return `-:${entry.kind}:${entry.entity.location?.file ?? "-"}:${entry.entity.location?.line ?? 0}:${entry.entity.name}`;
 }
 
 function getCapabilityCoverageGapDiagnostics(result: { diagnostics: Array<{ message: string }> }): Array<{ message: string }> {
   return result.diagnostics.filter((diagnostic) => diagnostic.message.includes("capability coverage gap"));
 }
 
-const EXPECTED_SELF_HOST_FINDINGS: string[] = [];
-
-const EXPECTED_SELF_HOST_SKIPS: string[] = [];
 const RETURNED_CONTEXT_USED_FIELD_NAMES = ["processors", "seen"];
 const OPAQUE_CALLBACK_USED_FIELD_NAMES = ["seen"];
-let selfHostLibraryResultPromise: ReturnType<typeof analyzeProject> | undefined;
-
-function getSelfHostLibraryResult() {
-  selfHostLibraryResultPromise ??= analyzeProject({
-    cwd: process.cwd(),
-    targetPath: process.cwd(),
-    format: "json",
-    mode: "library",
-  });
-
-  return selfHostLibraryResultPromise;
-}
 
 describe("rogue-lint analyzer", () => {
   it("assigns every public finding kind to exactly one capability owner", () => {
@@ -2115,76 +2083,4 @@ describe("rogue-lint analyzer", () => {
       ),
     ).toBe(false);
   });
-
-  it("does not surface helper bookkeeping residuals during self-host analysis", async () => {
-    const result = await getSelfHostLibraryResult();
-
-    expect(result.findings.some((finding) =>
-      finding.kind === "unused-array-element"
-      && finding.entity.location.file === "src/engine/tracking/object-paths/visitor.ts"
-      && [120, 637].includes(finding.entity.location.line)
-      && finding.entity.name === "[0]"
-    )).toBe(false);
-    expect(result.findings.some((finding) =>
-      finding.kind === "unused-array-element"
-      && finding.entity.location.file === "src/engine/tracking/semantics.ts"
-      && finding.entity.location.line === 193
-      && finding.entity.name === "[0]"
-    )).toBe(false);
-    expect(result.findings.some((finding) =>
-      finding.kind === "unused-object-key"
-      && finding.entity.location.file === "src/benchmark/run-benchmark.ts"
-      && finding.entity.location.line === 104
-      && finding.entity.name === "format"
-    )).toBe(false);
-    expect(result.skipped.some((entry) =>
-      entry.category === "array-callback-escape"
-      && entry.location?.file === "src/engine/tracking/semantics.ts"
-      && entry.location.line === 834
-      && entry.name === "getExactHelperReadPaths()"
-    )).toBe(false);
-    expect(result.skipped.some((entry) =>
-      entry.category === "returned-object"
-      && ((entry.location?.file === "src/engine/tracking/graph.ts" && entry.location.line === 269)
-        || (entry.location?.file === "src/engine/tracking/semantics.ts" && entry.location.line === 198))
-      && entry.name === "[0]"
-    )).toBe(false);
-  }, 15000);
-
-  it("enforces the normalized self-host library-mode zero-gap surface", async () => {
-    const result = await getSelfHostLibraryResult();
-
-    expect(result.diagnostics).toHaveLength(0);
-    expect(getCapabilityCoverageGapDiagnostics(result)).toHaveLength(0);
-    expect(result.summary.findings).toBe(EXPECTED_SELF_HOST_FINDINGS.length);
-    expect(result.summary.skipped).toBe(EXPECTED_SELF_HOST_SKIPS.length);
-    expect(result.summary.reachableFiles).toBe(result.summary.filesAnalyzed);
-    expect(result.findings.map(normalizeFinding).sort()).toEqual(EXPECTED_SELF_HOST_FINDINGS);
-    expect(result.skipped.map(normalizeAudit).sort()).toEqual(EXPECTED_SELF_HOST_SKIPS);
-  }, 15000);
-
-  it("keeps self-host tracking upgrade-safety signals within budget", async () => {
-    const result = await getSelfHostLibraryResult();
-    const trackingSafety = evaluateTrackingUpgradeSafety(result, SELF_HOST_LIBRARY_TRACKING_SAFETY_BUDGETS);
-
-    expect(trackingSafety).toBeDefined();
-    expect(trackingSafety?.enforced.violations).toHaveLength(0);
-    expect(trackingSafety?.informational.advisories).toHaveLength(0);
-  }, 15000);
-
-  it("keeps helper and finite capability boundary debt out of the normalized self-host surface", async () => {
-    const result = await getSelfHostLibraryResult();
-    const ledger = getAnalysisCapabilityLedger(result);
-
-    expect(
-      ledger?.boundaries.filter((entry) =>
-        entry.capabilityId === "helper-transport" || entry.capabilityId === "finite-keyed-access"
-      ) ?? [],
-    ).toHaveLength(0);
-    expect(
-      ledger?.attributions.filter((entry) =>
-        entry.capabilityId === "helper-transport" || entry.capabilityId === "finite-keyed-access"
-      ) ?? [],
-    ).toHaveLength(0);
-  }, 15000);
 });

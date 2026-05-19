@@ -1,14 +1,14 @@
 import type ts from "typescript";
 
 import type { PathSegment, ProjectContext, SuppressionContext, TrackedObject } from "../../../types.js";
-import type { AnalysisState } from "../../analysis-state.js";
 import type { AnalysisArtifacts } from "../../analysis-artifacts.js";
+import type { AnalysisState } from "../../analysis-state.js";
 import { OBJECT_PATHS_TRACKING_STAGE, type TrackingSharedFactsPlane } from "../contracts.js";
 import type { ArrayProjectionBinding, CallableReturnSummary, HelperParameterSummary, TrackedObjectBinding } from "../model.js";
 import { createObjectPathOverlayState, type ObjectPathOverlayState } from "./overlay.js";
 import { computePubliclyReachableCallableIds } from "./returned-structures.js";
 import type {
-  FiniteLookupCandidate, HelperExactAppendPlan, HelperProjectedUsagePlan,
+  BoundedHelperExecutionSnapshot, FiniteLookupCandidate, HelperExactAppendPlan, HelperProjectedUsagePlan,
   HigherOrderCallableReturnSummary, ObjectPathSourceFileContext, ObjectPathStageContext,
 } from "./types.js";
 import { TRACKING_RETURN_SUMMARY_KIND } from "../vocabulary.js";
@@ -130,7 +130,7 @@ function createObjectPathTrackingInput(artifacts: AnalysisArtifacts): ObjectPath
 export function createObjectPathStageContext(
   project: ProjectContext,
   reachableFiles: Set<string>,
-  state: AnalysisState,
+  _state: AnalysisState,
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): ObjectPathStageContext {
@@ -169,7 +169,6 @@ export function createObjectPathStageContext(
     reachableFiles,
     publicSurfaceIds: artifacts.publicSurfaceIds,
     publiclyReachableCallableIds,
-    state,
     suppressionContext,
     functionReturnSummaries,
     overlayState,
@@ -190,6 +189,7 @@ export function createObjectPathStageContext(
         handledSpreadAppendStarts: new Set<number>(),
         parameterMeaningfulUse: new Map<string, boolean | null>(),
         parameterSummaryCache: new Map<string, HelperParameterSummary | null>(),
+        helperExecutionSnapshotCache: new Map<string, BoundedHelperExecutionSnapshot | null>(),
         helperExactAppendPlanCache: new Map<string, HelperExactAppendPlan[] | null>(),
         helperProjectedUsagePlanCache: new Map<string, HelperProjectedUsagePlan[] | null>(),
         higherOrderCallableReturnSummaryCache: new Map<string, HigherOrderCallableReturnSummary | null>(),

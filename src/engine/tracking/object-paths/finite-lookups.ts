@@ -56,8 +56,7 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
   const parameterFiniteCandidateCache = new Map<string, PathSegment[] | null>();
 
   const mergeFiniteSegments = (...candidates: Array<PathSegment[] | undefined>): PathSegment[] | undefined => {
-    const merged: PathSegment[] = [];
-    const seen = new Set<string>();
+    const merged = new Map<string, PathSegment>();
 
     for (const candidateSet of candidates) {
       if (!candidateSet || candidateSet.length === 0) {
@@ -66,16 +65,15 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
 
       for (const candidate of candidateSet) {
         const key = serializePath([candidate]);
-        if (seen.has(key)) {
+        if (merged.has(key)) {
           continue;
         }
 
-        seen.add(key);
-        merged.push(candidate);
+        merged.set(key, candidate);
       }
     }
 
-    return merged.length > 0 ? merged : undefined;
+    return merged.size > 0 ? Array.from(merged.values()) : undefined;
   };
 
   const isPublicHelperParameterIdentifier = (expression: ts.Expression | undefined): boolean => {
@@ -385,7 +383,8 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
       return undefined;
     }
 
-    const candidateSegments = extractFinitePropertyUnionSegments(project, node.argumentExpression)
+    const typedCandidateSegments = extractFinitePropertyUnionSegments(project, node.argumentExpression);
+    const candidateSegments = typedCandidateSegments
       ?? collectFiniteStringCandidates(node.argumentExpression);
     if (!candidateSegments) {
       return undefined;
@@ -395,7 +394,7 @@ export function createFiniteLookupPlanner(options: FiniteLookupPlannerOptions): 
       collapsedBinding,
       [candidateSegment],
     ));
-    if (isPublicHelperParameterIdentifier(node.argumentExpression)) {
+    if (!typedCandidateSegments && isPublicHelperParameterIdentifier(node.argumentExpression)) {
       const directPropertyCandidateCount = getDirectPropertyCandidateCount(collapsedBinding);
       if (directPropertyCandidateCount === 0 || exactCandidateSegments.length !== directPropertyCandidateCount) {
         return undefined;

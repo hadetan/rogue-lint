@@ -6,19 +6,10 @@ import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName, hasModifier } from "../../compiler/ast-utils.js";
 import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import {
-  addAudit,
-  addFinding,
-  registerCapabilityObligation,
-  resolveCapabilityObligation,
-  type AnalysisState,
-} from "../analysis-state.js";
+import { addAudit, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import {
-  ANALYSIS_CAPABILITY_ID,
-  ANALYSIS_CAPABILITY_OBLIGATION_FAMILY,
-  ANALYSIS_CAPABILITY_OUTCOME,
-} from "../capabilities/vocabulary.js";
+import { createProviderObligationRecordId } from "../capabilities/types.js";
+import { ANALYSIS_CAPABILITY_ID, ANALYSIS_CAPABILITY_OBLIGATION_FAMILY, ANALYSIS_CAPABILITY_OUTCOME } from "../capabilities/vocabulary.js";
 import { buildPublicSurfaceAudit, createReferenceKey } from "./support.js";
 
 /**
@@ -35,6 +26,10 @@ export function analyzeInterfaceMembers(
     if (!reachableFiles.has(sourceFile.fileName)) {
       continue;
     }
+
+    const findings = state.findings;
+    const kept = state.kept;
+    const capabilityObligations = state.capabilityObligations;
 
     const visit = (node: ts.Node): void => {
       if (ts.isInterfaceDeclaration(node) && node.name) {
@@ -62,36 +57,38 @@ export function analyzeInterfaceMembers(
             node.name.text,
           );
 
+          const obligationId = createProviderObligationRecordId(
+            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
+            entity,
+            ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
+          );
+
           if (isExported) {
-            registerCapabilityObligation(
-              state,
-              ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
-              entity,
-              ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
-            );
+            if (!capabilityObligations.has(obligationId)) {
+              capabilityObligations.set(obligationId, {
+                id: obligationId,
+                family: ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
+                capabilityId: ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
+                entity,
+              });
+            }
           }
 
           if (isPublicSurface) {
-            addAudit(state.kept, buildPublicSurfaceAudit(entity));
-            resolveCapabilityObligation(
-              state,
-              ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
-              entity,
-              ANALYSIS_CAPABILITY_OUTCOME.kept,
-              ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
-            );
+            addAudit(kept, buildPublicSurfaceAudit(entity));
+            const obligation = capabilityObligations.get(obligationId);
+            if (obligation) {
+              obligation.outcome = ANALYSIS_CAPABILITY_OUTCOME.kept;
+            }
             continue;
           }
 
           const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
-          if (addAudit(state.kept, suppression)) {
-            resolveCapabilityObligation(
-              state,
-              ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
-              entity,
-              ANALYSIS_CAPABILITY_OUTCOME.kept,
-              ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
-            );
+          if (addAudit(kept, suppression)) {
+            const obligation = capabilityObligations.get(obligationId);
+            if (obligation) {
+              obligation.outcome = ANALYSIS_CAPABILITY_OUTCOME.kept;
+            }
             continue;
           }
 
@@ -113,34 +110,29 @@ export function analyzeInterfaceMembers(
             : referenceSummary.references > 0;
 
           if (hasLiveReferences) {
-            resolveCapabilityObligation(
-              state,
-              ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
-              entity,
-              ANALYSIS_CAPABILITY_OUTCOME.live,
-              ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
-            );
+            const obligation = capabilityObligations.get(obligationId);
+            if (obligation) {
+              obligation.outcome = ANALYSIS_CAPABILITY_OUTCOME.live;
+            }
             continue;
           }
 
-          addFinding(
-            state,
+          findings.push({
+            id: entity.id,
+            kind: "unused-interface-member",
             entity,
-            "unused-interface-member",
-            isExported && referenceSummary.references > 0
+            reason: isExported && referenceSummary.references > 0
               ? "eligible exported interface member is only referenced by non-runtime consumers"
               : isExported
                 ? "eligible exported interface member has no trusted runtime consumers"
                 : "eligible interface member has no non-declaration references",
-            `Unused interface member ${node.name.text}.${memberName}`,
-          );
-          resolveCapabilityObligation(
-            state,
-            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
-            entity,
-            ANALYSIS_CAPABILITY_OUTCOME.finding,
-            ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
-          );
+            message: `Unused interface member ${node.name.text}.${memberName}`,
+            suggestion: "remove",
+          });
+          const obligation = capabilityObligations.get(obligationId);
+          if (obligation) {
+            obligation.outcome = ANALYSIS_CAPABILITY_OUTCOME.finding;
+          }
         }
       }
 

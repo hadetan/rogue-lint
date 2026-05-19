@@ -26,6 +26,19 @@ interface ReturnSummaryCollectorOptions {
   ) => TrackedObjectBinding;
 }
 
+let trackingReturnSummaryHeartbeat: (() => void) | undefined;
+
+export function withTrackingReturnSummaryHeartbeat<T>(heartbeat: (() => void) | undefined, work: () => T): T {
+  const previousHeartbeat = trackingReturnSummaryHeartbeat;
+  trackingReturnSummaryHeartbeat = heartbeat;
+
+  try {
+    return work();
+  } finally {
+    trackingReturnSummaryHeartbeat = previousHeartbeat;
+  }
+}
+
 function getTrackableStructuredLiteral(
   expression: ts.Expression,
   options: { allowArraySpreadBoundary?: boolean } = {},
@@ -72,7 +85,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       literal.getSourceFile(),
       literal,
       `${getAnalyzableCallableName(callable)}()`,
-      ENTITY_KIND.expression,
+      "expression",
       literal,
     );
   };
@@ -82,7 +95,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
   ): CallableReturnSummary => {
     return {
-      kind: TRACKING_RETURN_SUMMARY_KIND.structured,
+      kind: "structured",
       binding: createStructuredReturnBinding(callable, literal),
     };
   };
@@ -224,7 +237,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     }
 
     return {
-      kind: TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
+      kind: "returned-alias",
       binding: createTrackedBindingForLiteral(
         getCanonicalSymbolKey(project, symbol),
         declaration.getSourceFile(),
@@ -347,6 +360,8 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     activeCallableIds: Set<string>,
     speculativeSummaries: Map<string, CallableReturnSummary>,
   ): CallableReturnSummary | undefined => {
+    trackingReturnSummaryHeartbeat?.();
+
     if (
       ts.isAwaitExpression(expression)
     ) {
@@ -424,8 +439,8 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
           if (specializedBinding) {
             return {
               kind: summary.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
-                ? TRACKING_RETURN_SUMMARY_KIND.returnedAlias
-                : TRACKING_RETURN_SUMMARY_KIND.structured,
+                ? "returned-alias"
+                : "structured",
               binding: specializedBinding,
             };
           }
@@ -469,7 +484,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         return joinCallableReturnSummaries(left, right).summary;
       }
 
-      return { kind: TRACKING_RETURN_SUMMARY_KIND.opaque };
+      return { kind: "opaque" };
     }
 
     if (ts.isConditionalExpression(expression)) {
@@ -501,7 +516,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         return joinCallableReturnSummaries(whenTrue, whenFalse).summary;
       }
 
-      return { kind: TRACKING_RETURN_SUMMARY_KIND.opaque };
+      return { kind: "opaque" };
     }
 
     const resolved = resolveTrackedObjectAccess(
@@ -513,7 +528,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     );
     if (resolved && !resolved.dynamic) {
       return {
-        kind: TRACKING_RETURN_SUMMARY_KIND.returnedAlias,
+        kind: "returned-alias",
         binding: extendTrackedBinding(resolved.binding, resolved.segments),
       };
     }
@@ -536,7 +551,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     }
 
     if (isTrackablePureExpression(expression)) {
-      return { kind: TRACKING_RETURN_SUMMARY_KIND.value };
+      return { kind: "value" };
     }
 
     return undefined;
@@ -547,6 +562,8 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     activeCallableIds = new Set<string>(),
     speculativeSummaries = new Map<string, CallableReturnSummary>(),
   ): CallableReturnSummary | undefined => {
+    trackingReturnSummaryHeartbeat?.();
+
     const callable = getAnalyzableCallableBindingFromDeclaration(project, declaration);
     if (!callable?.declaration.body) {
       return undefined;
@@ -563,6 +580,8 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
     let pending = false;
 
     const visit = (node: ts.Node): void => {
+      trackingReturnSummaryHeartbeat?.();
+
       if (pending) {
         return;
       }

@@ -4,7 +4,7 @@ import type { AnalysisState } from "../analysis-state.js";
 import type { TrackingContractDiagnostic } from "./contracts.js";
 import { TRACKING_CONTRACT_DIAGNOSTIC_CODE } from "./contracts.js";
 
-function toAnalysisDiagnostic(diagnostic: TrackingContractDiagnostic): DiagnosticRecord {
+export function toAnalysisDiagnostic(diagnostic: TrackingContractDiagnostic): DiagnosticRecord {
   const stagePrefix = diagnostic.stage ? ` (${diagnostic.stage})` : "";
 
   switch (diagnostic.code) {

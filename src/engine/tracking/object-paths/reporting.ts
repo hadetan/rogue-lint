@@ -5,7 +5,7 @@ import { FINDING_KIND } from "../../../shared/finding-vocabulary.js";
 import { kindToFinding } from "../../../shared/entity-utils.js";
 import { renderPathWithRoot, serializePath } from "../../../shared/path-utils.js";
 import { addAudit, addFinding, addSkipped, registerCapabilityObligation, resolveCapabilityObligation, type AnalysisState } from "../../analysis-state.js";
-import { ANALYSIS_CAPABILITY_ID, ANALYSIS_CAPABILITY_OBLIGATION_FAMILY, ANALYSIS_CAPABILITY_OUTCOME } from "../../capabilities/vocabulary.js";
+import { ANALYSIS_CAPABILITY_OUTCOME } from "../../capabilities/vocabulary.js";
 import { getCollectionInfo, hasTrackedChildren } from "../state.js";
 import type { TrackedObjectBinding } from "../model.js";
 import { shouldSuppressStructuralPath, shouldSuppressStructuralRoot } from "../syntax.js";
@@ -52,6 +52,18 @@ function hasDirectReportingObservation(
     || getObjectPathOverlayObservedSubtrees(overlayState, tracked.id)?.size
     || getObjectPathOverlayObservedAliases(overlayState, tracked.id)?.size
     || getObjectPathOverlayBoundaryRecords(overlayState, tracked.id)?.size
+  );
+}
+
+function hasDirectReportingObservationAtPath(
+  overlayState: ObjectPathOverlayState,
+  tracked: TrackedObject,
+  joinedPath: string,
+): boolean {
+  return Boolean(
+    getObjectPathOverlayReads(overlayState, tracked.id)?.has(joinedPath)
+    || getObjectPathOverlayObservedSubtrees(overlayState, tracked.id)?.has(joinedPath)
+    || getObjectPathOverlayObservedAliases(overlayState, tracked.id)?.has(joinedPath)
   );
 }
 
@@ -126,12 +138,22 @@ export function finalizeObjectPathFindings(
   const reportingReadsById = new Map<string, Set<string>>();
   const reportingObservedSubtreesById = new Map<string, Set<string>>();
   const reportingObservedAliasesById = new Map<string, Set<string>>();
+  const reportingExactProxyPathsByOwnerId = new Map<string, Set<string>>();
   const reportingProxyCountsByOwnerId = new Map<string, number>();
 
   for (const tracked of trackedList) {
     const reportingOwnerId = getReportingOwnerId(tracked, trackedBindingsBySymbolId);
     if (reportingOwnerId !== tracked.id) {
       reportingProxyCountsByOwnerId.set(reportingOwnerId, (reportingProxyCountsByOwnerId.get(reportingOwnerId) ?? 0) + 1);
+
+      const exactProxyPaths = reportingExactProxyPathsByOwnerId.get(reportingOwnerId) ?? new Set<string>();
+      for (const [joinedPath, objectNode] of tracked.nodes) {
+        if (!isObjectPathOverlayCollectionPathInvalidated(overlayState, tracked.id, objectNode.fullPath)
+          && !getObjectPathOverlayEscapedReason(overlayState, tracked.id, objectNode.fullPath)) {
+          exactProxyPaths.add(joinedPath);
+        }
+      }
+      reportingExactProxyPathsByOwnerId.set(reportingOwnerId, exactProxyPaths);
     }
 
     const reads = reportingReadsById.get(reportingOwnerId) ?? new Set<string>();
@@ -150,11 +172,18 @@ export function finalizeObjectPathFindings(
       continue;
     }
 
+    const hasAggregatedReportingObservation = Boolean(
+      getReportingReads(reportingReadsById, tracked).size
+      || getReportingObservedSubtrees(reportingObservedSubtreesById, tracked).size
+      || getReportingObservedAliases(reportingObservedAliasesById, tracked).size
+    );
+
     if (
       tracked.rootEntity.kind === ENTITY_KIND.expression
       && tracked.rootName.endsWith("()")
       && (reportingProxyCountsByOwnerId.get(tracked.id) ?? 0) > 0
       && !hasDirectReportingObservation(overlayState, tracked)
+      && !hasAggregatedReportingObservation
     ) {
       continue;
     }
@@ -208,9 +237,9 @@ export function finalizeObjectPathFindings(
       if (isReturnedContractMember) {
         registerCapabilityObligation(
           state,
-          ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
+          "returned-contract-member",
           objectNode.entity,
-          ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
+          "returned-structure-transport",
           tracked.rootName,
         );
       }
@@ -219,10 +248,10 @@ export function finalizeObjectPathFindings(
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
+            "returned-contract-member",
             objectNode.entity,
             ANALYSIS_CAPABILITY_OUTCOME.kept,
-            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
+            "returned-structure-transport",
           );
         }
         continue;
@@ -233,10 +262,10 @@ export function finalizeObjectPathFindings(
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
+            "returned-contract-member",
             objectNode.entity,
             ANALYSIS_CAPABILITY_OUTCOME.skipped,
-            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
+            "returned-structure-transport",
           );
         }
         continue;
@@ -244,13 +273,36 @@ export function finalizeObjectPathFindings(
 
       const escapedReason = getObjectPathOverlayEscapedReason(overlayState, tracked.id, objectNode.fullPath);
       if (escapedReason) {
+        const joinedPath = serializePath(objectNode.fullPath);
+        const hasAggregatedProxyObservation = !hasDirectReportingObservationAtPath(overlayState, tracked, joinedPath)
+          && (reportingProxyCountsByOwnerId.get(tracked.id) ?? 0) > 0
+          && (
+            getReportingReads(reportingReadsById, tracked).has(joinedPath)
+            || getReportingObservedSubtrees(reportingObservedSubtreesById, tracked).has(joinedPath)
+            || getReportingObservedAliases(reportingObservedAliasesById, tracked).has(joinedPath)
+            || (reportingExactProxyPathsByOwnerId.get(tracked.id)?.has(joinedPath) ?? false)
+          );
+
+        if (hasAggregatedProxyObservation) {
+          if (isReturnedContractMember) {
+            resolveCapabilityObligation(
+              state,
+              "returned-contract-member",
+              objectNode.entity,
+              ANALYSIS_CAPABILITY_OUTCOME.live,
+              "returned-structure-transport",
+            );
+          }
+          continue;
+        }
+
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
+            "returned-contract-member",
             objectNode.entity,
             ANALYSIS_CAPABILITY_OUTCOME.skipped,
-            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
+            "returned-structure-transport",
           );
         }
         addSkipped(state, objectNode.entity, escapedReason.category, escapedReason.reason);
@@ -262,10 +314,10 @@ export function finalizeObjectPathFindings(
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
+            "returned-contract-member",
             objectNode.entity,
             ANALYSIS_CAPABILITY_OUTCOME.kept,
-            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
+            "returned-structure-transport",
           );
         }
         continue;
@@ -292,10 +344,10 @@ export function finalizeObjectPathFindings(
         if (isReturnedContractMember) {
           resolveCapabilityObligation(
             state,
-            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
+            "returned-contract-member",
             objectNode.entity,
             ANALYSIS_CAPABILITY_OUTCOME.finding,
-            ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
+            "returned-structure-transport",
           );
         }
         continue;
@@ -304,10 +356,10 @@ export function finalizeObjectPathFindings(
       if (isReturnedContractMember) {
         resolveCapabilityObligation(
           state,
-          ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.returnedContractMember,
+          "returned-contract-member",
           objectNode.entity,
           ANALYSIS_CAPABILITY_OUTCOME.live,
-          ANALYSIS_CAPABILITY_ID.returnedStructureTransport,
+          "returned-structure-transport",
         );
       }
     }

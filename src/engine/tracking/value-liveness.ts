@@ -90,6 +90,8 @@ export function analyzeValueLiveness(
       parameterMeaningfulUse,
       callablePurity,
     } = sourceFileContext;
+    const findings = state.findings;
+    const kept = state.kept;
     const valueAnalysisCaches = {
       parameterMeaningfulUse,
       callablePurity,
@@ -189,24 +191,24 @@ export function analyzeValueLiveness(
       ) {
         const entity = makeEntity(
           project.rootPath,
-          ENTITY_KIND.expression,
+          "expression",
           sourceFile,
           node.expression,
           node.expression.getText(sourceFile),
         );
         const suppression = getSuppressionAudit(project, suppressionContext, entity, node.expression);
-        if (addAudit(state.kept, suppression)) {
+        if (addAudit(kept, suppression)) {
           return ts.forEachChild(node, visit);
         }
 
-        addFinding(
-          state,
+        findings.push({
+          id: entity.id,
+          kind: FINDING_KIND.unusedValue,
           entity,
-          FINDING_KIND.unusedValue,
-          ignoredResultReason ?? "side-effect-neutral expression result is discarded",
-          ignoredResultReason ? `Ignored result ${entity.name}` : `Unused value ${entity.name}`,
-          "review",
-        );
+          reason: ignoredResultReason ?? "side-effect-neutral expression result is discarded",
+          message: ignoredResultReason ? `Ignored result ${entity.name}` : `Unused value ${entity.name}`,
+          suggestion: "review",
+        });
       }
 
       if (ts.isIdentifier(node)) {

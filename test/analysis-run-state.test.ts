@@ -118,7 +118,19 @@ function createTrackingRuntimeSummary(): TrackingRuntimeSummary {
       returnSummaries: 1,
       trackedObjects: 1,
     },
+    solverState: {
+      trackedObjectRegistryEntries: 1,
+      callSiteSpecializations: 0,
+      literalBindingCacheEntries: 0,
+      returnLiteralBindingCacheEntries: 0,
+    },
+    stageTimingsMs: {
+      "tracking-graph-build": 5,
+      "value-liveness": 0,
+      "object-paths": 0,
+    },
     stageRequests: {
+      "tracking-graph-build": 0,
       "value-liveness": 0,
       "object-paths": 0,
     },

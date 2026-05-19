@@ -35,7 +35,7 @@ export function analyzeObjectPaths(
       continue;
     }
 
-    visitObjectPathSourceFile(stageContext, stageContext.createSourceFileContext(sourceFile));
+    visitObjectPathSourceFile(stageContext, state, stageContext.createSourceFileContext(sourceFile));
   }
 
   finalizeObjectPathFindings(
