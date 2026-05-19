@@ -3,19 +3,22 @@ import ts from "typescript";
 import type { PathSegment, SkipCategory, TrackedObject } from "../../../types.js";
 import type { AnalysisCapabilityFactFamily } from "../../capabilities/vocabulary.js";
 import { getSymbolKey } from "../../../compiler/ast-utils.js";
-import { serializePath } from "../../../shared/path-utils.js";
+import { ENTITY_KIND } from "../../../shared/entity-vocabulary.js";
+import { makeEntity } from "../../../shared/entity-utils.js";
+import { TRACKED_OBJECT_NODE_ORIGIN } from "../../../shared/path-vocabulary.js";
+import { indexSegment, propertySegment, renderPath, serializePath } from "../../../shared/path-utils.js";
 import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { registerCapabilityFact } from "../../analysis-state.js";
 import { ANALYSIS_CAPABILITY_DETAIL_LABEL, ANALYSIS_CAPABILITY_FACT_FAMILY, ANALYSIS_CAPABILITY_FACT_OUTCOME, ANALYSIS_CAPABILITY_ID } from "../../capabilities/vocabulary.js";
 import { isTrackingProtectedStructuralRole } from "../ownership.js";
-import { TRACKING_COLLECTION_KIND, TRACKING_RETAINED_BINDING_WRITE_METHOD } from "../vocabulary.js";
+import { TRACKING_COLLECTION_KIND, TRACKING_PLACE_STATE, TRACKING_RETAINED_BINDING_WRITE_METHOD } from "../vocabulary.js";
 import { getObjectBackedRetainedBindingSlotKeyFromAccess, getRetainedBindingContainerSlotKey, isLocallyOwnedRetainedBindingContainer, isSupportedRetainedBindingContainerType } from "../retained-bindings.js";
 import { getBindingSymbolKey, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, getCanonicalSymbolKey, getGlobalThisBindingKey, getStaticGlobalThisPropertyName, mergeTrackedBinding, sameTrackedBinding } from "../bindings.js";
 import { getCallableReturnBinding } from "../callables.js";
 import type { ArrayProjectionBinding, ResolvedTrackedObjectAccess, TrackedObjectBinding } from "../model.js";
 import { buildHelperBoundaryReason, classifySupportedCallArgumentUse, summarizeHelperParameterUse } from "../semantics.js";
-import { buildCollectionBoundaryEntity, getCollectionInfo, getProjectionBinding, hasTrackedChildren, resolveExactPathAlias } from "../state.js";
+import { buildCollectionBoundaryEntity, ensureCollectionChildPath, getCollectionInfo, getProjectionBinding, hasTrackedChildren, indexTrackedObjectNode, registerExactPathAlias, resolveExactPathAlias } from "../state.js";
 import {
   handleSupportedValueFateCall as handleSupportedValueFateCallEffect, handleTrackedArrayMutation as handleTrackedArrayMutationEffect, maybeInvalidateReplacedTrackedPath as maybeInvalidateReplacedTrackedPathEffect,
   maybeReportInvalidatedRead as maybeReportInvalidatedReadEffect, recordArrayBoundary as recordArrayBoundaryEffect, tryRegisterExactArrayInsertion,
@@ -43,6 +46,7 @@ export function visitObjectPathSourceFile(
 ): void {
   const {
     project,
+    reachableFiles,
     publicSurfaceIds,
     publiclyReachableCallableIds,
     overlayState,
@@ -238,6 +242,93 @@ export function visitObjectPathSourceFile(
     markObjectPathWrite(overlayState, trackedObject, segments);
   };
 
+  const getAssignedAccessSegment = (
+    node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  ): PathSegment | undefined => {
+    if (ts.isPropertyAccessExpression(node)) {
+      return propertySegment(node.name.text);
+    }
+
+    const argument = node.argumentExpression;
+    if (!argument) {
+      return undefined;
+    }
+
+    if (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument)) {
+      return propertySegment(argument.text);
+    }
+
+    if (ts.isNumericLiteral(argument)) {
+      return indexSegment(Number(argument.text));
+    }
+
+    if (
+      ts.isPrefixUnaryExpression(argument)
+      && argument.operator === ts.SyntaxKind.MinusToken
+      && ts.isNumericLiteral(argument.operand)
+    ) {
+      return indexSegment(-Number(argument.operand.text));
+    }
+
+    return undefined;
+  };
+
+  const shouldMaterializeAssignedPath = (operatorKind: ts.SyntaxKind): boolean => (
+    operatorKind === ts.SyntaxKind.EqualsToken
+    || operatorKind === ts.SyntaxKind.QuestionQuestionEqualsToken
+    || operatorKind === ts.SyntaxKind.BarBarEqualsToken
+    || operatorKind === ts.SyntaxKind.AmpersandAmpersandEqualsToken
+  );
+
+  const materializeAssignedPath = (trackedObject: TrackedObject, fullPath: PathSegment[], anchor: ts.Node): void => {
+    if (fullPath.length === 0) {
+      return;
+    }
+
+    const joinedPath = serializePath(fullPath);
+    if (
+      trackedObject.nodes.has(joinedPath)
+      || trackedObject.collections.has(joinedPath)
+      || trackedObject.exactPathAliases.has(joinedPath)
+      || hasTrackedChildren(trackedObject, fullPath)
+    ) {
+      trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
+      return;
+    }
+
+    const parentPath = fullPath.slice(0, -1);
+    ensureCollectionChildPath(trackedObject, parentPath, fullPath);
+
+    const segment = fullPath[fullPath.length - 1];
+    if (!segment) {
+      return;
+    }
+
+    const entity = makeEntity(
+      project.rootPath,
+      segment.kind === "index"
+        ? fullPath.length === 1
+          ? ENTITY_KIND.arrayElement
+          : ENTITY_KIND.nestedPath
+        : fullPath.length === 1
+          ? ENTITY_KIND.objectKey
+          : ENTITY_KIND.nestedPath,
+      sourceFile,
+      anchor,
+      segment.kind === "property" && fullPath.length === 1 ? segment.value : renderPath(fullPath),
+      trackedObject.rootName,
+    );
+    trackedObject.nodes.set(joinedPath, {
+      entity,
+      fullPath,
+      origin: segment.kind === "index"
+        ? TRACKED_OBJECT_NODE_ORIGIN.arrayElement
+        : TRACKED_OBJECT_NODE_ORIGIN.property,
+    });
+    trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
+    indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
+  };
+
   const recordArrayBoundary = (
     _project: typeof project,
     trackedObject: TrackedObject,
@@ -361,8 +452,16 @@ export function visitObjectPathSourceFile(
     node: ts.Node,
     context: typeof projectionContext,
     projectionTrackedObjectsById: Map<string, TrackedObject>,
+    projectionTrackedBySymbolId?: Map<string, TrackedObjectBinding>,
   ): void => {
-    visitProjectedArrayUsageEffect(project, node, context, projectionTrackedObjectsById, overlayState);
+    visitProjectedArrayUsageEffect(
+      project,
+      node,
+      context,
+      projectionTrackedObjectsById,
+      overlayState,
+      projectionTrackedBySymbolId ?? trackedBySymbolId,
+    );
   };
 
   const collectionHandler = createCollectionOperationHandler({
@@ -417,6 +516,8 @@ export function visitObjectPathSourceFile(
     resolveFiniteLookupRead,
   } = createFiniteLookupPlanner({
     project,
+    reachableFiles,
+    publiclyReachableCallableIds,
     trackedBySymbolId,
     functionReturnSummaries,
     trackedObjectsById,
@@ -533,6 +634,7 @@ export function visitObjectPathSourceFile(
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
     binding: TrackedObjectBinding,
+    providedLocalBindings?: Map<string, TrackedObjectBinding>,
   ): void => {
     const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
     if (!parameterSymbol) {
@@ -544,7 +646,7 @@ export function visitObjectPathSourceFile(
       return;
     }
 
-    const localBindings = new Map(trackedBySymbolId);
+    const localBindings = new Map(providedLocalBindings ?? trackedBySymbolId);
     localBindings.set(getSymbolKey(parameterSymbol), binding);
 
     for (const plan of plans) {
@@ -567,6 +669,7 @@ export function visitObjectPathSourceFile(
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
     binding: TrackedObjectBinding,
+    localBindings?: Map<string, TrackedObjectBinding>,
   ): void => {
     for (const plan of getHelperProjectedUsagePlans(callable, parameter)) {
       const projection = getProjectionBinding(
@@ -586,6 +689,7 @@ export function visitObjectPathSourceFile(
           indexBindings: new Map(),
         },
         trackedObjectsById,
+        localBindings,
       );
     }
   };
@@ -769,6 +873,9 @@ export function visitObjectPathSourceFile(
           trackedObjectsById,
         );
         if (!resolved) {
+          if (helperTransportHandler.handleStructuredHelperArgument(node, argument, undefined, parameter, analyzableCallable)) {
+            continue;
+          }
           continue;
         }
 
@@ -956,6 +1063,42 @@ export function visitObjectPathSourceFile(
 
       const resolved = resolveTrackedObjectAccess(project, node, trackedBySymbolId, functionReturnSummaries, trackedObjectsById);
       if (!resolved) {
+        if (
+          isAssignmentLeft(node)
+          && ts.isBinaryExpression(node.parent)
+          && node.parent.left === node
+          && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+          const assignedSegment = getAssignedAccessSegment(node);
+          const receiver = resolveTrackedObjectAccess(
+            project,
+            node.expression,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          const right = resolveTrackedObjectAccess(
+            project,
+            node.parent.right,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          if (assignedSegment && receiver && !receiver.dynamic && right && !right.dynamic) {
+            const receiverPath = [...receiver.binding.prefix, ...receiver.segments];
+            const fullPath = [...receiverPath, assignedSegment];
+            registerExactPathAlias(
+              receiver.binding.trackedObject,
+              fullPath,
+              extendTrackedBinding(right.binding, right.segments),
+              "same-project exact property assignment keeps this nested binding exact",
+            );
+            maybeInvalidateReplacedTrackedPath(project, receiver.binding.trackedObject, sourceFile, node, fullPath);
+            markWrite(receiver.binding.trackedObject, fullPath);
+            return ts.forEachChild(node, visit);
+          }
+        }
+
         if (!projectionTraversalHandler.handleProjectedAccess(node)) {
           return ts.forEachChild(node, visit);
         }
@@ -1013,6 +1156,14 @@ export function visitObjectPathSourceFile(
       }
 
       if (isAssignmentLeft(node)) {
+        if (
+          ts.isBinaryExpression(node.parent)
+          && node.parent.left === node
+          && shouldMaterializeAssignedPath(node.parent.operatorToken.kind)
+        ) {
+          materializeAssignedPath(resolved.binding.trackedObject, fullPath, node);
+        }
+
         if (fullPath.length > 1) {
           markAliasObserved(resolved, trackedObjectsById);
           markRead(resolved.binding.trackedObject, fullPath.slice(0, -1));

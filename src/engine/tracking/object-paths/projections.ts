@@ -1,10 +1,11 @@
 import ts from "typescript";
 
 import type { PathSegment, ProjectContext, TrackedObject } from "../../../types.js";
+import { serializePath } from "../../../shared/path-utils.js";
 import { isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { getBindingSymbolKey, resolveProjectionAccess } from "../access.js";
-import { extendTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import { extendTrackedBinding, getCanonicalSymbolKey, sameTrackedBinding } from "../bindings.js";
 import type { ArrayProjectionBinding, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
 import { classifySupportedCallArgumentUse } from "../semantics.js";
 import { getCollectionInfo, getConcreteProjectionPaths, getProjectionBinding, hasTrackedChildren, resolveExactPathAlias } from "../state.js";
@@ -77,16 +78,142 @@ function getProjectedNestedArrayBinding(
     : undefined;
 }
 
+function getProjectedTypePropertyNames(
+  project: ProjectContext,
+  node: ts.Expression,
+): string[] {
+  const type = project.checker.getApparentType(project.checker.getTypeAtLocation(node));
+  return project.checker.getPropertiesOfType(type)
+    .filter((property) => (property.flags & ts.SymbolFlags.Property) !== 0)
+    .map((property) => property.getName());
+}
+
+function candidateHasTrackedProperty(
+  trackedObject: TrackedObject,
+  candidatePath: PathSegment[],
+  propertyName: string,
+  trackedObjectsById: Map<string, TrackedObject>,
+): boolean {
+  const propertyPath = [...candidatePath, { kind: "property", value: propertyName } as const];
+  const aliased = resolveExactPathAlias(
+    {
+      trackedObject,
+      prefix: candidatePath,
+    },
+    [{ kind: "property", value: propertyName }],
+    trackedObjectsById,
+  );
+
+  return !sameTrackedBinding(aliased.binding, { trackedObject, prefix: candidatePath })
+    || trackedObject.nodes.has(serializePath(propertyPath))
+    || Boolean(getCollectionInfo(trackedObject, propertyPath))
+    || hasTrackedChildren(trackedObject, propertyPath);
+}
+
+function resolveProjectedTrackedBinding(
+  project: ProjectContext,
+  node: ts.Expression,
+  context: ProjectedArrayUsageContext,
+  trackedObjectsById: Map<string, TrackedObject>,
+  preferFirstCandidate = false,
+): TrackedObjectBinding | undefined {
+  const projected = resolveProjectionAccess(project, node, context);
+  if (!projected || projected.dynamic) {
+    return undefined;
+  }
+
+  let candidatePaths = getConcreteProjectionPaths(projected.projection, projected.suffix);
+  if (candidatePaths.length > 1) {
+    const typePropertyNames = getProjectedTypePropertyNames(project, node);
+    if (typePropertyNames.length > 0) {
+      candidatePaths = candidatePaths.filter((candidatePath) =>
+        typePropertyNames.every((propertyName) => candidateHasTrackedProperty(
+          projected.projection.trackedObject,
+          candidatePath,
+          propertyName,
+          trackedObjectsById,
+        )));
+    }
+  }
+
+  if (candidatePaths.length === 0) {
+    return undefined;
+  }
+
+  const resolvedBindings = candidatePaths.map((candidatePath) => resolveExactPathAlias(
+    {
+      trackedObject: projected.projection.trackedObject,
+      prefix: candidatePath,
+    },
+    [],
+    trackedObjectsById,
+  ).binding);
+
+  const [firstBinding] = resolvedBindings;
+  if (!firstBinding) {
+    return undefined;
+  }
+
+  if (preferFirstCandidate) {
+    return firstBinding;
+  }
+
+  if (!resolvedBindings.every((binding) => sameTrackedBinding(binding, firstBinding))) {
+    return undefined;
+  }
+
+  return firstBinding;
+}
+
 export function visitProjectedArrayUsage(
   project: ProjectContext,
   node: ts.Node,
   context: ProjectedArrayUsageContext,
   trackedObjectsById: Map<string, TrackedObject>,
   overlayState: ObjectPathOverlayState,
+  trackedBySymbolId?: Map<string, TrackedObjectBinding>,
 ): void {
+  const captureProjectedBinding = (
+    target: ts.Identifier,
+    source: ts.Expression,
+    preferFirstCandidate = false,
+  ): void => {
+    if (!trackedBySymbolId) {
+      return;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(target);
+    const symbolKey = symbol ? getCanonicalSymbolKey(project, symbol) : undefined;
+    const binding = symbolKey
+      ? resolveProjectedTrackedBinding(project, source, context, trackedObjectsById, preferFirstCandidate)
+      : undefined;
+    if (symbolKey && binding) {
+      trackedBySymbolId.set(symbolKey, binding);
+    }
+  };
+
   const visit = (current: ts.Node): void => {
     if (ts.isFunctionLike(current) && current !== node) {
       return;
+    }
+
+    if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name) && current.initializer) {
+      captureProjectedBinding(current.name, current.initializer);
+    }
+
+    if (
+      ts.isBinaryExpression(current)
+      && ts.isIdentifier(current.left)
+      && (
+        current.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        || current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken
+      )
+    ) {
+      captureProjectedBinding(
+        current.left,
+        current.right,
+        current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionEqualsToken,
+      );
     }
 
     if (ts.isForOfStatement(current)) {
@@ -157,6 +284,7 @@ export function visitProjectedArrayUsage(
                 },
                 trackedObjectsById,
                 overlayState,
+                trackedBySymbolId,
               );
             }
           }
@@ -167,6 +295,7 @@ export function visitProjectedArrayUsage(
             context,
             trackedObjectsById,
             overlayState,
+            trackedBySymbolId,
           );
         }
       }

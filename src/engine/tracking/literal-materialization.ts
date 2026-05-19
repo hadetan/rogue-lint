@@ -148,6 +148,9 @@ function addTrackedObjectNode(
   owner: string,
   segments: PathSegment[],
   maxDepth: number,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
 ): void {
   if (segments.length > maxDepth) {
     return;
@@ -158,8 +161,50 @@ function addTrackedObjectNode(
       setCollectionInfo(trackedObject, segments, TRACKING_COLLECTION_KIND.object);
     }
 
+    const registerTrackedPropertyNode = (propertyName: string, anchor: ts.Node): PathSegment[] => {
+      const fullPath = [...segments, propertySegment(propertyName)];
+      const joinedPath = serializePath(fullPath);
+      ensureCollectionChildPath(trackedObject, segments, fullPath);
+      const entity = makeEntity(
+        project.rootPath,
+        fullPath.length === 1 ? ENTITY_KIND.objectKey : ENTITY_KIND.nestedPath,
+        sourceFile,
+        anchor,
+        fullPath.length === 1 ? propertyName : renderPath(fullPath),
+        owner,
+      );
+      trackedObject.nodes.set(joinedPath, {
+        entity,
+        fullPath,
+        origin: TRACKED_OBJECT_NODE_ORIGIN.property,
+      });
+      trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
+      indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
+      return fullPath;
+    };
+
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
+        const resolved = resolveTrackedSpreadSource(
+          project,
+          property.expression,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
+        if (resolved && !resolved.dynamic) {
+          const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+          if (visitResolvedSpreadPropertySegments(spreadBinding, (spreadSegment) => {
+            if (spreadSegment.kind !== "property") {
+              return;
+            }
+
+            registerTrackedPropertyNode(spreadSegment.value, property.expression);
+          })) {
+            continue;
+          }
+        }
+
         const spreadPropertyNames = getKnownSpreadPropertyNames(property.expression);
         if (!spreadPropertyNames) {
           markEscaped(trackedObject, segments, SKIP_CATEGORY.objectSpread, "object spread introduces opaque properties");
@@ -246,31 +291,36 @@ function addTrackedObjectNode(
         }
       }
 
-      const fullPath = [...segments, propertySegment(propertyName)];
-      const joinedPath = serializePath(fullPath);
-      ensureCollectionChildPath(trackedObject, segments, fullPath);
-      const entity = makeEntity(
-        project.rootPath,
-        fullPath.length === 1 ? ENTITY_KIND.objectKey : ENTITY_KIND.nestedPath,
-        sourceFile,
-        property.name,
-        fullPath.length === 1 ? propertyName : renderPath(fullPath),
-        owner,
-      );
-      trackedObject.nodes.set(joinedPath, {
-        entity,
-        fullPath,
-        origin: TRACKED_OBJECT_NODE_ORIGIN.property,
-      });
-      trackedObject.placeStates.set(joinedPath, TRACKING_PLACE_STATE.initialized);
-      indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
+      const fullPath = registerTrackedPropertyNode(propertyName, property.name);
 
       const initializer = ts.isShorthandPropertyAssignment(property) ? undefined : property.initializer;
       if (initializer && ts.isObjectLiteralExpression(initializer)) {
-        addTrackedObjectNode(project, trackedObject, sourceFile, initializer, owner, fullPath, maxDepth);
+        addTrackedObjectNode(
+          project,
+          trackedObject,
+          sourceFile,
+          initializer,
+          owner,
+          fullPath,
+          maxDepth,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
       }
       if (initializer && ts.isArrayLiteralExpression(initializer)) {
-        addTrackedObjectNode(project, trackedObject, sourceFile, initializer, owner, fullPath, maxDepth);
+        addTrackedObjectNode(
+          project,
+          trackedObject,
+          sourceFile,
+          initializer,
+          owner,
+          fullPath,
+          maxDepth,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
       }
     }
   } else {
@@ -310,10 +360,32 @@ function addTrackedObjectNode(
       indexTrackedObjectNode(trackedObject, joinedPath, fullPath);
 
       if (ts.isObjectLiteralExpression(element)) {
-        addTrackedObjectNode(project, trackedObject, sourceFile, element, owner, fullPath, maxDepth);
+        addTrackedObjectNode(
+          project,
+          trackedObject,
+          sourceFile,
+          element,
+          owner,
+          fullPath,
+          maxDepth,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
       }
       if (ts.isArrayLiteralExpression(element)) {
-        addTrackedObjectNode(project, trackedObject, sourceFile, element, owner, fullPath, maxDepth);
+        addTrackedObjectNode(
+          project,
+          trackedObject,
+          sourceFile,
+          element,
+          owner,
+          fullPath,
+          maxDepth,
+          trackedBySymbolId,
+          functionReturnSummaries,
+          trackedObjectsById,
+        );
       }
     });
   }
@@ -503,6 +575,9 @@ export function materializeTrackedLiteralAtPath(
     owner,
     segments,
     project.config.value.objectAnalysis.maxPathDepth,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
   );
   if (options.registerAliases === false) {
     return;

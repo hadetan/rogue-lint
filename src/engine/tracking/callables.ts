@@ -266,14 +266,22 @@ function getFunctionLikeDeclarationFromDeclaration(declaration: ts.Declaration):
 }
 
 function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLikeDeclaration | undefined {
+  let fallback: ts.FunctionLikeDeclaration | undefined;
+
   for (const declaration of symbol.declarations ?? []) {
     const callable = getFunctionLikeDeclarationFromDeclaration(declaration);
-    if (callable) {
+    if (!callable) {
+      continue;
+    }
+
+    if (callable.body) {
       return callable;
     }
+
+    fallback ??= callable;
   }
 
-  return undefined;
+  return fallback;
 }
 
 function getCallableSymbol(project: ProjectContext, expression: ts.LeftHandSideExpression): ts.Symbol | undefined {

@@ -28,6 +28,7 @@ import type {
 import { TrackedObjectBindingRecord } from "./model.js";
 import {
   extendTrackedBinding,
+  getCanonicalSymbolKey,
   getBindingByNode,
   getGlobalThisBindingKey,
   isGlobalThisIdentifier,
@@ -240,16 +241,19 @@ function getReturnedStructuredLiteralFromExpression(
     : undefined;
 }
 
-function getStructuredReturnLiteral(
+function getStructuredReturnLiterals(
   project: ProjectContext,
   callable: AnalyzableCallableBinding,
-): ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined {
+  options: { allowOpaqueFallback?: boolean } = {},
+): Array<ts.ObjectLiteralExpression | ts.ArrayLiteralExpression> {
   if (!callable.declaration.body) {
-    return undefined;
+    return [];
   }
 
-  let literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression | undefined;
+  const literals: Array<ts.ObjectLiteralExpression | ts.ArrayLiteralExpression> = [];
+  let returnKind: "object" | "array" | undefined;
   let unsupported = false;
+  const seen = new Set<number>();
 
   const visit = (node: ts.Node): void => {
     if (unsupported) {
@@ -263,17 +267,27 @@ function getStructuredReturnLiteral(
     if (ts.isReturnStatement(node) && node.expression) {
       const nextLiteral = getReturnedStructuredLiteralFromExpression(project, callable, node.expression);
       if (!nextLiteral) {
+        if (options.allowOpaqueFallback) {
+          return;
+        }
+
         unsupported = true;
         return;
       }
 
-      if (!literal) {
-        literal = nextLiteral;
+      const nextKind = ts.isObjectLiteralExpression(nextLiteral)
+        ? TRACKING_COLLECTION_KIND.object
+        : TRACKING_COLLECTION_KIND.array;
+      if (returnKind && returnKind !== nextKind) {
+        unsupported = true;
         return;
       }
+      returnKind = nextKind;
 
-      if (literal !== nextLiteral) {
-        unsupported = true;
+      const literalStart = nextLiteral.getStart();
+      if (!seen.has(literalStart)) {
+        seen.add(literalStart);
+        literals.push(nextLiteral);
       }
       return;
     }
@@ -282,7 +296,108 @@ function getStructuredReturnLiteral(
   };
 
   ts.forEachChild(callable.declaration.body, visit);
-  return unsupported ? undefined : literal;
+  return unsupported ? [] : literals;
+}
+
+function getTrackedStructuredReturnBinding(
+  callable: AnalyzableCallableBinding,
+  literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+  trackedObjectsById: Map<string, TrackedObject>,
+): TrackedObjectBinding | undefined {
+  const canonicalSymbolKey = `${callable.symbolKey}:return:${ts.isObjectLiteralExpression(literal)
+    ? TRACKING_COLLECTION_KIND.object
+    : TRACKING_COLLECTION_KIND.array}`;
+  const exactMatch = [...trackedObjectsById.values()].find((trackedObject) => (
+    trackedObject.canonicalSymbolKey === canonicalSymbolKey && trackedObject.reportingOwnerId === undefined
+  ));
+  const fallbackMatch = exactMatch ?? [...trackedObjectsById.values()].find((trackedObject) => trackedObject.canonicalSymbolKey === canonicalSymbolKey);
+  return fallbackMatch ? new TrackedObjectBindingRecord(fallbackMatch, []) : undefined;
+}
+
+function registerRestTupleElementBindings(
+  project: ProjectContext,
+  node: ts.CallExpression,
+  callable: AnalyzableCallableBinding,
+  localBindings: Map<string, TrackedObjectBinding>,
+  specializedBindings: Map<string, TrackedObjectBinding>,
+  trackedBySymbolId: Map<string, TrackedObjectBinding>,
+  functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
+  trackedObjectsById: Map<string, TrackedObject>,
+): void {
+  if (!callable.declaration.body) {
+    return;
+  }
+
+  const restParameterIndexesBySymbolKey = new Map<string, number>();
+  callable.declaration.parameters.forEach((parameter, index) => {
+    if (!parameter.dotDotDotToken || !ts.isIdentifier(parameter.name)) {
+      return;
+    }
+
+    const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
+    if (!parameterSymbol) {
+      return;
+    }
+
+    restParameterIndexesBySymbolKey.set(getSymbolKey(parameterSymbol), index);
+  });
+  if (restParameterIndexesBySymbolKey.size === 0) {
+    return;
+  }
+
+  const visit = (current: ts.Node): void => {
+    if (ts.isFunctionLike(current) && current !== callable.declaration) {
+      return;
+    }
+
+    if (ts.isVariableDeclaration(current) && ts.isArrayBindingPattern(current.name) && current.initializer) {
+      const initializer = unwrapExpression(current.initializer);
+      if (ts.isIdentifier(initializer)) {
+        const initializerSymbol = project.checker.getSymbolAtLocation(initializer);
+        const restParameterIndex = initializerSymbol
+          ? restParameterIndexesBySymbolKey.get(getSymbolKey(initializerSymbol))
+          : undefined;
+
+        if (restParameterIndex !== undefined) {
+          current.name.elements.forEach((element, offset) => {
+            if (!ts.isBindingElement(element) || element.dotDotDotToken || !ts.isIdentifier(element.name)) {
+              return;
+            }
+
+            const argument = node.arguments[restParameterIndex + offset];
+            if (!argument) {
+              return;
+            }
+
+            const resolved = resolveTrackedObjectAccess(
+              project,
+              argument,
+              trackedBySymbolId,
+              functionReturnSummaries,
+              trackedObjectsById,
+            );
+            if (!resolved || resolved.dynamic) {
+              return;
+            }
+
+            const elementSymbol = project.checker.getSymbolAtLocation(element.name);
+            if (!elementSymbol) {
+              return;
+            }
+
+            const elementBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+            const elementSymbolKey = getSymbolKey(elementSymbol);
+            localBindings.set(elementSymbolKey, elementBinding);
+            specializedBindings.set(elementSymbolKey, elementBinding);
+          });
+        }
+      }
+    }
+
+    ts.forEachChild(current, visit);
+  };
+
+  ts.forEachChild(callable.declaration.body, visit);
 }
 
 function registerSpecializedStructuredReturnAliases(
@@ -300,6 +415,22 @@ function registerSpecializedStructuredReturnAliases(
   }
 
   if (ts.isObjectLiteralExpression(node)) {
+    const canResolveSpreadExactly = (expression: ts.Expression): boolean => {
+      const resolved = resolveTrackedObjectAccess(
+        project,
+        expression,
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      if (!resolved || resolved.dynamic) {
+        return false;
+      }
+
+      const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
+      return visitResolvedSpreadPropertySegments(spreadBinding, () => undefined);
+    };
+
     for (const property of node.properties) {
       if (ts.isSpreadAssignment(property)) {
         const resolved = resolveTrackedObjectAccess(
@@ -312,6 +443,10 @@ function registerSpecializedStructuredReturnAliases(
         if (resolved && !resolved.dynamic) {
           const spreadBinding = extendTrackedBinding(resolved.binding, resolved.segments);
           visitResolvedSpreadPropertySegments(spreadBinding, (spreadSegment) => {
+            const escapedPath = serializePath([...segments, spreadSegment]);
+            if (trackedObject.escapedPaths.get(escapedPath)?.category === SKIP_CATEGORY.objectSpread) {
+              trackedObject.escapedPaths.delete(escapedPath);
+            }
             registerExactPathAlias(
               trackedObject,
               [...segments, spreadSegment],
@@ -319,6 +454,18 @@ function registerSpecializedStructuredReturnAliases(
               "call-site structured return keeps this spread property exact",
             );
           });
+
+          const hasRemainingOpaqueSpread = node.properties.some((candidate) => (
+            candidate !== property
+            && ts.isSpreadAssignment(candidate)
+            && !canResolveSpreadExactly(candidate.expression)
+          ));
+          if (!hasRemainingOpaqueSpread) {
+            const escapedPath = serializePath(segments);
+            if (trackedObject.escapedPaths.get(escapedPath)?.category === SKIP_CATEGORY.objectSpread) {
+              trackedObject.escapedPaths.delete(escapedPath);
+            }
+          }
         }
         continue;
       }
@@ -506,7 +653,7 @@ function specializeReturnedAliasBinding(
   return new TrackedObjectBindingRecord(specialized, binding.prefix);
 }
 
-function getCallSiteStructuredReturnBinding(
+export function getCallSiteStructuredReturnBinding(
   project: ProjectContext,
   node: ts.CallExpression,
   callable: AnalyzableCallableBinding,
@@ -515,7 +662,18 @@ function getCallSiteStructuredReturnBinding(
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): TrackedObjectBinding | undefined {
-  const binding = getCallableReturnBinding(summary);
+  const structuredLiterals = summary.kind === TRACKING_RETURN_SUMMARY_KIND.structured
+    ? getStructuredReturnLiterals(project, callable)
+    : summary.kind === TRACKING_RETURN_SUMMARY_KIND.opaque
+      ? getStructuredReturnLiterals(project, callable, { allowOpaqueFallback: true })
+      : [];
+  const structuredLiteral = structuredLiterals.length === 1 ? structuredLiterals[0] : undefined;
+  const binding = getCallableReturnBinding(summary)
+    ?? (structuredLiteral
+      ? getTrackedStructuredReturnBinding(callable, structuredLiteral, trackedObjectsById)
+      : structuredLiterals[0]
+        ? getTrackedStructuredReturnBinding(callable, structuredLiterals[0], trackedObjectsById)
+      : undefined);
   if (!binding) {
     return undefined;
   }
@@ -568,9 +726,27 @@ function getCallSiteStructuredReturnBinding(
     specializedBindings.set(forwarded.paramSymbolKey, forwarded.binding);
   }
 
+  registerRestTupleElementBindings(
+    project,
+    node,
+    callable,
+    localBindings,
+    specializedBindings,
+    trackedBySymbolId,
+    functionReturnSummaries,
+    trackedObjectsById,
+  );
+
   const remappedBinding = remapCallSiteReturnBinding(binding, trackedBySymbolId, specializedBindings);
 
-  if (summary.kind !== TRACKING_RETURN_SUMMARY_KIND.structured) {
+  if (
+    specializedBindings.size === 0
+    && (ts.isSpreadAssignment(node.parent) || ts.isSpreadElement(node.parent))
+  ) {
+    return remappedBinding;
+  }
+
+  if (summary.kind !== TRACKING_RETURN_SUMMARY_KIND.structured && structuredLiterals.length === 0) {
     return specializeReturnedAliasBinding(
       node,
       remappedBinding,
@@ -580,8 +756,12 @@ function getCallSiteStructuredReturnBinding(
     );
   }
 
-  const literal = getStructuredReturnLiteral(project, callable);
-  if (!literal) {
+  const literals = structuredLiterals.length > 0
+    ? structuredLiterals
+    : structuredLiteral
+      ? [structuredLiteral]
+      : [];
+  if (literals.length === 0) {
     return remappedBinding;
   }
 
@@ -589,9 +769,28 @@ function getCallSiteStructuredReturnBinding(
   const existing = trackedObjectsById.get(callSiteId);
   if (existing) {
     syncTrackedObjectForCallSite(existing, binding.trackedObject);
+    for (const literal of literals) {
+      registerSpecializedStructuredReturnAliases(
+        project,
+        existing,
+        literal,
+        [],
+        project.config.value.objectAnalysis.maxPathDepth,
+        localBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+    }
+    return new TrackedObjectBindingRecord(existing, []);
+  }
+
+  const specialized = cloneTrackedObjectForCallSite(binding.trackedObject, callSiteId);
+  trackedObjectsById.set(callSiteId, specialized);
+
+  for (const literal of literals) {
     registerSpecializedStructuredReturnAliases(
       project,
-      existing,
+      specialized,
       literal,
       [],
       project.config.value.objectAnalysis.maxPathDepth,
@@ -599,22 +798,7 @@ function getCallSiteStructuredReturnBinding(
       functionReturnSummaries,
       trackedObjectsById,
     );
-    return new TrackedObjectBindingRecord(existing, []);
   }
-
-  const specialized = cloneTrackedObjectForCallSite(binding.trackedObject, callSiteId);
-  trackedObjectsById.set(callSiteId, specialized);
-
-  registerSpecializedStructuredReturnAliases(
-    project,
-    specialized,
-    literal,
-    [],
-    project.config.value.objectAnalysis.maxPathDepth,
-    localBindings,
-    functionReturnSummaries,
-    trackedObjectsById,
-  );
 
   return new TrackedObjectBindingRecord(specialized, []);
 }
@@ -977,6 +1161,34 @@ export function resolveTrackedObjectAccess(
     if (isGlobalThisIdentifier(node.expression)) {
       const binding = trackedBySymbolId.get(getGlobalThisBindingKey(node.name.text));
       return binding ? { binding, segments: [], dynamic: false } : undefined;
+    }
+
+    if (ts.isIdentifier(node.expression)) {
+      const namespaceSymbol = project.checker.getSymbolAtLocation(node.expression);
+      if (namespaceSymbol?.declarations?.some(ts.isNamespaceImport)) {
+        const moduleSymbol = (namespaceSymbol.flags & ts.SymbolFlags.Alias) !== 0
+          ? project.checker.getAliasedSymbol(namespaceSymbol)
+          : namespaceSymbol;
+        const exportedMember = moduleSymbol && (moduleSymbol.flags & ts.SymbolFlags.Module) !== 0
+          ? project.checker.getExportsOfModule(moduleSymbol).find((candidate) => candidate.name === node.name.text)
+          : undefined;
+        const namespaceMemberSymbol = exportedMember
+          ? ((exportedMember.flags & ts.SymbolFlags.Alias) !== 0
+              ? project.checker.getAliasedSymbol(exportedMember)
+              : exportedMember)
+          : undefined;
+        const namespaceMemberBinding = namespaceMemberSymbol
+          ? trackedBySymbolId.get(getCanonicalSymbolKey(project, namespaceMemberSymbol))
+          : getBindingByNode(project, node, trackedBySymbolId)
+            ?? getBindingByNode(project, node.name, trackedBySymbolId);
+        if (namespaceMemberBinding) {
+          return {
+            binding: namespaceMemberBinding,
+            segments: [],
+            dynamic: false,
+          };
+        }
+      }
     }
 
     const retainedBinding = trackedBySymbolId.get(

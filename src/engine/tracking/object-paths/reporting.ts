@@ -42,6 +42,19 @@ function getReportingBoundaries(
   return getObjectPathOverlayBoundaryRecords(overlayState, tracked.id) ?? new Map<string, CollectionBoundaryRecord>();
 }
 
+function hasDirectReportingObservation(
+  overlayState: ObjectPathOverlayState,
+  tracked: TrackedObject,
+): boolean {
+  return Boolean(
+    getObjectPathOverlayReads(overlayState, tracked.id)?.size
+    || getObjectPathOverlayWrites(overlayState, tracked.id)?.size
+    || getObjectPathOverlayObservedSubtrees(overlayState, tracked.id)?.size
+    || getObjectPathOverlayObservedAliases(overlayState, tracked.id)?.size
+    || getObjectPathOverlayBoundaryRecords(overlayState, tracked.id)?.size
+  );
+}
+
 function getReportingOwnerId(
   tracked: TrackedObject,
   trackedBindingsBySymbolId?: ReadonlyMap<string, TrackedObjectBinding>,
@@ -113,9 +126,14 @@ export function finalizeObjectPathFindings(
   const reportingReadsById = new Map<string, Set<string>>();
   const reportingObservedSubtreesById = new Map<string, Set<string>>();
   const reportingObservedAliasesById = new Map<string, Set<string>>();
+  const reportingProxyCountsByOwnerId = new Map<string, number>();
 
   for (const tracked of trackedList) {
     const reportingOwnerId = getReportingOwnerId(tracked, trackedBindingsBySymbolId);
+    if (reportingOwnerId !== tracked.id) {
+      reportingProxyCountsByOwnerId.set(reportingOwnerId, (reportingProxyCountsByOwnerId.get(reportingOwnerId) ?? 0) + 1);
+    }
+
     const reads = reportingReadsById.get(reportingOwnerId) ?? new Set<string>();
     const observedSubtrees = reportingObservedSubtreesById.get(reportingOwnerId) ?? new Set<string>();
     const observedAliases = reportingObservedAliasesById.get(reportingOwnerId) ?? new Set<string>();
@@ -129,6 +147,15 @@ export function finalizeObjectPathFindings(
 
   for (const tracked of trackedList) {
     if (getReportingOwnerId(tracked, trackedBindingsBySymbolId) !== tracked.id) {
+      continue;
+    }
+
+    if (
+      tracked.rootEntity.kind === ENTITY_KIND.expression
+      && tracked.rootName.endsWith("()")
+      && (reportingProxyCountsByOwnerId.get(tracked.id) ?? 0) > 0
+      && !hasDirectReportingObservation(overlayState, tracked)
+    ) {
       continue;
     }
 

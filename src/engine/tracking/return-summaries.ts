@@ -3,7 +3,7 @@ import ts from "typescript";
 import type { EntityKind, ProjectContext, TrackedObject } from "../../types.js";
 import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { extendTrackedBinding, getCanonicalSymbolKey, sameTrackedBinding } from "./bindings.js";
-import { resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "./access.js";
+import { getCallSiteStructuredReturnBinding, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "./access.js";
 import { cloneCallableReturnSummary, getAnalyzableCallableBindingFromDeclaration, getAnalyzableCallableName, getCallableReturnBinding, joinCallableReturnSummaries } from "./callables.js";
 import type { AnalyzableCallableBinding, CallableReturnSummary, TrackedObjectBinding } from "./model.js";
 import { unwrapExpression } from "./syntax.js";
@@ -412,6 +412,24 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
       if (nestedCallable) {
         const summary = getSpeculativeCallableSummary(nestedCallable, activeCallableIds, speculativeSummaries);
         if (summary) {
+          const specializedBinding = getCallSiteStructuredReturnBinding(
+            project,
+            expression,
+            nestedCallable,
+            summary,
+            trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+          if (specializedBinding) {
+            return {
+              kind: summary.kind === TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+                ? TRACKING_RETURN_SUMMARY_KIND.returnedAlias
+                : TRACKING_RETURN_SUMMARY_KIND.structured,
+              binding: specializedBinding,
+            };
+          }
+
           return summary;
         }
       }

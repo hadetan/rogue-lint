@@ -160,6 +160,7 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
           },
           trackedObjectsById,
           overlayState,
+          trackedBySymbolId,
         );
       } else {
         markObservedSubtree(
@@ -204,6 +205,7 @@ export function createProjectionTraversalHandler(options: ProjectionTraversalHan
         },
         trackedObjectsById,
         overlayState,
+        trackedBySymbolId,
       );
       return;
     }
