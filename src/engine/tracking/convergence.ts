@@ -60,10 +60,10 @@ type TrackingConvergenceResult = {
 };
 
 function observeTrackingContractDiagnosticShape(diagnostic: TrackingContractDiagnostic): void {
-  diagnostic.code;
-  diagnostic.message;
-  diagnostic.stage;
-  diagnostic.details;
+  void diagnostic.code;
+  void diagnostic.message;
+  void diagnostic.stage;
+  void diagnostic.details;
 }
 
 class TrackingConvergenceError extends Error {

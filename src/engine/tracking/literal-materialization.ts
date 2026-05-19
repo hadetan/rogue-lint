@@ -180,9 +180,9 @@ function addTrackedObjectNode(
     next?: PendingLiteral;
   };
   const observePendingLiteralShape = (pendingLiteral: PendingLiteral): void => {
-    pendingLiteral.node;
-    pendingLiteral.segments;
-    pendingLiteral.next;
+    void pendingLiteral.node;
+    void pendingLiteral.segments;
+    void pendingLiteral.next;
   };
   const pendingHead: PendingLiteral = { node, segments };
   observePendingLiteralShape(pendingHead);
@@ -446,9 +446,9 @@ function registerTrackedLiteralAliases(
     next?: PendingLiteral;
   };
   const observePendingLiteralShape = (pendingLiteral: PendingLiteral): void => {
-    pendingLiteral.node;
-    pendingLiteral.segments;
-    pendingLiteral.next;
+    void pendingLiteral.node;
+    void pendingLiteral.segments;
+    void pendingLiteral.next;
   };
   const pendingHead: PendingLiteral = { node, segments };
   observePendingLiteralShape(pendingHead);

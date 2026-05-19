@@ -15,10 +15,10 @@ export const TRACKING_CONTRACT_DIAGNOSTIC_CODE = {
 type TrackingContractDiagnosticCode = (typeof TRACKING_CONTRACT_DIAGNOSTIC_CODE)[keyof typeof TRACKING_CONTRACT_DIAGNOSTIC_CODE];
 
 class TrackingStructuralRoleVocabulary {
-  readonly record: "record" = "record";
-  readonly stateHolder: "state-holder" = "state-holder";
-  readonly structuralRecord: "structural-record" = "structural-record";
-  readonly structuralRecordArray: "structural-record-array" = "structural-record-array";
+  readonly record = "record" as const;
+  readonly stateHolder = "state-holder" as const;
+  readonly structuralRecord = "structural-record" as const;
+  readonly structuralRecordArray = "structural-record-array" as const;
 }
 
 export const TRACKING_STRUCTURAL_ROLE = new TrackingStructuralRoleVocabulary();

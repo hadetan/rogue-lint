@@ -2,20 +2,20 @@
  * Canonical runtime vocabulary for reportable entity categories.
  */
 class EntityKindVocabulary {
-  readonly file: "file" = "file";
-  readonly export: "export" = "export";
-  readonly import: "import" = "import";
-  readonly local: "local" = "local";
-  readonly type: "type" = "type";
-  readonly enumMember: "enum-member" = "enum-member";
-  readonly classMember: "class-member" = "class-member";
-  readonly arrayElement: "array-element" = "array-element";
-  readonly collectionBoundary: "collection-boundary" = "collection-boundary";
-  readonly interfaceMember: "interface-member" = "interface-member";
-  readonly objectKey: "object-key" = "object-key";
-  readonly nestedPath: "nested-path" = "nested-path";
-  readonly assignment: "assignment" = "assignment";
-  readonly expression: "expression" = "expression";
+  readonly file = "file" as const;
+  readonly export = "export" as const;
+  readonly import = "import" as const;
+  readonly local = "local" as const;
+  readonly type = "type" as const;
+  readonly enumMember = "enum-member" as const;
+  readonly classMember = "class-member" as const;
+  readonly arrayElement = "array-element" as const;
+  readonly collectionBoundary = "collection-boundary" as const;
+  readonly interfaceMember = "interface-member" as const;
+  readonly objectKey = "object-key" as const;
+  readonly nestedPath = "nested-path" as const;
+  readonly assignment = "assignment" as const;
+  readonly expression = "expression" as const;
 }
 
 export const ENTITY_KIND = new EntityKindVocabulary();

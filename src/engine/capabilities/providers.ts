@@ -34,7 +34,6 @@ import {
   createCapabilityEvidenceRecord,
   createDiagnosticCapabilityRecordId,
   createEmptyAnalysisCapabilityLedger,
-  type AnalysisCapabilityFactRecord,
   type AnalysisCapabilityId,
   type AnalysisCapabilityLedger,
   type AnalysisCapabilityObligationRecord,
@@ -48,15 +47,6 @@ export function attachAnalysisCapabilityLedger(
 }
 
 void attachAnalysisCapabilityLedger;
-
-type AnalysisCapabilityProvider = (
-  facts: readonly AnalysisCapabilityFactRecord[],
-  obligations: ReturnType<typeof getCapabilityObligations>,
-  summaryRegistry: ReturnType<typeof createAnalysisCapabilitySummaryRegistry>,
-  findings: AnalysisResult["findings"],
-  kept: AnalysisResult["kept"],
-  skipped: AnalysisResult["skipped"],
-) => AnalysisCapabilityLedger;
 
 function createRecordCapabilityIndex(
   attributions: ReadonlyArray<AnalysisCapabilityLedger["attributions"][number]>,

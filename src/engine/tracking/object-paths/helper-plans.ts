@@ -61,37 +61,37 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
   const observeHigherOrderCallableReturnSummaryShape = (
     summary: HigherOrderCallableReturnSummary,
   ): void => {
-    summary.exactReadPaths;
-    summary.boundaryReason;
+    void summary.exactReadPaths;
+    void summary.boundaryReason;
   };
 
   const observeBoundedHelperExecutionStepShape = (step: BoundedHelperExecutionStep): void => {
     switch (step.kind) {
       case "projected-iteration-binding":
-        step.statement;
-        step.relativeCollectionPath;
-        step.elementSymbolKey;
+        void step.statement;
+        void step.relativeCollectionPath;
+        void step.elementSymbolKey;
         return;
       case "alias-write":
-        step.statement;
-        step.targetSymbolKey;
-        step.sourceSymbolKey;
-        step.operator;
+        void step.statement;
+        void step.targetSymbolKey;
+        void step.sourceSymbolKey;
+        void step.operator;
         return;
       case "exact-append-mutation":
-        step.call;
-        step.sourceFile;
-        step.methodName;
-        step.relativeCollectionPath;
-        step.slotPlans;
+        void step.call;
+        void step.sourceFile;
+        void step.methodName;
+        void step.relativeCollectionPath;
+        void step.slotPlans;
         return;
       case "spread-materialization-prerequisite":
-        step.expression;
-        step.sourceSymbolKey;
+        void step.expression;
+        void step.sourceSymbolKey;
         return;
       case "returned-carrier-emission":
-        step.statement;
-        step.sourceSymbolKey;
+        void step.statement;
+        void step.sourceSymbolKey;
         return;
     }
   };
