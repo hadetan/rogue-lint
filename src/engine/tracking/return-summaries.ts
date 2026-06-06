@@ -3,7 +3,12 @@ import ts from "typescript";
 import type { EntityKind, ProjectContext, TrackedObject } from "../../types.js";
 import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { extendTrackedBinding, getCanonicalSymbolKey, sameTrackedBinding } from "./bindings.js";
-import { getCallSiteStructuredReturnBinding, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "./access.js";
+import {
+  getCallSiteStructuredReturnBinding,
+  getCapturedClosureLocalBindingsForCall,
+  resolveAnalyzableCallableBinding,
+  resolveTrackedObjectAccess,
+} from "./access.js";
 import { cloneCallableReturnSummary, getAnalyzableCallableBindingFromDeclaration, getAnalyzableCallableName, getCallableReturnBinding, joinCallableReturnSummaries } from "./callables.js";
 import type { AnalyzableCallableBinding, CallableReturnSummary, TrackedObjectBinding } from "./model.js";
 import { unwrapExpression } from "./syntax.js";
@@ -417,10 +422,18 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
         }
       }
 
+      const localBindings = getCapturedClosureLocalBindingsForCall(
+        project,
+        expression,
+        trackedBySymbolId,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+
       const nestedCallable = resolveAnalyzableCallableBinding(
         project,
         expression.expression,
-        trackedBySymbolId,
+        localBindings,
         functionReturnSummaries,
         trackedObjectsById,
       );
@@ -432,7 +445,7 @@ export function createReturnSummaryCollector(options: ReturnSummaryCollectorOpti
             expression,
             nestedCallable,
             summary,
-            trackedBySymbolId,
+            localBindings,
             functionReturnSummaries,
             trackedObjectsById,
           );

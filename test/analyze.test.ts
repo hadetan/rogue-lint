@@ -1755,6 +1755,120 @@ describe("rogue-lint analyzer", () => {
     expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
   });
 
+  it("preserves merged unrecognized issue keys across binary-assigned _zod.run helper paths", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-run-payload-binary-assignment-issue-keys-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "unrecognized"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "keys"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves issue-key readback through promise-wrapped helper payload returns", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-promise-issue-keys-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "unrecognized"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "keys"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves merged unrecognized issue keys through promise-wrapped helper payload returns", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-run-payload-merged-promise-issue-keys-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "unrecognized"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "keys"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves merged unrecognized issue keys through nested promise-helper payload forwarding", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("returned-run-payload-nested-promise-helper-issue-keys-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "unrecognized"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "keys"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves issue-key readback through property-backed helper callbacks", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("property-backed-helper-callback-issue-keys-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "unrecognized"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "keys"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
+  it("preserves issue-key arrays when escaped issue objects carry exact aliases", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("escaped-issue-alias-keys-basic"),
+      format: "json",
+    });
+
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-array-element"
+      && finding.entity.owner === "unrecognized"
+      && finding.entity.name === "[0]"
+    )).toBe(false);
+    expect(result.findings.some((finding) =>
+      finding.kind === "unused-object-key"
+      && finding.entity.name === "keys"
+    )).toBe(false);
+    expect(result.skipped.some((entry) => entry.category === "returned-object")).toBe(false);
+  });
+
   it("keeps unsupported returned key-array storage explicit with a boundary", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),

@@ -3,7 +3,11 @@ import ts from "typescript";
 import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { getSymbolKey } from "../../../compiler/ast-utils.js";
 import { serializePath } from "../../../shared/path-utils.js";
-import { getCallSiteStructuredArgumentBinding, resolveTrackedObjectAccess } from "../access.js";
+import {
+  getCallSiteLiteralArgumentBinding,
+  getCallSiteStructuredArgumentBinding,
+  resolveTrackedObjectAccess,
+} from "../access.js";
 import { extendTrackedBinding } from "../bindings.js";
 import { getAnalyzableCallableBindingFromDeclaration, getCallableReturnBinding } from "../callables.js";
 import type { AnalysisCapabilityFactRecord } from "../../capabilities/types.js";
@@ -33,20 +37,24 @@ interface HelperTransportHandlerOptions {
   getBoundedHelperExecutionSnapshot: (
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
+    specializedBindings?: Map<string, TrackedObjectBinding>,
   ) => BoundedHelperExecutionSnapshot | undefined;
   markExactHelperReadPath: (binding: TrackedObjectBinding, segments: PathSegment[]) => void;
   shouldReplayExactHelperReadPaths: (binding: TrackedObjectBinding) => boolean;
   replayHelperExactAppendPlans: (
+    callNode: ts.CallExpression,
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
     binding: TrackedObjectBinding,
     localBindings?: Map<string, TrackedObjectBinding>,
+    specializedBindings?: Map<string, TrackedObjectBinding>,
   ) => void;
   replayHelperProjectedUsages: (
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
     binding: TrackedObjectBinding,
     localBindings?: Map<string, TrackedObjectBinding>,
+    specializedBindings?: Map<string, TrackedObjectBinding>,
   ) => void;
   capabilityFacts: Map<string, AnalysisCapabilityFactRecord>;
   recordArrayBoundary: (
@@ -156,7 +164,17 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
           trackedObjectsById,
         )
       : undefined;
-    const helperReplayBinding = resolvedBinding ?? specializedArgumentBinding;
+    const literalArgumentBinding = !resolvedBinding && !specializedArgumentBinding
+      ? getCallSiteLiteralArgumentBinding(
+          project,
+          node,
+          argument,
+          activeBindings,
+          functionReturnSummaries,
+          trackedObjectsById,
+        )
+      : undefined;
+    const helperReplayBinding = resolvedBinding ?? specializedArgumentBinding ?? literalArgumentBinding;
     if (!helperReplayBinding) {
       return false;
     }
@@ -170,78 +188,86 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
       return false;
     }
 
+    const localBindings = new Map(activeBindings);
+    const helperParameterBindings = new Map<ts.Identifier, TrackedObjectBinding>();
+    const helperParameterSymbolBindings = new Map<string, TrackedObjectBinding>();
+
+    analyzableCallable.parameters.forEach((candidateParameter, index) => {
+      if (!ts.isIdentifier(candidateParameter.name)) {
+        return;
+      }
+
+      const candidateArgument = node.arguments[index];
+      if (!candidateArgument) {
+        return;
+      }
+
+      const candidateResolved = resolveTrackedObjectAccess(
+        project,
+        candidateArgument,
+        activeBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      );
+      if (!candidateResolved || candidateResolved.dynamic) {
+        return;
+      }
+
+      const candidateFullPath = [...candidateResolved.binding.prefix, ...candidateResolved.segments];
+      const candidateCollectionInfo = getCollectionInfo(candidateResolved.binding.trackedObject, candidateFullPath);
+      const candidateHasStructuredChildren = candidateCollectionInfo !== undefined
+        || hasTrackedChildren(candidateResolved.binding.trackedObject, candidateFullPath)
+        || Boolean(candidateResolved.viaAliasObjectId);
+      if (!candidateHasStructuredChildren) {
+        return;
+      }
+
+      const candidateParameterSymbol = project.checker.getSymbolAtLocation(candidateParameter.name);
+      const candidateParameterSymbolKey = candidateParameterSymbol ? getSymbolKey(candidateParameterSymbol) : undefined;
+      const candidateBaseBinding = candidateParameterSymbolKey
+        ? activeBindings.get(candidateParameterSymbolKey) ?? trackedBySymbolId.get(candidateParameterSymbolKey)
+        : undefined;
+      const candidateResolvedBinding = extendTrackedBinding(
+        candidateResolved.binding,
+        candidateResolved.segments,
+      );
+      const candidateSpecializedBinding = candidateBaseBinding
+        ? getCallSiteStructuredArgumentBinding(
+            project,
+            node,
+            candidateArgument,
+            candidateBaseBinding,
+            activeBindings,
+            functionReturnSummaries,
+            trackedObjectsById,
+          )
+        : undefined;
+      const candidateReplayBinding = candidateSpecializedBinding ?? candidateResolvedBinding;
+      if (candidateParameterSymbolKey) {
+        localBindings.set(candidateParameterSymbolKey, candidateReplayBinding);
+        helperParameterSymbolBindings.set(candidateParameterSymbolKey, candidateReplayBinding);
+      }
+      helperParameterBindings.set(candidateParameter.name, candidateReplayBinding);
+    });
+
     const summary = summarizeHelperParameterUse(
       project,
       analyzableCallable,
       parameter.name,
       parameterMeaningfulUse,
       parameterSummaryCache,
+      {
+        trackedBySymbolId: localBindings,
+        specializedBindings: helperParameterSymbolBindings,
+        functionReturnSummaries,
+        trackedObjectsById,
+      },
     );
-    const snapshot = getBoundedHelperExecutionSnapshot(analyzableCallable, parameter.name);
+    const snapshot = getBoundedHelperExecutionSnapshot(analyzableCallable, parameter.name, helperParameterSymbolBindings);
     const exactReadPaths = snapshot?.exactReadPaths ?? summary.exactReadPaths;
     const boundaryReason = snapshot?.boundaryReason ?? summary.boundaryReason;
 
     if (shouldReplayExactHelperReadPaths(helperReplayBinding)) {
-      const localBindings = new Map(activeBindings);
-      const helperParameterBindings = new Map<ts.Identifier, TrackedObjectBinding>();
-
-      analyzableCallable.parameters.forEach((candidateParameter, index) => {
-        if (!ts.isIdentifier(candidateParameter.name)) {
-          return;
-        }
-
-        const candidateArgument = node.arguments[index];
-        if (!candidateArgument) {
-          return;
-        }
-
-        const candidateResolved = resolveTrackedObjectAccess(
-          project,
-          candidateArgument,
-          activeBindings,
-          functionReturnSummaries,
-          trackedObjectsById,
-        );
-        if (!candidateResolved || candidateResolved.dynamic) {
-          return;
-        }
-
-        const candidateFullPath = [...candidateResolved.binding.prefix, ...candidateResolved.segments];
-        const candidateCollectionInfo = getCollectionInfo(candidateResolved.binding.trackedObject, candidateFullPath);
-        const candidateHasStructuredChildren = candidateCollectionInfo !== undefined
-          || hasTrackedChildren(candidateResolved.binding.trackedObject, candidateFullPath)
-          || Boolean(candidateResolved.viaAliasObjectId);
-        if (!candidateHasStructuredChildren) {
-          return;
-        }
-
-        const candidateParameterSymbol = project.checker.getSymbolAtLocation(candidateParameter.name);
-        const candidateParameterSymbolKey = candidateParameterSymbol ? getSymbolKey(candidateParameterSymbol) : undefined;
-        const candidateBaseBinding = candidateParameterSymbolKey
-          ? activeBindings.get(candidateParameterSymbolKey) ?? trackedBySymbolId.get(candidateParameterSymbolKey)
-          : undefined;
-        const candidateResolvedBinding = extendTrackedBinding(
-          candidateResolved.binding,
-          candidateResolved.segments,
-        );
-        const candidateSpecializedBinding = candidateBaseBinding
-          ? getCallSiteStructuredArgumentBinding(
-              project,
-              node,
-              candidateArgument,
-              candidateBaseBinding,
-              activeBindings,
-              functionReturnSummaries,
-              trackedObjectsById,
-            )
-          : undefined;
-        const candidateReplayBinding = candidateResolvedBinding ?? candidateSpecializedBinding;
-        if (candidateParameterSymbolKey) {
-          localBindings.set(candidateParameterSymbolKey, candidateReplayBinding);
-        }
-        helperParameterBindings.set(candidateParameter.name, candidateReplayBinding);
-      });
-
       exactReadPaths.forEach((readPath) => {
         markExactHelperReadPath(helperReplayBinding, readPath);
       });
@@ -250,9 +276,9 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
           return;
         }
 
-        replayHelperProjectedUsages(analyzableCallable, candidateParameter, candidateBinding, localBindings);
+        replayHelperProjectedUsages(analyzableCallable, candidateParameter, candidateBinding, localBindings, helperParameterSymbolBindings);
       });
-      replayHelperExactAppendPlans(analyzableCallable, parameter.name, helperReplayBinding, localBindings);
+      replayHelperExactAppendPlans(node, analyzableCallable, parameter.name, helperReplayBinding, localBindings, helperParameterSymbolBindings);
     }
     if (!boundaryReason && (summary.effectKinds.size > 0 || exactReadPaths.length > 0)) {
       const entity = helperReplayBinding.trackedObject.nodes.get(serializePath(fullPath))?.entity

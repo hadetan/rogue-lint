@@ -72,6 +72,7 @@ import { createReturnSummaryCollector, withTrackingReturnSummaryHeartbeat } from
 import {
   TRACKING_COLLECTION_KIND,
   TRACKING_RETAINED_BINDING_WRITE_METHOD,
+  TRACKING_RETURN_SUMMARY_KIND,
 } from "./vocabulary.js";
 
 /**
@@ -278,6 +279,53 @@ export function buildTrackedObjects(
     }
 
     return stabilized;
+  };
+
+  const recoverOpaqueFunctionReturnSummaries = (): void => {
+    while (true) {
+      let changed = false;
+      const recoveredSummaries = new Map(functionReturnSummaries);
+
+      for (const sourceFile of project.sourceFiles) {
+        if (!reachableFiles.has(sourceFile.fileName)) {
+          continue;
+        }
+
+        const visit = (node: ts.Node): void => {
+          if (
+            ts.isFunctionDeclaration(node)
+            || ts.isFunctionExpression(node)
+            || ts.isArrowFunction(node)
+            || ts.isMethodDeclaration(node)
+          ) {
+            const callable = getAnalyzableCallableBindingFromDeclaration(project, node);
+            if (callable) {
+              const currentSummary = recoveredSummaries.get(callable.symbolKey);
+              if (!currentSummary || currentSummary.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
+                const summary = collectFunctionReturnSummary(node);
+                if (summary && summary.kind !== TRACKING_RETURN_SUMMARY_KIND.opaque) {
+                  recoveredSummaries.set(callable.symbolKey, summary);
+                  changed = true;
+                }
+              }
+            }
+          }
+
+          ts.forEachChild(node, visit);
+        };
+
+        ts.forEachChild(sourceFile, visit);
+      }
+
+      if (!changed) {
+        return;
+      }
+
+      functionReturnSummaries.clear();
+      recoveredSummaries.forEach((summary, symbolKey) => {
+        functionReturnSummaries.set(symbolKey, summary);
+      });
+    }
   };
 
   const createTrackedBindingForLiteral = (
@@ -676,6 +724,8 @@ export function buildTrackedObjects(
       throw error;
     }
   })();
+
+  recoverOpaqueFunctionReturnSummaries();
 
   const runtimeSummary: MutableTrackingRuntimeSummary = {
     seed: {

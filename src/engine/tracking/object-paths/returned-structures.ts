@@ -6,7 +6,7 @@ import { resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, getCanonicalSymbolKey, sameTrackedBinding } from "../bindings.js";
 import { getAnalyzableCallableBindingFromDeclaration, getCallableReturnBinding } from "../callables.js";
 import type { CallableReturnSummary, TrackedObjectBinding } from "../model.js";
-import { isTrackablePureExpression } from "../trackable-structures.js";
+import { isTrackablePureExpression, isTrackableReturnObjectStructure } from "../trackable-structures.js";
 import { unwrapExpression } from "../syntax.js";
 import { TRACKING_RETURN_SUMMARY_KIND } from "../vocabulary.js";
 
@@ -165,6 +165,34 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
       const parameterSymbol = project.checker.getSymbolAtLocation(parameter.name);
       return Boolean(parameterSymbol && getCanonicalSymbolKey(project, parameterSymbol) === returnedKey);
     });
+  };
+
+  const isSameCallableLocalStructuredAliasReturn = (
+    callable: ts.FunctionLikeDeclaration | undefined,
+    expression: ts.Expression,
+  ): boolean => {
+    const returned = unwrapExpression(expression);
+    if (!callable || !ts.isIdentifier(returned)) {
+      return false;
+    }
+
+    const returnedSymbol = project.checker.getSymbolAtLocation(returned);
+    const declaration = returnedSymbol?.declarations?.find(ts.isVariableDeclaration);
+    if (!declaration?.initializer) {
+      return false;
+    }
+
+    const enclosingFunction = ts.findAncestor(
+      declaration,
+      (ancestor): ancestor is ts.FunctionLikeDeclaration => ts.isFunctionLike(ancestor),
+    );
+    if (enclosingFunction !== callable) {
+      return false;
+    }
+
+    const initializer = unwrapExpression(declaration.initializer);
+    return (ts.isObjectLiteralExpression(initializer) || ts.isArrayLiteralExpression(initializer))
+      && isTrackableReturnObjectStructure(initializer);
   };
 
   const isFiniteKeyExpression = (expression: ts.Expression): boolean => {
@@ -616,6 +644,7 @@ export function createReturnedStructureHandler(options: ReturnedStructureHandler
     const returnedStructureStaysExact = Boolean(
       helperReturnBinding
       || isReturnedParameterIdentifier(enclosingFunction, returnedExpression)
+      || isSameCallableLocalStructuredAliasReturn(enclosingFunction, returnedExpression)
       || (
       (returnBinding && propagated && sameTrackedBinding(propagated, returnBinding))
       )

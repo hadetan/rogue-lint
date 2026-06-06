@@ -236,7 +236,10 @@ export function diffCallableReturnSummaryMaps(
   };
 }
 
-function getFunctionLikeDeclarationFromDeclaration(declaration: ts.Declaration): ts.FunctionLikeDeclaration | undefined {
+function getFunctionLikeDeclarationFromDeclaration(
+  project: ProjectContext,
+  declaration: ts.Declaration,
+): ts.FunctionLikeDeclaration | undefined {
   if (
     ts.isFunctionDeclaration(declaration)
     || ts.isFunctionExpression(declaration)
@@ -252,6 +255,17 @@ function getFunctionLikeDeclarationFromDeclaration(declaration: ts.Declaration):
     && (ts.isFunctionExpression(declaration.initializer) || ts.isArrowFunction(declaration.initializer))
   ) {
     return declaration.initializer;
+  }
+
+  if (
+    ts.isVariableDeclaration(declaration)
+    && declaration.initializer
+    && ts.isCallExpression(declaration.initializer)
+  ) {
+    const returnedCallable = getReturnedCallableDeclarationFromCallExpression(project, declaration.initializer);
+    if (returnedCallable) {
+      return returnedCallable;
+    }
   }
 
   if (
@@ -273,11 +287,14 @@ function getFunctionLikeDeclarationFromDeclaration(declaration: ts.Declaration):
   return undefined;
 }
 
-function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLikeDeclaration | undefined {
+function getFunctionLikeDeclarationFromSymbol(
+  project: ProjectContext,
+  symbol: ts.Symbol,
+): ts.FunctionLikeDeclaration | undefined {
   let fallback: ts.FunctionLikeDeclaration | undefined;
 
   for (const declaration of symbol.declarations ?? []) {
-    const callable = getFunctionLikeDeclarationFromDeclaration(declaration);
+    const callable = getFunctionLikeDeclarationFromDeclaration(project, declaration);
     if (!callable) {
       continue;
     }
@@ -290,6 +307,125 @@ function getFunctionLikeDeclarationFromSymbol(symbol: ts.Symbol): ts.FunctionLik
   }
 
   return fallback;
+}
+
+function getSingleReturnExpression(callable: ts.FunctionLikeDeclaration): ts.Expression | undefined {
+  if (!callable.body) {
+    return undefined;
+  }
+
+  if (!ts.isBlock(callable.body)) {
+    return callable.body;
+  }
+
+  let match: ts.Expression | undefined;
+  let multiple = false;
+
+  const visit = (candidate: ts.Node): void => {
+    if (multiple || (ts.isFunctionLike(candidate) && candidate !== callable)) {
+      return;
+    }
+
+    if (ts.isReturnStatement(candidate) && candidate.expression) {
+      if (match) {
+        multiple = true;
+        return;
+      }
+
+      match = candidate.expression;
+      return;
+    }
+
+    ts.forEachChild(candidate, visit);
+  };
+
+  ts.forEachChild(callable.body, visit);
+  return multiple ? undefined : match;
+}
+
+function getReturnedCallableDeclarationFromCallExpression(
+  project: ProjectContext,
+  callExpression: ts.CallExpression,
+): ts.FunctionLikeDeclaration | undefined {
+  const callable = getAnalyzableCallableBinding(project, callExpression.expression);
+  if (!callable) {
+    return undefined;
+  }
+
+  const returned = getSingleReturnExpression(callable.declaration);
+  if (!returned) {
+    return undefined;
+  }
+
+  const expression = unwrapExpression(returned);
+  if (ts.isFunctionExpression(expression) || ts.isArrowFunction(expression)) {
+    return expression;
+  }
+
+  if (!ts.isIdentifier(expression)) {
+    return undefined;
+  }
+
+  const symbol = project.checker.getSymbolAtLocation(expression);
+  return symbol ? getFunctionLikeDeclarationFromSymbol(project, symbol) : undefined;
+}
+
+const binaryAssignedCallableDeclarationCache = new WeakMap<ProjectContext, Map<string, ts.FunctionLikeDeclaration | null>>();
+
+function getBinaryAssignedCallableDeclaration(
+  project: ProjectContext,
+  symbol: ts.Symbol,
+): ts.FunctionLikeDeclaration | undefined {
+  const canonicalSymbol = getCanonicalSymbol(project, symbol);
+  const symbolKey = getCanonicalSymbolKey(project, canonicalSymbol);
+  let cache = binaryAssignedCallableDeclarationCache.get(project);
+  if (!cache) {
+    cache = new Map<string, ts.FunctionLikeDeclaration | null>();
+    binaryAssignedCallableDeclarationCache.set(project, cache);
+  }
+
+  const cached = cache.get(symbolKey);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
+
+  let match: ts.FunctionLikeDeclaration | null = null;
+  let multiple = false;
+
+  for (const sourceFile of project.sourceFiles) {
+    if (multiple) {
+      break;
+    }
+
+    const visit = (node: ts.Node): void => {
+      if (multiple) {
+        return;
+      }
+
+      if (
+        ts.isBinaryExpression(node)
+        && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && (ts.isArrowFunction(node.right) || ts.isFunctionExpression(node.right))
+      ) {
+        const targetSymbol = getAssignmentTargetSymbol(project, node.left);
+        if (targetSymbol && getCanonicalSymbolKey(project, targetSymbol) === symbolKey) {
+          if (match) {
+            multiple = true;
+            return;
+          }
+
+          match = node.right;
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    };
+
+    ts.forEachChild(sourceFile, visit);
+  }
+
+  cache.set(symbolKey, multiple ? null : match);
+  return multiple ? undefined : match ?? undefined;
 }
 
 function getCallableSymbol(project: ProjectContext, expression: ts.LeftHandSideExpression): ts.Symbol | undefined {
@@ -389,7 +525,7 @@ function resolveStaticCallableFromExpression(
     }
 
     if (tail.length === 0) {
-      return getFunctionLikeDeclarationFromDeclaration(property);
+      return getFunctionLikeDeclarationFromDeclaration(project, property);
     }
 
     if (ts.isPropertyAssignment(property)) {
@@ -472,7 +608,78 @@ export function getAnalyzableCallableName(callable: AnalyzableCallableBinding): 
     }
   }
 
+  if (
+    (ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
+    && ts.isBinaryExpression(declaration.parent)
+    && declaration.parent.right === declaration
+  ) {
+    const assigned = declaration.parent.left;
+    if (ts.isIdentifier(assigned)) {
+      return assigned.text;
+    }
+
+    if (ts.isPropertyAccessExpression(assigned)) {
+      return assigned.name.text;
+    }
+
+    if (
+      ts.isElementAccessExpression(assigned)
+      && assigned.argumentExpression
+      && (
+        ts.isStringLiteral(assigned.argumentExpression)
+        || ts.isNoSubstitutionTemplateLiteral(assigned.argumentExpression)
+        || ts.isNumericLiteral(assigned.argumentExpression)
+      )
+    ) {
+      return assigned.argumentExpression.text;
+    }
+  }
+
   return "returnedValue";
+}
+
+function getAssignmentTargetSymbol(
+  project: ProjectContext,
+  expression: ts.Expression,
+): ts.Symbol | undefined {
+  if (ts.isIdentifier(expression)) {
+    return project.checker.getSymbolAtLocation(expression);
+  }
+
+  if (ts.isPropertyAccessExpression(expression)) {
+    return project.checker.getSymbolAtLocation(expression.name);
+  }
+
+  if (
+    ts.isElementAccessExpression(expression)
+    && expression.argumentExpression
+    && (
+      ts.isStringLiteral(expression.argumentExpression)
+      || ts.isNoSubstitutionTemplateLiteral(expression.argumentExpression)
+      || ts.isNumericLiteral(expression.argumentExpression)
+    )
+  ) {
+    return project.checker.getSymbolAtLocation(expression.argumentExpression);
+  }
+
+  return undefined;
+}
+
+function getCallableBindingSymbolKey(
+  project: ProjectContext,
+  declaration: ts.FunctionLikeDeclaration,
+  fallbackSymbol?: ts.Symbol,
+): string | undefined {
+  if (
+    (ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
+    && ts.isBinaryExpression(declaration.parent)
+    && declaration.parent.right === declaration
+    && declaration.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  ) {
+    return `${declaration.getSourceFile().fileName}:${declaration.getStart()}:binary-assigned-callable`;
+  }
+
+  return fallbackSymbol ? getCanonicalSymbolKey(project, fallbackSymbol) : undefined;
 }
 
 export function getAnalyzableCallableBinding(
@@ -481,13 +688,17 @@ export function getAnalyzableCallableBinding(
 ): AnalyzableCallableBinding | undefined {
   const calleeSymbol = getCallableSymbol(project, expression);
   if (calleeSymbol) {
-    const callable = getFunctionLikeDeclarationFromSymbol(getCanonicalSymbol(project, calleeSymbol));
+    const canonicalSymbol = getCanonicalSymbol(project, calleeSymbol);
+    const callable = getFunctionLikeDeclarationFromSymbol(project, canonicalSymbol)
+      ?? getBinaryAssignedCallableDeclaration(project, canonicalSymbol);
 
     if (callable?.body) {
+      const symbolKey = getCallableBindingSymbolKey(project, callable, calleeSymbol);
       return callable.getSourceFile().fileName.startsWith(project.rootPath)
+        && symbolKey
         ? {
             declaration: callable,
-            symbolKey: getCanonicalSymbolKey(project, calleeSymbol),
+            symbolKey,
           }
         : undefined;
     }
@@ -506,10 +717,11 @@ export function getAnalyzableCallableBindingFromDeclaration(
 
   if (declaration.name && ts.isIdentifier(declaration.name)) {
     const symbol = project.checker.getSymbolAtLocation(declaration.name);
-    if (symbol) {
+    const symbolKey = symbol ? getCallableBindingSymbolKey(project, declaration, symbol) : undefined;
+    if (symbolKey) {
       return {
         declaration,
-        symbolKey: getCanonicalSymbolKey(project, symbol),
+        symbolKey,
       };
     }
   }
@@ -518,10 +730,11 @@ export function getAnalyzableCallableBindingFromDeclaration(
     const parent = declaration.parent;
     if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
       const symbol = project.checker.getSymbolAtLocation(parent.name);
-      if (symbol) {
+      const symbolKey = symbol ? getCallableBindingSymbolKey(project, declaration, symbol) : undefined;
+      if (symbolKey) {
         return {
           declaration,
-          symbolKey: getCanonicalSymbolKey(project, symbol),
+          symbolKey,
         };
       }
     }
@@ -530,12 +743,28 @@ export function getAnalyzableCallableBindingFromDeclaration(
       const propertyName = parent.name;
       if (ts.isIdentifier(propertyName) || ts.isStringLiteral(propertyName) || ts.isNumericLiteral(propertyName)) {
         const symbol = project.checker.getSymbolAtLocation(propertyName);
-        if (symbol) {
+        const symbolKey = symbol ? getCallableBindingSymbolKey(project, declaration, symbol) : undefined;
+        if (symbolKey) {
           return {
             declaration,
-            symbolKey: getCanonicalSymbolKey(project, symbol),
+            symbolKey,
           };
         }
+      }
+    }
+
+    if (
+      ts.isBinaryExpression(parent)
+      && parent.right === declaration
+      && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+    ) {
+      const symbol = getAssignmentTargetSymbol(project, parent.left);
+      const symbolKey = symbol ? getCallableBindingSymbolKey(project, declaration, symbol) : undefined;
+      if (symbolKey) {
+        return {
+          declaration,
+          symbolKey,
+        };
       }
     }
 
@@ -546,10 +775,11 @@ export function getAnalyzableCallableBindingFromDeclaration(
       && ts.isIdentifier(parent.parent.name)
     ) {
       const symbol = project.checker.getSymbolAtLocation(parent.parent.name);
-      if (symbol) {
+      const symbolKey = symbol ? getCallableBindingSymbolKey(project, declaration, symbol) : undefined;
+      if (symbolKey) {
         return {
           declaration,
-          symbolKey: getCanonicalSymbolKey(project, symbol),
+          symbolKey,
         };
       }
     }

@@ -3,15 +3,15 @@ import ts from "typescript";
 import type { PathSegment, ProjectContext, TrackedObject } from "../../../types.js";
 import { getSymbolKey, isReadLikeUse } from "../../../compiler/ast-utils.js";
 import { propertySegment, serializePath } from "../../../shared/path-utils.js";
-import { getBindingSymbolKey, resolveTrackedObjectAccess } from "../access.js";
+import { getBindingSymbolKey, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, getCanonicalSymbolKey } from "../bindings.js";
 import { getAnalyzableCallableBinding, resolveAnalyzableFunctionDeclaration } from "../callables.js";
-import type { CallableReturnSummary, ExactAppendSlotPlan, HelperParameterSummary, TrackedObjectBinding } from "../model.js";
+import type { CallableReturnSummary, ExactAppendSlotPlan, HelperParameterSummary, ProjectedArrayUsageContext, TrackedObjectBinding } from "../model.js";
 import type { TrackingAppendMethodName } from "../vocabulary.js";
 import { TRACKING_ARRAY_EXACT_APPEND_METHODS, TRACKING_COLLECTION_KIND, TRACKING_METHOD_NAME } from "../vocabulary.js";
-import { summarizeHelperParameterUse } from "../semantics.js";
+import { resolveHelperMemberCallCandidates, summarizeHelperParameterUse, type HelperParameterSummaryContext } from "../semantics.js";
 import { unwrapExpression } from "../syntax.js";
-import { getCollectionInfo } from "../state.js";
+import { getCollectionInfo, getProjectionBinding } from "../state.js";
 import type {
   BoundedHelperExecutionStep, BoundedHelperExecutionSnapshot, HelperExactAppendPlan,
   HelperProjectedUsagePlan, HigherOrderCallableReturnSummary
@@ -42,6 +42,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
   getBoundedHelperExecutionSnapshot: (
     callable: ts.FunctionLikeDeclaration,
     parameter: ts.Identifier,
+    specializedBindings?: Map<string, TrackedObjectBinding>,
   ) => BoundedHelperExecutionSnapshot | undefined;
   resolveCallableArgumentBinding: (expression: ts.Expression) => ReturnType<typeof getAnalyzableCallableBinding>;
 } {
@@ -442,20 +443,116 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       : undefined;
   };
 
-  const getBoundedHelperExecutionSnapshot = (
-    callable: ts.FunctionLikeDeclaration,
-    parameter: ts.Identifier,
-  ): BoundedHelperExecutionSnapshot | undefined => {
-    const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
-    const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
-    if (!parameterSymbolKey || !callable.body) {
+  const getSpecializationBindingSignature = (
+    specializedBindings: Map<string, TrackedObjectBinding> | undefined,
+  ): string => {
+    if (!specializedBindings || specializedBindings.size === 0) {
+      return "";
+    }
+
+    const parts: string[] = [];
+    for (const [symbolKey, binding] of specializedBindings) {
+      parts.push(`${symbolKey}:${binding.trackedObject.id}:${serializePath(binding.prefix)}`);
+    }
+
+    parts.sort();
+    return parts.join("|");
+  };
+
+  const getSpecializedCacheKey = (
+    parameterSymbolKey: string,
+    specializedBindings: Map<string, TrackedObjectBinding> | undefined,
+  ): string => {
+    const signature = getSpecializationBindingSignature(specializedBindings);
+    return signature ? `${parameterSymbolKey}::${signature}` : parameterSymbolKey;
+  };
+
+  const createSummaryContext = (
+    specializedBindings: Map<string, TrackedObjectBinding> | undefined,
+    projectionContext?: ProjectedArrayUsageContext,
+  ): HelperParameterSummaryContext => {
+    const scopedBindings = new Map(trackedBySymbolId);
+    specializedBindings?.forEach((binding, symbolKey) => {
+      scopedBindings.set(symbolKey, binding);
+    });
+
+    return {
+      trackedBySymbolId: scopedBindings,
+      specializedBindings,
+      functionReturnSummaries,
+      trackedObjectsById,
+      projectionContext,
+    };
+  };
+
+  const createForOfProjectionContext = (
+    node: ts.ForOfStatement,
+    summaryContext: HelperParameterSummaryContext,
+  ): ProjectedArrayUsageContext | undefined => {
+    if (!summaryContext.trackedBySymbolId || !summaryContext.functionReturnSummaries || !summaryContext.trackedObjectsById) {
       return undefined;
     }
 
-    const cached = helperExecutionSnapshotCache.get(parameterSymbolKey);
+    const resolved = resolveTrackedObjectAccess(
+      project,
+      node.expression,
+      summaryContext.trackedBySymbolId,
+      summaryContext.functionReturnSummaries,
+      summaryContext.trackedObjectsById,
+    );
+    if (!resolved || resolved.dynamic) {
+      return undefined;
+    }
+
+    const projection = getProjectionBinding(
+      resolved.binding.trackedObject,
+      [...resolved.binding.prefix, ...resolved.segments],
+    );
+    const elementSymbolKey = getBindingSymbolKey(project, node.initializer);
+    if (!projection || !elementSymbolKey) {
+      return undefined;
+    }
+
+    return {
+      elementBindings: new Map([[elementSymbolKey, projection]]),
+      receiverBindings: new Map(),
+      indexBindings: new Map(),
+    };
+  };
+
+  const expressionReferencesParameter = (expression: ts.Expression, canonicalParameterSymbolKey: string): boolean => {
+    const current = unwrapExpression(expression);
+    if (!ts.isIdentifier(current)) {
+      return false;
+    }
+
+    const symbol = project.checker.getSymbolAtLocation(current);
+    return Boolean(symbol && getCanonicalSymbolKey(project, symbol) === canonicalParameterSymbolKey);
+  };
+
+  const getBoundedHelperExecutionSnapshot = (
+    callable: ts.FunctionLikeDeclaration,
+    parameter: ts.Identifier,
+    specializedBindings?: Map<string, TrackedObjectBinding>,
+  ): BoundedHelperExecutionSnapshot | undefined => {
+    const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
+    const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
+    const canonicalParameterSymbolKey = parameterSymbol
+      ? getCanonicalSymbolKey(project, parameterSymbol)
+      : undefined;
+    if (!parameterSymbolKey || !canonicalParameterSymbolKey || !callable.body) {
+      return undefined;
+    }
+
+    const cacheKey = getSpecializedCacheKey(parameterSymbolKey, specializedBindings);
+    const cached = helperExecutionSnapshotCache.get(cacheKey);
     if (cached !== undefined) {
       return cached ?? undefined;
     }
+
+    helperExecutionSnapshotCache.set(cacheKey, null);
+
+    const summaryContext = createSummaryContext(specializedBindings);
 
     const summary = summarizeHelperParameterUse(
       project,
@@ -463,6 +560,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       parameter,
       parameterMeaningfulUse,
       parameterSummaryCache,
+      summaryContext,
     );
     const orderedSteps: BoundedHelperExecutionStep[] = [];
     const queuedStepsByStart = new Map<number, BoundedHelperExecutionStep[]>();
@@ -520,12 +618,80 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       return symbol ? getCanonicalSymbolKey(project, symbol) : undefined;
     };
 
-    const visitHelperExecution = (candidate: ts.Node): void => {
+    const appendForwardedHelperCallSteps = (
+      candidate: ts.CallExpression,
+      projectionContext?: ProjectedArrayUsageContext,
+    ): void => {
+      const forwardedParameterArgumentIndex = candidate.arguments.findIndex((argument) =>
+        expressionReferencesParameter(argument, canonicalParameterSymbolKey));
+      if (forwardedParameterArgumentIndex < 0) {
+        return;
+      }
+
+      const callee = unwrapExpression(candidate.expression);
+      const directCallable = summaryContext.trackedBySymbolId
+        && !ts.isPropertyAccessExpression(callee)
+        && !ts.isElementAccessExpression(callee)
+        ? resolveAnalyzableCallableBinding(
+            project,
+            candidate.expression,
+            summaryContext.trackedBySymbolId,
+            functionReturnSummaries,
+            trackedObjectsById,
+          )
+        : undefined;
+      const resolution = directCallable
+        ? { callables: [directCallable] }
+        : resolveHelperMemberCallCandidates(
+            project,
+            candidate.expression,
+            {
+              ...summaryContext,
+              projectionContext,
+            },
+          );
+      if (!resolution.callables || resolution.callables.length === 0) {
+        return;
+      }
+
+      for (const memberCallable of resolution.callables) {
+        const nestedParameter = memberCallable.declaration.parameters[forwardedParameterArgumentIndex];
+        if (!nestedParameter || !ts.isIdentifier(nestedParameter.name)) {
+          continue;
+        }
+
+        const nestedSnapshot = getBoundedHelperExecutionSnapshot(memberCallable.declaration, nestedParameter.name);
+        if (!nestedSnapshot) {
+          continue;
+        }
+
+        for (const readPath of nestedSnapshot.exactReadPaths) {
+          addExactReadPath(summary.exactReadPaths, readPath);
+        }
+        for (const step of nestedSnapshot.steps) {
+          appendStep(step);
+        }
+      }
+    };
+
+    const visitHelperExecution = (candidate: ts.Node, projectionContext?: ProjectedArrayUsageContext): void => {
+      if (ts.isTypeNode(candidate)) {
+        return;
+      }
+
       if (candidate !== callable.body && ts.isFunctionLike(candidate)) {
         return;
       }
 
       flushQueuedSteps(candidate.getStart());
+
+      if (ts.isForOfStatement(candidate)) {
+        const nestedProjectionContext = createForOfProjectionContext(candidate, summaryContext);
+        if (nestedProjectionContext) {
+          visitHelperExecution(candidate.statement, nestedProjectionContext);
+          return;
+        }
+      }
 
       if (ts.isVariableDeclaration(candidate) && ts.isIdentifier(candidate.name) && candidate.initializer) {
         const initializer = unwrapExpression(candidate.initializer);
@@ -594,6 +760,10 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
         }
       }
 
+      if (ts.isCallExpression(candidate)) {
+        appendForwardedHelperCallSteps(candidate, projectionContext);
+      }
+
       if (ts.isReturnStatement(candidate) && candidate.expression) {
         const returned = unwrapExpression(candidate.expression);
         appendStep({
@@ -603,10 +773,10 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
         });
       }
 
-      ts.forEachChild(candidate, visitHelperExecution);
+      ts.forEachChild(candidate, (child) => visitHelperExecution(child, projectionContext));
     };
 
-    ts.forEachChild(callable.body, visitHelperExecution);
+    ts.forEachChild(callable.body, (child) => visitHelperExecution(child));
     const steps: BoundedHelperExecutionStep[] = [];
     for (const step of orderedSteps) {
       observeBoundedHelperExecutionStepShape(step);
@@ -624,7 +794,7 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
       }
       : undefined;
 
-    helperExecutionSnapshotCache.set(parameterSymbolKey, snapshot ?? null);
+    helperExecutionSnapshotCache.set(cacheKey, snapshot ?? null);
     return snapshot;
   };
 
@@ -634,6 +804,9 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
   ): HelperExactAppendPlan[] => {
     const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
     const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
+    const canonicalParameterSymbolKey = parameterSymbol
+      ? getCanonicalSymbolKey(project, parameterSymbol)
+      : undefined;
     if (!parameterSymbolKey) {
       return [];
     }
@@ -644,14 +817,39 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
     }
 
     const baseBinding = trackedBySymbolId.get(parameterSymbolKey);
-    if (!baseBinding || !callable.body) {
+    if (!callable.body) {
       helperExactAppendPlanCache.set(parameterSymbolKey, null);
       return [];
     }
 
-    const basePrefix = serializePath(baseBinding.prefix);
+    const basePrefix = baseBinding ? serializePath(baseBinding.prefix) : serializePath([]);
     const plans: HelperExactAppendPlan[] = [];
     const helperSourceFile = callable.getSourceFile();
+
+    const collectParameterRelativePath = (expression: ts.Expression): PathSegment[] | undefined => {
+      if (!canonicalParameterSymbolKey) {
+        return undefined;
+      }
+
+      const segments: PathSegment[] = [];
+      let current = unwrapExpression(expression);
+
+      while (ts.isPropertyAccessExpression(current)) {
+        segments.unshift(propertySegment(current.name.text));
+        current = unwrapExpression(current.expression);
+      }
+
+      if (!ts.isIdentifier(current)) {
+        return undefined;
+      }
+
+      const symbol = project.checker.getSymbolAtLocation(current);
+      if (!symbol || getCanonicalSymbolKey(project, symbol) !== canonicalParameterSymbolKey) {
+        return undefined;
+      }
+
+      return segments.length > 0 ? segments : undefined;
+    };
 
     const visitHelper = (candidate: ts.Node): void => {
       if (candidate !== callable.body && ts.isFunctionLike(candidate)) {
@@ -670,7 +868,30 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
           functionReturnSummaries,
           trackedObjectsById,
         );
-        if (resolvedReceiver && !resolvedReceiver.dynamic) {
+        const slotPlans: ExactAppendSlotPlan[] = [];
+        let exactStructuredAppend = candidate.arguments.length > 0;
+
+        for (const argument of candidate.arguments) {
+          const structuredLiteral = unwrapExpression(argument);
+          if (ts.isObjectLiteralExpression(structuredLiteral) || ts.isArrayLiteralExpression(structuredLiteral)) {
+            slotPlans.push({
+              kind: "structured",
+              literal: structuredLiteral,
+              insertReason: `${candidate.expression.name.text} appends a structured value into an exact receiver slot`,
+            });
+            continue;
+          }
+
+          exactStructuredAppend = false;
+          break;
+        }
+
+        if (!exactStructuredAppend) {
+          ts.forEachChild(candidate, visitHelper);
+          return;
+        }
+
+        if (resolvedReceiver && !resolvedReceiver.dynamic && baseBinding) {
           const receiverBinding = extendTrackedBinding(resolvedReceiver.binding, resolvedReceiver.segments);
           const receiverPrefix = serializePath(receiverBinding.prefix.slice(0, baseBinding.prefix.length));
           const receiverCollection = getCollectionInfo(receiverBinding.trackedObject, receiverBinding.prefix);
@@ -679,33 +900,24 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
             && receiverPrefix === basePrefix
             && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
           ) {
-            const slotPlans: ExactAppendSlotPlan[] = [];
-            let exactStructuredAppend = candidate.arguments.length > 0;
-
-            for (const argument of candidate.arguments) {
-              const structuredLiteral = unwrapExpression(argument);
-              if (ts.isObjectLiteralExpression(structuredLiteral) || ts.isArrayLiteralExpression(structuredLiteral)) {
-                slotPlans.push({
-                  kind: "structured",
-                  literal: structuredLiteral,
-                  insertReason: `${candidate.expression.name.text} appends a structured value into an exact receiver slot`,
-                });
-                continue;
-              }
-
-              exactStructuredAppend = false;
-              break;
-            }
-
-            if (exactStructuredAppend) {
-              plans.push({
-                call: candidate,
-                sourceFile: helperSourceFile,
-                methodName: candidate.expression.name.text as TrackingAppendMethodName,
-                relativeCollectionPath: receiverBinding.prefix.slice(baseBinding.prefix.length),
-                slotPlans,
-              });
-            }
+            plans.push({
+              call: candidate,
+              sourceFile: helperSourceFile,
+              methodName: candidate.expression.name.text as TrackingAppendMethodName,
+              relativeCollectionPath: receiverBinding.prefix.slice(baseBinding.prefix.length),
+              slotPlans,
+            });
+          }
+        } else {
+          const relativeCollectionPath = collectParameterRelativePath(candidate.expression.expression);
+          if (relativeCollectionPath) {
+            plans.push({
+              call: candidate,
+              sourceFile: helperSourceFile,
+              methodName: candidate.expression.name.text as TrackingAppendMethodName,
+              relativeCollectionPath,
+              slotPlans,
+            });
           }
         }
       }
@@ -724,6 +936,9 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
   ): HelperProjectedUsagePlan[] => {
     const parameterSymbol = project.checker.getSymbolAtLocation(parameter);
     const parameterSymbolKey = parameterSymbol ? getSymbolKey(parameterSymbol) : undefined;
+    const canonicalParameterSymbolKey = parameterSymbol
+      ? getCanonicalSymbolKey(project, parameterSymbol)
+      : undefined;
     if (!parameterSymbolKey) {
       return [];
     }
@@ -734,13 +949,38 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
     }
 
     const baseBinding = trackedBySymbolId.get(parameterSymbolKey);
-    if (!baseBinding || !callable.body) {
+    if (!callable.body) {
       helperProjectedUsagePlanCache.set(parameterSymbolKey, null);
       return [];
     }
 
-    const basePrefix = serializePath(baseBinding.prefix);
+    const basePrefix = baseBinding ? serializePath(baseBinding.prefix) : serializePath([]);
     const plans: HelperProjectedUsagePlan[] = [];
+
+    const collectParameterRelativePath = (expression: ts.Expression): PathSegment[] | undefined => {
+      if (!canonicalParameterSymbolKey) {
+        return undefined;
+      }
+
+      const segments: PathSegment[] = [];
+      let current = unwrapExpression(expression);
+
+      while (ts.isPropertyAccessExpression(current)) {
+        segments.unshift(propertySegment(current.name.text));
+        current = unwrapExpression(current.expression);
+      }
+
+      if (!ts.isIdentifier(current)) {
+        return undefined;
+      }
+
+      const symbol = project.checker.getSymbolAtLocation(current);
+      if (!symbol || getCanonicalSymbolKey(project, symbol) !== canonicalParameterSymbolKey) {
+        return undefined;
+      }
+
+      return segments.length > 0 ? segments : undefined;
+    };
 
     const visitHelper = (candidate: ts.Node): void => {
       if (candidate !== callable.body && ts.isFunctionLike(candidate)) {
@@ -756,18 +996,30 @@ export function createHelperPlanningHelpers(options: HelperPlanningOptions): {
           trackedObjectsById,
         );
         const elementSymbolKey = getBindingSymbolKey(project, candidate.initializer);
-        if (resolved && !resolved.dynamic && elementSymbolKey) {
+        if (!elementSymbolKey) {
+          ts.forEachChild(candidate, visitHelper);
+          return;
+        }
+
+        if (resolved && !resolved.dynamic && baseBinding) {
           const receiverBinding = extendTrackedBinding(resolved.binding, resolved.segments);
           const receiverPrefix = serializePath(receiverBinding.prefix.slice(0, baseBinding.prefix.length));
-          const receiverCollection = getCollectionInfo(receiverBinding.trackedObject, receiverBinding.prefix);
           if (
             receiverBinding.trackedObject.id === baseBinding.trackedObject.id
             && receiverPrefix === basePrefix
-            && receiverCollection?.kind === TRACKING_COLLECTION_KIND.array
           ) {
             plans.push({
               statement: candidate.statement,
               relativeCollectionPath: receiverBinding.prefix.slice(baseBinding.prefix.length),
+              elementSymbolKey,
+            });
+          }
+        } else {
+          const relativeCollectionPath = collectParameterRelativePath(candidate.expression);
+          if (relativeCollectionPath) {
+            plans.push({
+              statement: candidate.statement,
+              relativeCollectionPath,
               elementSymbolKey,
             });
           }
