@@ -209,6 +209,36 @@ export function analyzeValueLiveness(
         });
       }
 
+      if (
+        (ts.isConditionalExpression(node) || ts.isIfStatement(node))
+        && ts.isIdentifier(ts.isConditionalExpression(node) ? node.condition : node.expression)
+      ) {
+        const conditionNode = ts.isConditionalExpression(node) ? node.condition : node.expression;
+        if (ts.isIdentifier(conditionNode)) {
+          const type = project.checker.getTypeAtLocation(conditionNode);
+          const isAlwaysFalsy = (
+            !type.isUnion()
+            && (
+              (type.flags & ts.TypeFlags.Undefined) !== 0
+              || (type.flags & ts.TypeFlags.Null) !== 0
+            )
+          );
+          if (isAlwaysFalsy) {
+            const entity = makeEntity(project.rootPath, ENTITY_KIND.local, sourceFile, conditionNode, conditionNode.text);
+            if (!isPreserved(project, state, suppressionContext, entity, { declarationNode: conditionNode })) {
+              findings.push({
+                id: entity.id,
+                kind: FINDING_KIND.deadBranch,
+                entity,
+                reason: `condition '${conditionNode.text}' has inferred type 'undefined' — truthy branch is unreachable`,
+                message: `Dead branch for ${conditionNode.text}`,
+                suggestion: "review",
+              });
+            }
+          }
+        }
+      }
+
       if (ts.isIdentifier(node)) {
         const symbol = project.checker.getSymbolAtLocation(node);
         const tracked = symbol ? trackedBindings.get(getSymbolKey(symbol)) : undefined;

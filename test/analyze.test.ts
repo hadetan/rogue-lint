@@ -896,6 +896,22 @@ describe("rogue-lint analyzer", () => {
     expect(kindsAndNames).not.toContain("write-only-state:value");
   });
 
+  it("reports dead branches for conditions whose inferred type is always-falsy", async () => {
+    const result = await analyzeProject({
+      cwd: process.cwd(),
+      targetPath: fixturePath("const-undefined-condition-basic"),
+      format: "json",
+    });
+
+    const kindsAndNames = result.findings.map((finding) => `${finding.kind}:${finding.entity.name}`);
+
+    // ternary condition: const directHandler = undefined; directHandler ? "never" : fallback
+    expect(kindsAndNames).toContain("dead-branch:directHandler");
+    // if-statement condition: const transform = undefined; if (transform) { ... }
+    expect(kindsAndNames).toContain("dead-branch:transform");
+    expect(result.skipped).toHaveLength(0);
+  });
+
   it("preserves benchmark-like dynamic lookup tables and conditional array receivers conservatively", async () => {
     const result = await analyzeProject({
       cwd: process.cwd(),

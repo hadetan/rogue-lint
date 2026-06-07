@@ -29,6 +29,7 @@ Current finding kinds:
 - `unused-object-key`
 - `unused-nested-path`
 - `dead-store`
+- `dead-branch`
 - `unused-value`
 - `write-only-state`
 - `use-before-init`

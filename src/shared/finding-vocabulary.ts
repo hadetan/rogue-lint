@@ -22,6 +22,7 @@ export const FINDING_KIND = {
   deadStore: "dead-store",
   unusedValue: "unused-value",
   writeOnlyState: "write-only-state",
+  deadBranch: "dead-branch",
 } as const;
 
 type FindingKind = (typeof FINDING_KIND)[keyof typeof FINDING_KIND];
@@ -53,6 +54,7 @@ export const FINDING_KIND_OWNER = {
   [FINDING_KIND.deadStore]: "value-fate",
   [FINDING_KIND.unusedValue]: "value-fate",
   [FINDING_KIND.writeOnlyState]: "value-fate",
+  [FINDING_KIND.deadBranch]: "value-fate",
 } as const satisfies Record<FindingKind, FindingCapabilityOwner>;
 
 type FindingMappedEntityKind = Extract<

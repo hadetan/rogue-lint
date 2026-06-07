@@ -28,7 +28,7 @@ interface AnalysisStage {
 }
 
 const DEFAULT_TRACKING_CONVERGENCE_OPTIONS: TrackingConvergenceOptions = {
-  maxPassElapsedMs: 5000,
+  maxPassElapsedMs: 30000,
 };
 
 /**

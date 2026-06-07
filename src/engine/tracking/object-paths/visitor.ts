@@ -692,13 +692,9 @@ export function visitObjectPathSourceFile(
             candidate.expression,
             localBindings,
           );
-        const directCallable = undefined;
-        const memberCallables: AnalyzableCallableBinding[] = [];
         const nestedCallables = capturedCallable
           ? [capturedCallable]
-          : directCallable
-            ? [directCallable]
-            : memberCallables;
+          : resolveBoundedHelperCallables(candidate, localBindings);
 
         for (const nestedCallable of nestedCallables) {
           const nestedLocalBindings = getBoundedHelperCallBindings(candidate, nestedCallable.declaration, localBindings);
