@@ -1,14 +1,15 @@
 import path from "node:path";
 
 import type { ProjectContext, SuppressionContext } from "../../types.js";
-import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
-import { getSuppressionAudit } from "../../suppressions.js";
+import { addFinding, type AnalysisState } from "../analysis-state.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { toRelative } from "../../shared/path-utils.js";
+import { isPreserved } from "./preservation-gate.js";
 
 function buildFileEntity(project: ProjectContext, sourceFile: ProjectContext["sourceFiles"][number]) {
   return {
     id: `file:${toRelative(project.rootPath, sourceFile.fileName)}`,
-    kind: "file" as const,
+    kind: ENTITY_KIND.file,
     name: path.basename(sourceFile.fileName),
     location: {
       file: toRelative(project.rootPath, sourceFile.fileName),
@@ -33,8 +34,7 @@ export function analyzeUnusedFiles(
     }
 
     const entity = buildFileEntity(project, sourceFile);
-    const suppression = getSuppressionAudit(project, suppressionContext, entity);
-    if (addAudit(state.kept, suppression)) {
+    if (isPreserved(project, state, suppressionContext, entity)) {
       continue;
     }
 

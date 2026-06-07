@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import type { PathSegment } from "../types.js";
+import { PATH_SEGMENT_KIND } from "./path-vocabulary.js";
 
 export function normalizeSlashes(value: string): string {
   return value.split(path.sep).join("/");
@@ -12,11 +13,11 @@ export function toRelative(rootPath: string, absolutePath: string): string {
 }
 
 export function propertySegment(value: string): PathSegment {
-  return { kind: "property", value };
+  return { kind: PATH_SEGMENT_KIND.property, value };
 }
 
 export function indexSegment(value: number): PathSegment {
-  return { kind: "index", value };
+  return { kind: PATH_SEGMENT_KIND.index, value };
 }
 
 export function samePath(left: PathSegment[], right: PathSegment[]): boolean {
@@ -25,7 +26,7 @@ export function samePath(left: PathSegment[], right: PathSegment[]): boolean {
 
 export function serializePath(segments: PathSegment[]): string {
   return segments
-    .map((segment) => (segment.kind === "property" ? `p:${segment.value}` : `i:${segment.value}`))
+    .map((segment) => (segment.kind === PATH_SEGMENT_KIND.property ? `p:${segment.value}` : `i:${segment.value}`))
     .join("/");
 }
 
@@ -37,7 +38,7 @@ export function renderPath(segments: PathSegment[]): string {
   let result = "";
 
   for (const segment of segments) {
-    if (segment.kind === "index") {
+    if (segment.kind === PATH_SEGMENT_KIND.index) {
       result = `${result}[${segment.value}]`;
       continue;
     }

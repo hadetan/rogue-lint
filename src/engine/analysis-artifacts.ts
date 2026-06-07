@@ -1,6 +1,8 @@
 import type ts from "typescript";
 
 import type { ProjectContext } from "../types.js";
+import type { AnalysisRunState } from "./analysis-run-state.js";
+import { createAnalysisRunState } from "./analysis-run-state.js";
 import type { ReferenceCaches } from "./analyzers/support.js";
 import { buildTrackedObjects } from "./tracking/graph.js";
 import type { TrackingConvergenceOptions } from "./tracking/convergence.js";
@@ -25,35 +27,27 @@ export function createAnalysisArtifacts(
   publicSurfaceIds: Set<string>,
   publicCallableIds: Set<string> = new Set<string>(),
   trackingConvergenceOptions?: TrackingConvergenceOptions,
+  runState: AnalysisRunState = createAnalysisRunState(),
 ): AnalysisArtifacts {
-  const semanticDiagnosticsByFile = new Map<string, readonly ts.Diagnostic[]>();
-  const referenceCaches: ReferenceCaches = {
-    hasReference: new Map(),
-    exportReferences: new Map(),
-    referenceSummaries: new Map(),
-    usage: new Map(),
-  };
-  let trackingArtifacts: TrackingRunArtifacts | undefined;
-
   const getTrackingRunArtifacts = (): TrackingRunArtifacts => {
-    if (!trackingArtifacts) {
-      trackingArtifacts = buildTrackedObjects(project, reachableFiles, trackingConvergenceOptions);
+    if (!runState.trackingArtifacts) {
+      runState.trackingArtifacts = buildTrackedObjects(project, reachableFiles, trackingConvergenceOptions);
     }
-    return trackingArtifacts;
+    return runState.trackingArtifacts;
   };
 
   return {
     publicSurfaceIds,
     publicCallableIds,
-    referenceCaches,
+    referenceCaches: runState.referenceCaches,
     getSemanticDiagnostics(sourceFile: ts.SourceFile): readonly ts.Diagnostic[] {
-      const cached = semanticDiagnosticsByFile.get(sourceFile.fileName);
+      const cached = runState.semanticDiagnosticsByFile.get(sourceFile.fileName);
       if (cached) {
         return cached;
       }
 
       const diagnostics = project.program.getSemanticDiagnostics(sourceFile);
-      semanticDiagnosticsByFile.set(sourceFile.fileName, diagnostics);
+      runState.semanticDiagnosticsByFile.set(sourceFile.fileName, diagnostics);
       return diagnostics;
     },
     getTrackingRunArtifacts(): TrackingRunArtifacts {

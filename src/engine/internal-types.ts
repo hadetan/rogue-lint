@@ -1,5 +1,16 @@
 import type ts from "typescript";
 
+import { FINDING_KIND } from "../shared/finding-vocabulary.js";
+import {
+  PATH_SEGMENT_KIND,
+  TRACKED_OBJECT_NODE_ORIGIN,
+} from "../shared/path-vocabulary.js";
+import { TRACKING_STRUCTURAL_ROLE } from "./tracking/ownership.js";
+import { TRACKING_COLLECTION_KIND } from "./tracking/vocabulary.js";
+import {
+  TRACKING_PLACE_STATE,
+  TRACKING_VALUE_FATE,
+} from "./tracking/vocabulary.js";
 import type {
   DiagnosticRecord,
   EntityRecord,
@@ -60,7 +71,10 @@ export interface ProjectContext {
 interface ObjectNode {
   entity: EntityRecord;
   fullPath: PathSegment[];
-  origin: "property" | "method" | "array-element";
+  origin:
+    | typeof TRACKED_OBJECT_NODE_ORIGIN.property
+    | typeof TRACKED_OBJECT_NODE_ORIGIN.method
+    | typeof TRACKED_OBJECT_NODE_ORIGIN.arrayElement;
 }
 
 export interface EscapedPathRecord {
@@ -76,11 +90,11 @@ export interface CollectionBoundaryRecord {
 }
 
 export type PathSegment =
-  | { kind: "property"; value: string }
-  | { kind: "index"; value: number };
+  | { kind: typeof PATH_SEGMENT_KIND.property; value: string }
+  | { kind: typeof PATH_SEGMENT_KIND.index; value: number };
 
 export interface TrackedCollectionInfo {
-  kind: "object" | "array";
+  kind: typeof TRACKING_COLLECTION_KIND.object | typeof TRACKING_COLLECTION_KIND.array;
   path: PathSegment[];
   childPaths: PathSegment[][];
   arrayLength?: number;
@@ -92,14 +106,14 @@ export interface TrackedCollectionState {
   arrayLength?: number;
 }
 
-export type TrackedPlaceState = "uninitialized" | "initialized" | "invalidated" | "escaped" | "unknown";
+export type TrackedPlaceState = (typeof TRACKING_PLACE_STATE)[keyof typeof TRACKING_PLACE_STATE];
 
 export interface InvalidatedPathRecord {
   reason: string;
-  findingKind?: Extract<FindingKind, "invalidated-read" | "stale-read-after-mutation">;
+  findingKind?: Extract<FindingKind, typeof FINDING_KIND.invalidatedRead | typeof FINDING_KIND.staleReadAfterMutation>;
 }
 
-export type TrackedObjectStructuralRole = "record" | "state-holder" | "structural-record" | "structural-record-array";
+export type TrackedObjectStructuralRole = (typeof TRACKING_STRUCTURAL_ROLE)[keyof typeof TRACKING_STRUCTURAL_ROLE];
 
 /**
  * Canonical structured object tracked across exact path, collection, and value-fate analysis.
@@ -107,6 +121,9 @@ export type TrackedObjectStructuralRole = "record" | "state-holder" | "structura
 export interface TrackedObject {
   id: string;
   reportingOwnerId?: string;
+  derivedStateRevision: number;
+  specializationSourceRevision?: number;
+  specializationBindingSignature?: string;
   canonicalSymbolKey: string;
   rootName: string;
   sourceFile: string;
@@ -127,21 +144,13 @@ export interface TrackedObject {
   observedSubtrees: Set<string>;
   escapedPaths: Map<string, EscapedPathRecord>;
   exactPathAliases: Map<string, {
-    fate: "inserted-by-reference";
+    fate: typeof TRACKING_VALUE_FATE.insertedByReference;
     sourceObjectId: string;
     sourcePath: PathSegment[];
     observed: boolean;
   }>;
   valueFates: Array<{
-    fate:
-      | "observed"
-      | "inserted-by-reference"
-      | "shallow-cloned"
-      | "deep-cloned"
-      | "resource-transferred"
-      | "escaped-opaquely"
-      | "overwritten"
-      | "invalidated";
+    fate: (typeof TRACKING_VALUE_FATE)[keyof typeof TRACKING_VALUE_FATE];
     path: PathSegment[];
     reason: string;
     relatedObjectId?: string;

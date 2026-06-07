@@ -6,6 +6,10 @@ import {
   getCanonicalSymbolKey,
 } from "./bindings.js";
 import { unwrapExpression } from "./syntax.js";
+import {
+  TRACKING_CONTAINER_TYPE_NAME,
+  TRACKING_RETAINED_BINDING_CONTAINER_TYPE_NAMES,
+} from "./vocabulary.js";
 
 function getContainerTypeName(project: ProjectContext, expression: ts.Expression): string | undefined {
   const typeSymbol = project.checker.getTypeAtLocation(expression).getSymbol();
@@ -46,7 +50,7 @@ function getLocallyOwnedRetainedBindingContainerKind(
     if (
       ts.isNewExpression(initializer)
       && ts.isIdentifier(initializer.expression)
-      && ["Map", "WeakMap"].includes(initializer.expression.text)
+      && TRACKING_RETAINED_BINDING_CONTAINER_TYPE_NAMES.has(initializer.expression.text)
     ) {
       return "map-like";
     }
@@ -86,8 +90,8 @@ export function isSupportedRetainedBindingContainerType(
   expression: ts.Expression,
 ): boolean {
   const typeName = getContainerTypeName(project, expression);
-  return typeName === "Map"
-    || typeName === "WeakMap"
+  return typeName === TRACKING_CONTAINER_TYPE_NAME.map
+    || typeName === TRACKING_CONTAINER_TYPE_NAME.weakMap
     || getLocallyOwnedRetainedBindingContainerKind(project, expression) === "object-backed";
 }
 

@@ -23,6 +23,7 @@ const DEFAULT_CONFIG: ResolvedConfig["value"] = {
     enabled: true,
     maxPathDepth: 5,
   },
+  internalNamespaceMethodCarriers: [],
 };
 
 function readJsonFile(filePath: string): Record<string, unknown> {
@@ -86,6 +87,8 @@ export function resolveConfig(rootPath: string, options: AnalysisOptions): Resol
       ...DEFAULT_CONFIG.objectAnalysis,
       ...rawConfig.objectAnalysis,
     },
+    internalNamespaceMethodCarriers:
+      rawConfig.internalNamespaceMethodCarriers ?? DEFAULT_CONFIG.internalNamespaceMethodCarriers,
   };
 
   return {

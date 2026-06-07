@@ -4,6 +4,7 @@ import type { AuditRecord, EntityRecord, EntityKind, ProjectContext } from "../.
 import type { NonDeclarationReferenceSummary } from "../../references.js";
 import { summarizeReferenceUsage } from "../../references.js";
 import { getDeclarationNameNode, getNodeName, getSymbolKey } from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
 
 /**
@@ -95,7 +96,7 @@ function addEnumMemberIds(project: ProjectContext, ids: Set<string>, declaration
     ids.add(
       makeEntity(
         project.rootPath,
-        "enum-member",
+        ENTITY_KIND.enumMember,
         declaration.getSourceFile(),
         memberNameNode,
         memberName,
@@ -171,7 +172,7 @@ function addClassMemberIds(
     ids.add(
       makeEntity(
         project.rootPath,
-        "class-member",
+        ENTITY_KIND.classMember,
         declaration.getSourceFile(),
         memberNameNode,
         memberName,
@@ -195,8 +196,8 @@ function addDeclarationIds(
     return;
   }
 
-  ids.add(makeEntity(project.rootPath, "export", declaration.getSourceFile(), nameNode, name).id);
-  ids.add(makeEntity(project.rootPath, "type", declaration.getSourceFile(), nameNode, name).id);
+  ids.add(makeEntity(project.rootPath, ENTITY_KIND.export, declaration.getSourceFile(), nameNode, name).id);
+  ids.add(makeEntity(project.rootPath, ENTITY_KIND.type, declaration.getSourceFile(), nameNode, name).id);
 
   if (ts.isEnumDeclaration(declaration)) {
     addEnumMemberIds(project, ids, declaration, name);
@@ -205,6 +206,15 @@ function addDeclarationIds(
   if (ts.isClassDeclaration(declaration)) {
     addClassMemberIds(project, ids, callableIds, declaration, name);
   }
+}
+
+function addExportSpecifierIds(
+  project: ProjectContext,
+  ids: Set<string>,
+  exportSpecifier: ts.ExportSpecifier,
+): void {
+  ids.add(makeEntity(project.rootPath, ENTITY_KIND.export, exportSpecifier.getSourceFile(), exportSpecifier.name, exportSpecifier.name.text).id);
+  ids.add(makeEntity(project.rootPath, ENTITY_KIND.type, exportSpecifier.getSourceFile(), exportSpecifier.name, exportSpecifier.name.text).id);
 }
 
 function unwrapTrackedExpression(expression: ts.Expression): ts.Expression {
@@ -330,6 +340,12 @@ function collectPublicSurfaceFromSymbol(
   symbol: ts.Symbol,
   visited: Set<string>,
 ): void {
+  for (const declaration of symbol.declarations ?? []) {
+    if (ts.isExportSpecifier(declaration)) {
+      addExportSpecifierIds(project, ids, declaration);
+    }
+  }
+
   const underlying = getCanonicalPublicSurfaceSymbol(project, symbol);
   const symbolKey = getSymbolKey(underlying);
   if (visited.has(symbolKey)) {
@@ -426,8 +442,8 @@ export function collectExportCandidates(project: ProjectContext, sourceFile: ts.
       }
       const exportedKind: EntityKind =
         ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)
-          ? "type"
-          : "export";
+          ? ENTITY_KIND.type
+          : ENTITY_KIND.export;
 
       const entity = makeEntity(project.rootPath, exportedKind, sourceFile, nameNode, name);
       candidates.set(entity.id, { entity, node: nameNode, exportedKind });
@@ -441,7 +457,7 @@ export function collectExportCandidates(project: ProjectContext, sourceFile: ts.
           }
           const memberEntity = makeEntity(
             project.rootPath,
-            "enum-member",
+            ENTITY_KIND.enumMember,
             sourceFile,
             memberNameNode,
             memberName,
@@ -450,7 +466,7 @@ export function collectExportCandidates(project: ProjectContext, sourceFile: ts.
           candidates.set(memberEntity.id, {
             entity: memberEntity,
             node: memberNameNode,
-            exportedKind: "enum-member",
+            exportedKind: ENTITY_KIND.enumMember,
           });
         }
       }
@@ -463,8 +479,8 @@ export function collectExportCandidates(project: ProjectContext, sourceFile: ts.
         if (!nameNode || !name) {
           continue;
         }
-        const entity = makeEntity(project.rootPath, "export", sourceFile, nameNode, name);
-        candidates.set(entity.id, { entity, node: nameNode, exportedKind: "export" });
+        const entity = makeEntity(project.rootPath, ENTITY_KIND.export, sourceFile, nameNode, name);
+        candidates.set(entity.id, { entity, node: nameNode, exportedKind: ENTITY_KIND.export });
       }
     }
 
@@ -478,16 +494,18 @@ export function collectExportCandidates(project: ProjectContext, sourceFile: ts.
         const localName = element.propertyName ?? element.name;
         const symbol = project.checker.getSymbolAtLocation(localName);
         const declaration = symbol?.declarations?.[0];
-        const nameNode = declaration ? getDeclarationNameNode(declaration) : undefined;
-        const name = declaration ? getNodeName(declaration) : undefined;
-        if (!declaration || !nameNode || !name) {
+        const nameNode = element.name;
+        const name = element.name.text;
+        if (!nameNode || !name) {
           continue;
         }
 
         const exportedKind: EntityKind =
-          ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration)
-            ? "type"
-            : "export";
+          statement.isTypeOnly
+          || element.isTypeOnly
+          || (declaration !== undefined && (ts.isInterfaceDeclaration(declaration) || ts.isTypeAliasDeclaration(declaration)))
+            ? ENTITY_KIND.type
+            : ENTITY_KIND.export;
         const entity = makeEntity(project.rootPath, exportedKind, sourceFile, nameNode, name);
         candidates.set(entity.id, { entity, node: nameNode, exportedKind });
       }

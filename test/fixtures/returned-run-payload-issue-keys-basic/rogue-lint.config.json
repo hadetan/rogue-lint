@@ -1,4 +1,11 @@
 {
   "mode": "application",
-  "entrypoints": ["src/index.ts"]
+  "entrypoints": ["src/index.ts"],
+  "internalNamespaceMethodCarriers": [
+    {
+      "namespace": "_zod",
+      "carrierMethods": ["run", "parse"],
+      "definitionPath": ["_zod", "def"]
+    }
+  ]
 }

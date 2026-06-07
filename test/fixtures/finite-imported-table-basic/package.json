@@ -1,0 +1,6 @@
+{
+  "name": "finite-imported-table-basic",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

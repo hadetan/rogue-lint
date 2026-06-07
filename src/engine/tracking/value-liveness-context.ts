@@ -1,7 +1,7 @@
 import type ts from "typescript";
 
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import { VALUE_LIVENESS_TRACKING_STAGE } from "./contracts.js";
+import { VALUE_LIVENESS_TRACKING_STAGE, type TrackingSharedFactsPlane } from "./contracts.js";
 import type {
   CallableReturnSummary,
   TrackedValueBinding,
@@ -21,15 +21,29 @@ interface ValueLivenessStageContext {
   createSourceFileContext(sourceFile: ts.SourceFile): ValueLivenessSourceFileContext;
 }
 
+interface ValueLivenessTrackingInput {
+  sharedFacts: Pick<TrackingSharedFactsPlane, "returnSummaries">;
+}
+
+function createValueLivenessTrackingInput(artifacts: AnalysisArtifacts): ValueLivenessTrackingInput {
+  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts(VALUE_LIVENESS_TRACKING_STAGE);
+
+  return {
+    sharedFacts: {
+      returnSummaries: trackingStageArtifacts.returnSummaries,
+    },
+  };
+}
+
 export function createValueLivenessStageContext(
   reachableFiles: Set<string>,
   artifacts: AnalysisArtifacts,
 ): ValueLivenessStageContext {
-  const trackingStageArtifacts = artifacts.getTrackingStageArtifacts(VALUE_LIVENESS_TRACKING_STAGE);
+  const trackingInput = createValueLivenessTrackingInput(artifacts);
 
   return {
     reachableFiles,
-    functionReturnSummaries: trackingStageArtifacts.returnSummaries.byCallableId,
+    functionReturnSummaries: trackingInput.sharedFacts.returnSummaries.byCallableId,
     createSourceFileContext(_sourceFile: ts.SourceFile): ValueLivenessSourceFileContext {
       return {
         trackedBindings: new Map<string, TrackedValueBinding>(),

@@ -35,7 +35,7 @@ export function analyzeObjectPaths(
       continue;
     }
 
-    visitObjectPathSourceFile(stageContext, stageContext.createSourceFileContext(sourceFile));
+    visitObjectPathSourceFile(stageContext, state, stageContext.createSourceFileContext(sourceFile));
   }
 
   finalizeObjectPathFindings(
@@ -44,5 +44,6 @@ export function analyzeObjectPaths(
     suppressionContext,
     stageContext.trackedObjectRegistry.values(),
     stageContext.overlayState,
+    stageContext.trackedBindingRegistry,
   );
 }

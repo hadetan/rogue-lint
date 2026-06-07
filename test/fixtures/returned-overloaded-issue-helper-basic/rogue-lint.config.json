@@ -1,0 +1,4 @@
+{
+  "mode": "application",
+  "entrypoints": ["src/index.ts"]
+}

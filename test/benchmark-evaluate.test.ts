@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import { evaluateBenchmarkExpectations } from "../src/benchmark/evaluate.js";
+import { attachTrackingRuntimeSummary } from "../src/engine/tracking/upgrade-safety.js";
 import { attachAnalysisCapabilityLedger } from "../src/engine/capabilities/providers.js";
 import {
   createDiagnosticCapabilityRecordId,
   createEmptyAnalysisCapabilityLedger,
 } from "../src/engine/capabilities/types.js";
+import type { TrackingRuntimeSummary } from "../src/engine/tracking/contracts.js";
 import type { AnalysisResult, AuditRecord, DiagnosticRecord, FindingRecord } from "../src/types.js";
 
 function createFinding(overrides: Partial<FindingRecord> = {}): FindingRecord {
@@ -33,6 +35,7 @@ function createSkip(overrides: Partial<AuditRecord> = {}): AuditRecord {
     id: overrides.id ?? "skip-1",
     kind: overrides.kind ?? "object-key",
     name: overrides.name ?? "value",
+    owner: overrides.owner,
     reason: overrides.reason ?? "computed property access is not modeled exactly",
     category: overrides.category ?? "computed-property-access",
     location: overrides.location ?? {
@@ -78,6 +81,67 @@ function createAnalysisResult(
     kept: [],
     skipped: skips,
     diagnostics,
+  };
+}
+
+function createTrackingRuntimeSummary(overrides: Partial<{
+  passes: number;
+  warningPassThreshold: number;
+  maxPasses: number;
+  warned: boolean;
+  elapsedMs: number;
+  bindingChanges: number;
+  returnSummaryChanges: number;
+  trackedBindings: number;
+  returnSummaries: number;
+}> = {}): TrackingRuntimeSummary {
+  return {
+    seed: {
+      reachableFileCount: 1,
+      reachableSourceFileCount: 1,
+    },
+    convergence: {
+      passes: overrides.passes ?? 4,
+      warningPassThreshold: overrides.warningPassThreshold ?? 12,
+      maxPasses: overrides.maxPasses ?? 50,
+      warned: overrides.warned ?? false,
+      elapsedMs: overrides.elapsedMs ?? 100,
+      churn: {
+        bindingChanges: overrides.bindingChanges ?? 4,
+        bindingChangedPasses: 2,
+        returnSummaryChanges: overrides.returnSummaryChanges ?? 4,
+        returnSummaryChangedPasses: 2,
+      },
+      widening: {
+        bindingChanges: 0,
+        returnSummaryChanges: 0,
+        reasons: {
+          bindings: [],
+          returnSummaries: [],
+        },
+      },
+      unstableSamples: {
+        bindings: [],
+        returnSummaries: [],
+      },
+    },
+    totals: {
+      trackedBindings: overrides.trackedBindings ?? 2,
+      returnSummaries: overrides.returnSummaries ?? 2,
+      trackedObjects: 2,
+    },
+    solverState: {
+      trackedObjectRegistryEntries: 2,
+      callSiteSpecializations: 0,
+      literalBindingCacheEntries: 0,
+      returnLiteralBindingCacheEntries: 0,
+    },
+    stageTimingsMs: {
+      "tracking-graph-build": overrides.elapsedMs ?? 100,
+      "value-liveness": 0,
+      "object-paths": 0,
+    },
+    stageRequests: {},
   };
 }
 
@@ -202,6 +266,81 @@ describe("benchmark expectation evaluation", () => {
     expect(evaluation.failed).toBe(false);
   });
 
+  it("fails completed benchmark runs when tracking safety budgets regress", () => {
+    const result = createAnalysisResult([], [], [createDiagnostic()]);
+    attachTrackingRuntimeSummary(result, createTrackingRuntimeSummary({
+      passes: 9,
+      bindingChanges: 32,
+      returnSummaryChanges: 32,
+      trackedBindings: 2,
+      returnSummaries: 2,
+    }));
+
+    const evaluation = evaluateBenchmarkExpectations(
+      result,
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [
+          {
+            label: "diagnostic anchor",
+            kind: "project-warning",
+          },
+        ],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+      "library-public-surface",
+    );
+
+    expect(evaluation.contract.incomplete).toBe(false);
+    expect(evaluation.trackingSafety?.enforced.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ metric: "passes" }),
+        expect.objectContaining({ metric: "binding-changes" }),
+        expect.objectContaining({ metric: "return-summary-changes" }),
+      ]),
+    );
+    expect(evaluation.trackingSafety?.metrics.stageTimingsMs["tracking-graph-build"]).toBeGreaterThan(0);
+    expect(evaluation.failed).toBe(true);
+  });
+
+  it("keeps informational timing drift out of benchmark failure status", () => {
+    const result = createAnalysisResult([], [], [createDiagnostic()]);
+    attachTrackingRuntimeSummary(result, createTrackingRuntimeSummary({
+      elapsedMs: 3500,
+    }));
+
+    const evaluation = evaluateBenchmarkExpectations(
+      result,
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [],
+        mustDiagnose: [
+          {
+            label: "diagnostic anchor",
+            kind: "project-warning",
+          },
+        ],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+      "library-public-surface",
+    );
+
+    expect(evaluation.trackingSafety?.enforced.violations).toHaveLength(0);
+    expect(evaluation.trackingSafety?.informational.advisories).toEqual([
+      expect.objectContaining({ metric: "elapsed-ms", severity: "informational" }),
+    ]);
+    expect(evaluation.failed).toBe(false);
+  });
+
   it("supports count-aware required expectations", () => {
     const evaluation = evaluateBenchmarkExpectations(
       createAnalysisResult([createFinding()], [], []),
@@ -257,6 +396,39 @@ describe("benchmark expectation evaluation", () => {
     expect(evaluation.required.mustNotSkip.violations[0]?.actualCount).toBe(1);
     expect(evaluation.unexpected.skips).toHaveLength(0);
     expect(evaluation.failed).toBe(true);
+  });
+
+  it("matches skip owners when negative skip anchors need owner precision", () => {
+    const evaluation = evaluateBenchmarkExpectations(
+      createAnalysisResult([], [
+        createSkip({ id: "skip-1", owner: "validate()" }),
+        createSkip({ id: "skip-2", owner: "handleOptionalResult" }),
+      ], []),
+      {
+        mustFind: [],
+        mustNotFind: [],
+        mustSkip: [],
+        mustNotSkip: [
+          {
+            label: "validate skip must be gone",
+            category: "computed-property-access",
+            file: "src/example.ts",
+            name: "value",
+            owner: "validate()",
+            maxCount: 0,
+          },
+        ],
+        mustDiagnose: [],
+        mustNotDiagnose: [],
+        acceptedFindings: [],
+        knownSkips: [],
+      },
+    );
+
+    expect(evaluation.required.mustNotSkip.violations).toHaveLength(1);
+    expect(evaluation.required.mustNotSkip.violations[0]?.actualCount).toBe(1);
+    expect(evaluation.required.mustNotSkip.violations[0]?.records).toHaveLength(1);
+    expect(evaluation.required.mustNotSkip.violations[0]?.records[0]?.owner).toBe("validate()");
   });
 
   it("keeps required skip anchors out of gap-priority and capability-priority debt signals", () => {

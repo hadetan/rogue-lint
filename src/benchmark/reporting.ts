@@ -1,31 +1,65 @@
 import type { AuditRecord, DiagnosticRecord, FindingRecord } from "../types.js";
 import { renderResult } from "../output/render-result.js";
+import { ENTITY_KIND } from "../shared/entity-vocabulary.js";
 import type {
   AnalyzedBenchmarkTarget,
   BenchmarkCapabilityPriorityEntry,
   BenchmarkDiagnosticMatcher,
   BenchmarkFindingMatcher,
   BenchmarkGapPriorityEntry,
-  BenchmarkGapPriorityScope,
   BenchmarkSkipMatcher,
   BenchmarkWorkspaceRun,
   ExpectationCountViolation,
   MatcherRecords,
 } from "./types.js";
+import {
+  BENCHMARK_TARGET_STATE,
+  formatBenchmarkGapPriorityScope,
+  getBenchmarkGapPriorityRank,
+} from "./vocabulary.js";
 
 const REPORT_KIND_WIDTH = 28;
 const COARSE_MATCHER_NOTE = "coarse matcher: same-file churn is surfaced only in the raw records below";
 
+function formatTrackingSafetyMetric(metric: "passes" | "binding-changes" | "return-summary-changes" | "elapsed-ms"): string {
+  switch (metric) {
+    case "passes":
+      return "convergence passes";
+    case "binding-changes":
+      return "binding churn";
+    case "return-summary-changes":
+      return "return-summary churn";
+    case "elapsed-ms":
+      return "tracking elapsed ms";
+    default:
+      return metric;
+  }
+}
+
+function qualifyLabel(owner: string | undefined, name: string): string {
+  if (!owner || name === owner || name.startsWith(`${owner}.`) || name.startsWith(`${owner}[`)) {
+    return name;
+  }
+
+  return name.startsWith("[") ? `${owner}${name}` : `${owner}.${name}`;
+}
+
 function formatFinding(record: FindingRecord): string {
-  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.entity.location.file}:${record.entity.location.line}:${record.entity.location.column} ${record.entity.name} - ${record.reason}`;
+  const label = record.entity.kind === ENTITY_KIND.file
+    ? record.entity.name
+    : qualifyLabel(record.entity.owner, record.entity.name);
+
+  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.entity.location.file}:${record.entity.location.line}:${record.entity.location.column} ${label} - ${record.reason}`;
 }
 
 function formatAudit(record: AuditRecord): string {
+  const label = qualifyLabel(record.owner, record.name);
+
   if (!record.location) {
-    return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.name} - ${record.reason}`;
+    return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${label} - ${record.reason}`;
   }
 
-  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.location.file}:${record.location.line}:${record.location.column} ${record.name} - ${record.reason}`;
+  return `${record.kind.padEnd(REPORT_KIND_WIDTH)} ${record.location.file}:${record.location.line}:${record.location.column} ${label} - ${record.reason}`;
 }
 
 function formatDiagnostic(record: DiagnosticRecord): string {
@@ -135,6 +169,7 @@ function describeFindingMatcherPrecision(matcher: BenchmarkFindingMatcher): stri
 function describeSkipMatcherPrecision(matcher: BenchmarkSkipMatcher): string | undefined {
   return matcher.id === undefined
     && matcher.name === undefined
+    && matcher.owner === undefined
     && matcher.reasonIncludes === undefined
     ? COARSE_MATCHER_NOTE
     : undefined;
@@ -146,44 +181,6 @@ function formatTargetStatus(target: AnalyzedBenchmarkTarget): string {
   }
 
   return target.exitCode === 0 ? "PASS" : "FAIL";
-}
-
-function gapPriorityRank(scope: BenchmarkGapPriorityScope): number {
-  switch (scope) {
-    case "accepted-finding-growth":
-    case "known-skip-growth":
-      return 0;
-    case "unexpected-finding":
-    case "unexpected-diagnostic":
-    case "unexpected-skip":
-      return 1;
-    case "accepted-finding":
-    case "known-skip":
-      return 2;
-    default:
-      return 3;
-  }
-}
-
-function formatGapPriorityScope(scope: BenchmarkGapPriorityScope): string {
-  switch (scope) {
-    case "accepted-finding":
-      return "accepted finding";
-    case "accepted-finding-growth":
-      return "accepted finding growth";
-    case "known-skip":
-      return "known skip";
-    case "known-skip-growth":
-      return "known skip growth";
-    case "unexpected-finding":
-      return "unexpected finding";
-    case "unexpected-diagnostic":
-      return "unexpected diagnostic";
-    case "unexpected-skip":
-      return "unexpected skip";
-    default:
-      return scope;
-  }
 }
 
 function collectWorkspaceGapPriority(targets: AnalyzedBenchmarkTarget[]): Array<BenchmarkGapPriorityEntry & { targetCount: number }> {
@@ -212,7 +209,7 @@ function collectWorkspaceGapPriority(targets: AnalyzedBenchmarkTarget[]): Array<
       targetCount: targetIds.size,
     }))
     .sort((left, right) => {
-      const rankDelta = gapPriorityRank(left.scope) - gapPriorityRank(right.scope);
+      const rankDelta = getBenchmarkGapPriorityRank(left.scope) - getBenchmarkGapPriorityRank(right.scope);
       if (rankDelta !== 0) {
         return rankDelta;
       }
@@ -301,6 +298,36 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
     `- skips: ${target.evaluation.unexpected.skips.length}`,
     `- diagnostics: ${target.evaluation.unexpected.diagnostics.length}`,
   ];
+
+  if (target.evaluation.trackingSafety) {
+    lines.push(
+      "",
+      "Tracking Upgrade Safety:",
+      `- passes: ${target.evaluation.trackingSafety.metrics.passes} (budget <= ${target.evaluation.trackingSafety.budgets.maxPasses})`,
+      `- binding churn: ${target.evaluation.trackingSafety.metrics.bindingChanges} (budget <= ${target.evaluation.trackingSafety.budgets.maxBindingChanges})`,
+      `- return-summary churn: ${target.evaluation.trackingSafety.metrics.returnSummaryChanges} (budget <= ${target.evaluation.trackingSafety.budgets.maxReturnSummaryChanges})`,
+      `- elapsed ms: ${target.evaluation.trackingSafety.metrics.elapsedMs} (info <= ${target.evaluation.trackingSafety.budgets.maxElapsedMs})`,
+      `- convergence warned: ${target.evaluation.trackingSafety.metrics.warned ? "yes" : "no"}`,
+    );
+
+    if (target.evaluation.trackingSafety.enforced.violations.length > 0) {
+      lines.push(
+        "",
+        "Tracking Safety Regressions:",
+        ...target.evaluation.trackingSafety.enforced.violations.map((violation) =>
+          `- ${formatTrackingSafetyMetric(violation.metric)}: actual ${violation.actual}, budget ${violation.budget}`),
+      );
+    }
+
+    if (target.evaluation.trackingSafety.informational.advisories.length > 0) {
+      lines.push(
+        "",
+        "Tracking Safety Advisories:",
+        ...target.evaluation.trackingSafety.informational.advisories.map((advisory) =>
+          `- ${formatTrackingSafetyMetric(advisory.metric)}: actual ${advisory.actual}, budget ${advisory.budget}`),
+      );
+    }
+  }
 
   lines.push(
     ...renderTopCounts(
@@ -463,9 +490,9 @@ function renderAnalyzedTarget(target: AnalyzedBenchmarkTarget): string {
 }
 
 export function renderBenchmarkReport(result: BenchmarkWorkspaceRun): string {
-  const missingTargets = result.targets.filter((target) => target.state === "missing-corpus");
-  const invalidTargets = result.targets.filter((target) => target.state === "invalid-target");
-  const analyzedTargets = result.targets.filter((target) => target.state === "analyzed");
+  const missingTargets = result.targets.filter((target) => target.state === BENCHMARK_TARGET_STATE.missingCorpus);
+  const invalidTargets = result.targets.filter((target) => target.state === BENCHMARK_TARGET_STATE.invalidTarget);
+  const analyzedTargets = result.targets.filter((target) => target.state === BENCHMARK_TARGET_STATE.analyzed);
 
   const lines = [
     "rogue-lint benchmark",
@@ -495,6 +522,12 @@ export function renderBenchmarkReport(result: BenchmarkWorkspaceRun): string {
   const failedTargets = analyzedTargets.filter((target) => target.exitCode === 1).length + invalidTargets.length;
   lines.push(`Failed targets: ${failedTargets}`);
   lines.push(`Passed targets: ${analyzedTargets.length - analyzedTargets.filter((target) => target.exitCode === 1).length}`);
+  lines.push(
+    `Tracking safety regressions: ${analyzedTargets.filter((target) => (target.evaluation.trackingSafety?.enforced.violations.length ?? 0) > 0).length}`,
+  );
+  lines.push(
+    `Tracking safety advisories: ${analyzedTargets.filter((target) => (target.evaluation.trackingSafety?.informational.advisories.length ?? 0) > 0).length}`,
+  );
 
   const capabilityWorklist = collectWorkspaceCapabilityPriority(analyzedTargets);
   if (capabilityWorklist.length > 0) {
@@ -520,7 +553,7 @@ export function renderBenchmarkReport(result: BenchmarkWorkspaceRun): string {
       "See per-target Accepted Findings, Known Skips, and Unexpected sections below for raw records.",
       `Coarse accepted and known matchers are labeled as '${COARSE_MATCHER_NOTE}'.`,
       ...worklist.map((entry) =>
-        `- ${formatGapPriorityScope(entry.scope)} ${entry.label}: ${entry.count} `
+        `- ${formatBenchmarkGapPriorityScope(entry.scope)} ${entry.label}: ${entry.count} `
         + `record${entry.count === 1 ? "" : "s"} across ${entry.targetCount} `
         + `target${entry.targetCount === 1 ? "" : "s"}`),
     );

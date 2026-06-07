@@ -2,18 +2,15 @@ import ts from "typescript";
 
 import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { summarizeNonDeclarationReferences } from "../../references.js";
-import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName, hasModifier } from "../../compiler/ast-utils.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import {
-  addAudit,
-  addFinding,
-  registerCapabilityObligation,
-  resolveCapabilityObligation,
-  type AnalysisState,
-} from "../analysis-state.js";
+import { type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import { buildPublicSurfaceAudit, createReferenceKey } from "./support.js";
+import { createProviderObligationRecordId } from "../capabilities/types.js";
+import { ANALYSIS_CAPABILITY_ID, ANALYSIS_CAPABILITY_OBLIGATION_FAMILY, ANALYSIS_CAPABILITY_OUTCOME } from "../capabilities/vocabulary.js";
+import { isPreserved } from "./preservation-gate.js";
+import { createReferenceKey } from "./support.js";
 
 /**
  * Reports internal interface members that have no proven non-declaration references.
@@ -30,10 +27,13 @@ export function analyzeInterfaceMembers(
       continue;
     }
 
+    const findings = state.findings;
+    const capabilityObligations = state.capabilityObligations;
+
     const visit = (node: ts.Node): void => {
       if (ts.isInterfaceDeclaration(node) && node.name) {
         const isExported = hasModifier(node, ts.SyntaxKind.ExportKeyword);
-        const interfaceEntity = makeEntity(project.rootPath, "type", sourceFile, node.name, node.name.text);
+        const interfaceEntity = makeEntity(project.rootPath, ENTITY_KIND.type, sourceFile, node.name, node.name.text);
         const isPublicSurface = project.config.value.mode === "library" && artifacts.publicSurfaceIds.has(interfaceEntity.id);
 
         for (const member of node.members) {
@@ -56,36 +56,33 @@ export function analyzeInterfaceMembers(
             node.name.text,
           );
 
+          const obligationId = createProviderObligationRecordId(
+            ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
+            entity,
+            ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
+          );
+
           if (isExported) {
-            registerCapabilityObligation(
-              state,
-              "internal-exported-interface-member",
-              entity,
-              "library-public-surface-aliasing",
-            );
+            if (!capabilityObligations.has(obligationId)) {
+              capabilityObligations.set(obligationId, {
+                id: obligationId,
+                family: ANALYSIS_CAPABILITY_OBLIGATION_FAMILY.internalExportedInterfaceMember,
+                capabilityId: ANALYSIS_CAPABILITY_ID.libraryPublicSurfaceAliasing,
+                entity,
+              });
+            }
           }
 
-          if (isPublicSurface) {
-            addAudit(state.kept, buildPublicSurfaceAudit(entity));
-            resolveCapabilityObligation(
-              state,
-              "internal-exported-interface-member",
-              entity,
-              "kept",
-              "library-public-surface-aliasing",
-            );
-            continue;
-          }
-
-          const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
-          if (addAudit(state.kept, suppression)) {
-            resolveCapabilityObligation(
-              state,
-              "internal-exported-interface-member",
-              entity,
-              "kept",
-              "library-public-surface-aliasing",
-            );
+          if (isPreserved(project, state, suppressionContext, entity, {
+            forcePublicSurface: isPublicSurface,
+            declarationNode: member,
+            onKept: () => {
+              const obligation = capabilityObligations.get(obligationId);
+              if (obligation) {
+                obligation.outcome = ANALYSIS_CAPABILITY_OUTCOME.kept;
+              }
+            },
+          })) {
             continue;
           }
 
@@ -107,34 +104,29 @@ export function analyzeInterfaceMembers(
             : referenceSummary.references > 0;
 
           if (hasLiveReferences) {
-            resolveCapabilityObligation(
-              state,
-              "internal-exported-interface-member",
-              entity,
-              "live",
-              "library-public-surface-aliasing",
-            );
+            const obligation = capabilityObligations.get(obligationId);
+            if (obligation) {
+              obligation.outcome = ANALYSIS_CAPABILITY_OUTCOME.live;
+            }
             continue;
           }
 
-          addFinding(
-            state,
+          findings.push({
+            id: entity.id,
+            kind: "unused-interface-member",
             entity,
-            "unused-interface-member",
-            isExported && referenceSummary.references > 0
+            reason: isExported && referenceSummary.references > 0
               ? "eligible exported interface member is only referenced by non-runtime consumers"
               : isExported
                 ? "eligible exported interface member has no trusted runtime consumers"
                 : "eligible interface member has no non-declaration references",
-            `Unused interface member ${node.name.text}.${memberName}`,
-          );
-          resolveCapabilityObligation(
-            state,
-            "internal-exported-interface-member",
-            entity,
-            "finding",
-            "library-public-surface-aliasing",
-          );
+            message: `Unused interface member ${node.name.text}.${memberName}`,
+            suggestion: "remove",
+          });
+          const obligation = capabilityObligations.get(obligationId);
+          if (obligation) {
+            obligation.outcome = ANALYSIS_CAPABILITY_OUTCOME.finding;
+          }
         }
       }
 

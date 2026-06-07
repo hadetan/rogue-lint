@@ -8,6 +8,12 @@ import type {
   TrackedCollectionState,
   TrackedObject,
 } from "../../types.js";
+import {
+  TRACKING_ACCESS_KIND,
+  TRACKING_HELPER_PARAMETER_EFFECT_KIND,
+  TRACKING_RETURN_SUMMARY_KIND,
+  TRACKING_VALUE_FATE,
+} from "./vocabulary.js";
 
 /**
  * Shared local model types and constant tables for the exact tracking kernel.
@@ -16,20 +22,12 @@ import type {
  * helper summary inference, and stage-specific tracking analysis.
  */
 
-export type TrackedValueFate =
-  | "observed"
-  | "inserted-by-reference"
-  | "shallow-cloned"
-  | "deep-cloned"
-  | "resource-transferred"
-  | "escaped-opaquely"
-  | "overwritten"
-  | "invalidated";
+export type TrackedValueFate = (typeof TRACKING_VALUE_FATE)[keyof typeof TRACKING_VALUE_FATE];
 
 export interface ValueAccess {
   entity: EntityRecord;
   position: number;
-  kind: "write" | "read" | "read-write" | "escape";
+  kind: (typeof TRACKING_ACCESS_KIND)[keyof typeof TRACKING_ACCESS_KIND];
   mayObservePreviousValue: boolean;
   nestedWrite: boolean;
   controlFlowDepth: number;
@@ -62,10 +60,10 @@ export class TrackedObjectBindingRecord implements TrackedObjectBinding {
 }
 
 export type CallableReturnSummary =
-  | { kind: "value" }
-  | { kind: "structured"; binding: TrackedObjectBinding }
-  | { kind: "returned-alias"; binding: TrackedObjectBinding }
-  | { kind: "opaque" };
+  | { kind: typeof TRACKING_RETURN_SUMMARY_KIND.value }
+  | { kind: typeof TRACKING_RETURN_SUMMARY_KIND.structured; binding: TrackedObjectBinding }
+  | { kind: typeof TRACKING_RETURN_SUMMARY_KIND.returnedAlias; binding: TrackedObjectBinding }
+  | { kind: typeof TRACKING_RETURN_SUMMARY_KIND.opaque };
 
 export interface ForwardedParameterBinding {
   paramSymbolKey: string;
@@ -128,12 +126,7 @@ export interface ResolvedProjectionAccess {
   boundaryReason?: string;
 }
 
-export type HelperParameterEffectKind =
-  | "read"
-  | "mutation"
-  | "returned-alias"
-  | "retained-binding"
-  | "opaque-escape";
+type HelperParameterEffectKind = (typeof TRACKING_HELPER_PARAMETER_EFFECT_KIND)[keyof typeof TRACKING_HELPER_PARAMETER_EFFECT_KIND];
 
 export interface HelperParameterSummary {
   effectKinds: Set<HelperParameterEffectKind>;
@@ -156,7 +149,7 @@ export class CollectionInfoRecord implements TrackedCollectionInfo {
   readonly childPaths: PathSegment[][] = [];
 
   constructor(
-    public kind: "object" | "array",
+    public kind: TrackedCollectionInfo["kind"],
     public path: PathSegment[],
     public arrayLength?: number,
   ) {}

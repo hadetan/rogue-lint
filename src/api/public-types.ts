@@ -1,3 +1,7 @@
+import { ENTITY_KIND } from "../shared/entity-vocabulary.js";
+import { FINDING_KIND } from "../shared/finding-vocabulary.js";
+import { SKIP_CATEGORY } from "../shared/skip-category-vocabulary.js";
+
 /**
  * Controls whether analysis preserves only runtime reachability or also the package's public surface.
  */
@@ -6,43 +10,12 @@ export type AnalysisMode = "application" | "library";
 /**
  * Canonical finding categories emitted by rogue-lint.
  */
-export type FindingKind =
-  | "unused-file"
-  | "unused-export"
-  | "unused-import"
-  | "unused-local"
-  | "unused-type"
-  | "unused-enum-member"
-  | "unused-class-member"
-  | "unused-array-element"
-  | "unused-object-key"
-  | "unused-nested-path"
-  | "unused-interface-member"
-  | "use-before-init"
-  | "invalidated-read"
-  | "stale-read-after-mutation"
-  | "dead-store"
-  | "unused-value"
-  | "write-only-state";
+export type FindingKind = (typeof FINDING_KIND)[keyof typeof FINDING_KIND];
 
 /**
  * Entity categories used to identify findings, kept audits, and skipped audits.
  */
-export type EntityKind =
-  | "file"
-  | "export"
-  | "import"
-  | "local"
-  | "type"
-  | "enum-member"
-  | "class-member"
-  | "array-element"
-  | "collection-boundary"
-  | "interface-member"
-  | "object-key"
-  | "nested-path"
-  | "assignment"
-  | "expression";
+export type EntityKind = (typeof ENTITY_KIND)[keyof typeof ENTITY_KIND];
 
 /**
  * Output formats supported by the CLI renderer and API consumers.
@@ -52,36 +25,30 @@ export type ReportFormat = "json" | "text";
 /**
  * Conservative-boundary categories recorded when exact reasoning has to stop.
  */
-export type SkipCategory =
-  | "decorator-visibility"
-  | "computed-member-name"
-  | "computed-property-name"
-  | "computed-property-access"
-  | "dynamic-array-index"
-  | "array-at-call"
-  | "array-append-mutation"
-  | "array-mutation"
-  | "array-truncate-mutation"
-  | "array-replacement-mutation"
-  | "array-reorder-mutation"
-  | "array-rebuild-mutation"
-  | "array-opaque-mutation"
-  | "array-callback-escape"
-  | "object-spread"
-  | "array-spread"
-  | "returned-object"
-  | "reflective-enumeration"
-  | "serialization"
-  | "opaque-object-call"
-  | "spread-escape"
-  | "object-rest"
-  | "array-rest";
+export type SkipCategory = (typeof SKIP_CATEGORY)[keyof typeof SKIP_CATEGORY];
 
 interface KeepRules {
   files?: string[];
   symbols?: string[];
   members?: string[];
   entityIds?: string[];
+}
+
+/**
+ * Declares an internal-namespace method carrier pattern that the tracking engine should treat as a value-preserving call boundary.
+ *
+ * A carrier call has the shape `<receiver>.<namespace>.<method>(payload)`, where the call is understood to *carry* the
+ * payload through unchanged. Listing such patterns here lets the engine resolve callable candidates, preserve exact
+ * payload bindings across the carrier hop, and recognize closure-captured callable assignments without baking any
+ * specific runtime (e.g., a particular validation library) into engine code.
+ */
+export interface InternalNamespaceMethodCarrier {
+  /** Property name of the internal namespace on the receiver. */
+  namespace: string;
+  /** Method names on the namespace that are interchangeable carriers. */
+  carrierMethods: string[];
+  /** Optional path on the receiver that holds the carrier definition object. */
+  definitionPath?: string[];
 }
 
 /**
@@ -102,6 +69,7 @@ export interface RogueLintConfig {
     enabled?: boolean;
     maxPathDepth?: number;
   };
+  internalNamespaceMethodCarriers?: InternalNamespaceMethodCarrier[];
 }
 
 /**
@@ -162,6 +130,7 @@ export interface AuditRecord {
   id: string;
   kind: EntityKind;
   name: string;
+  owner?: string;
   reason: string;
   category?: SkipCategory;
   location?: Location;

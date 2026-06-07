@@ -1,19 +1,21 @@
 import type {
   PathSegment,
 } from "../../types.js";
+import { PATH_SEGMENT_KIND } from "../../shared/path-vocabulary.js";
 import type { TrackedObjectBinding } from "./model.js";
 import { getCollectionInfo } from "./state.js";
+import { TRACKING_COLLECTION_KIND } from "./vocabulary.js";
 
 /**
  * Returns the exact property segments that remain visible through a resolved object spread binding.
  */
-export function getResolvedSpreadPropertySegments(binding: TrackedObjectBinding): PathSegment[] | undefined {
+export function getResolvedSpreadPropertyNames(binding: TrackedObjectBinding): string[] | undefined {
   const collection = getCollectionInfo(binding.trackedObject, binding.prefix);
-  if (!collection || collection.kind !== "object") {
+  if (!collection || collection.kind !== TRACKING_COLLECTION_KIND.object) {
     return undefined;
   }
 
-  const propertySegments: PathSegment[] = [];
+  const names: string[] = [];
   const seen = new Set<string>();
 
   for (const childPath of collection.childPaths) {
@@ -22,18 +24,39 @@ export function getResolvedSpreadPropertySegments(binding: TrackedObjectBinding)
     }
 
     const segment = childPath[binding.prefix.length];
-    if (!segment || segment.kind !== "property") {
+    if (!segment || segment.kind !== PATH_SEGMENT_KIND.property) {
       return undefined;
     }
 
-    const key = `${segment.kind}:${segment.value}`;
-    if (seen.has(key)) {
+    if (seen.has(segment.value)) {
       continue;
     }
 
-    seen.add(key);
-    propertySegments.push(segment);
+    seen.add(segment.value);
+    names.push(segment.value);
   }
 
-  return propertySegments.length > 0 ? propertySegments : undefined;
+  return names.length > 0 ? names : undefined;
+}
+
+/**
+ * Returns the exact property segments that remain visible through a resolved object spread binding.
+ */
+export function visitResolvedSpreadPropertySegments(
+  binding: TrackedObjectBinding,
+  visit: (segment: PathSegment) => void,
+): boolean {
+  const propertyNames = getResolvedSpreadPropertyNames(binding);
+  if (!propertyNames) {
+    return false;
+  }
+
+  for (const propertyName of propertyNames) {
+    visit({
+      kind: PATH_SEGMENT_KIND.property,
+      value: propertyName,
+    });
+  }
+
+  return true;
 }

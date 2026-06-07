@@ -44,7 +44,9 @@ function getStaticStringLiteralValue(expression: ts.Expression): string | undefi
 function collectStringLiteralCandidates(expression: ts.Expression): string[] {
   const node = unwrapExpression(expression);
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-    return [node.text];
+    const candidates = new Set<string>();
+    candidates.add(node.text);
+    return Array.from(candidates);
   }
 
   if (ts.isBinaryExpression(node)) {

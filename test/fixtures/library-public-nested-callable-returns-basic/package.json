@@ -1,0 +1,6 @@
+{
+  "name": "library-public-nested-callable-returns-basic",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

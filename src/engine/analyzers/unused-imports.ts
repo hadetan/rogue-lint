@@ -1,11 +1,12 @@
 import ts from "typescript";
 
 import type { ProjectContext, SuppressionContext } from "../../types.js";
-import { getSymbolKey } from "../../compiler/ast-utils.js";
-import { getSuppressionAudit } from "../../suppressions.js";
+import { summarizeNonDeclarationReferences } from "../../references.js";
+import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
+import { type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { isPreserved } from "./preservation-gate.js";
 import { createReferenceKey } from "./support.js";
 
 function hasLocalImportUsage(
@@ -13,32 +14,13 @@ function hasLocalImportUsage(
   sourceFile: ts.SourceFile,
   nameNode: ts.Identifier,
 ): boolean {
-  const bindingSymbol = project.checker.getSymbolAtLocation(nameNode);
-  if (!bindingSymbol) {
-    return false;
-  }
-
-  const bindingSymbolKey = getSymbolKey(bindingSymbol);
-  let used = false;
-
-  const visit = (node: ts.Node): void => {
-    if (used) {
-      return;
-    }
-
-    if (ts.isIdentifier(node) && node !== nameNode) {
-      const symbol = project.checker.getSymbolAtLocation(node);
-      if (symbol && getSymbolKey(symbol) === bindingSymbolKey) {
-        used = true;
-        return;
-      }
-    }
-
-    ts.forEachChild(node, visit);
-  };
-
-  ts.forEachChild(sourceFile, visit);
-  return used;
+  return summarizeNonDeclarationReferences(
+    project.languageService,
+    sourceFile,
+    nameNode,
+    project.analyzableFiles,
+    project.rootPath,
+  ).sameFileReferences > 0;
 }
 
 function analyzeImportBinding(
@@ -50,9 +32,8 @@ function analyzeImportBinding(
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): void {
-  const entity = makeEntity(project.rootPath, "import", sourceFile, nameNode, nameNode.text);
-  const suppression = getSuppressionAudit(project, suppressionContext, entity, declarationNode);
-  if (addAudit(state.kept, suppression)) {
+  const entity = makeEntity(project.rootPath, ENTITY_KIND.import, sourceFile, nameNode, nameNode.text);
+  if (isPreserved(project, state, suppressionContext, entity, { declarationNode })) {
     return;
   }
 
@@ -67,13 +48,14 @@ function analyzeImportBinding(
     return;
   }
 
-  addFinding(
-    state,
+  state.findings.push({
+    id: entity.id,
+    kind: "unused-import",
     entity,
-    "unused-import",
-    "imported binding has no non-declaration references",
-    `Unused import ${nameNode.text}`,
-  );
+    reason: "imported binding has no non-declaration references",
+    message: `Unused import ${nameNode.text}`,
+    suggestion: "remove",
+  });
 }
 
 export function analyzeUnusedImports(

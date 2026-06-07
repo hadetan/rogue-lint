@@ -15,6 +15,17 @@ import type { TrackedObjectBinding } from "./model.js";
  * stage code and graph construction share the same notion of binding equivalence.
  */
 
+/**
+ * Maximum allowed depth for a tracked-binding prefix before the binding is widened to "untracked".
+ *
+ * Path extension (extendTrackedBinding) has no natural fixed point: any code pattern that
+ * re-binds a symbol to itself extended by additional segments produces an infinite ascending
+ * chain in the binding lattice (A -> A.x -> A.x.x -> ...). Capping the depth turns the lattice
+ * into one of bounded height so the convergence loop is guaranteed to terminate. The cap is
+ * deliberately deeper than typical legitimate paths observed in fixtures.
+ */
+const MAX_BINDING_PREFIX_DEPTH = 8;
+
 export function sameTrackedBinding(left: TrackedObjectBinding, right: TrackedObjectBinding): boolean {
   return left.trackedObject.id === right.trackedObject.id && samePath(left.prefix, right.prefix);
 }
@@ -29,22 +40,51 @@ export function extendTrackedBinding(
   };
 }
 
-export function sameTrackedBindingMap(
+function isBindingPrefixOverDepth(binding: TrackedObjectBinding): boolean {
+  return binding.prefix.length > MAX_BINDING_PREFIX_DEPTH;
+}
+
+function describeBindingDepthWidening(binding: TrackedObjectBinding): string {
+  return `binding prefix depth ${binding.prefix.length} exceeded cap ${MAX_BINDING_PREFIX_DEPTH}; widened to untracked`;
+}
+
+export interface TrackingMapDiff {
+  changedCount: number;
+  sampleKeys: string[];
+}
+
+export function diffTrackedBindingMaps(
   left: Map<string, TrackedObjectBinding>,
   right: Map<string, TrackedObjectBinding>,
-): boolean {
-  if (left.size !== right.size) {
-    return false;
-  }
+  sampleLimit: number,
+  heartbeat?: () => void,
+): TrackingMapDiff {
+  let changedCount = 0;
+  const sampleKeys: string[] = [];
+  const keys = new Set<string>([...left.keys(), ...right.keys()]);
+  let heartbeatCounter = 0;
 
-  for (const [symbolKey, binding] of left) {
-    const other = right.get(symbolKey);
-    if (!other || !sameTrackedBinding(binding, other)) {
-      return false;
+  for (const key of keys) {
+    heartbeatCounter += 1;
+    if (heartbeatCounter >= 2048) {
+      heartbeatCounter = 0;
+      heartbeat?.();
+    }
+
+    const current = left.get(key);
+    const next = right.get(key);
+    if (!current || !next || !sameTrackedBinding(current, next)) {
+      changedCount += 1;
+      if (sampleKeys.length < sampleLimit) {
+        sampleKeys.push(key);
+      }
     }
   }
 
-  return true;
+  return {
+    changedCount,
+    sampleKeys,
+  };
 }
 
 export function mergeTrackedBinding(
@@ -52,8 +92,16 @@ export function mergeTrackedBinding(
   conflictedSymbolIds: Set<string>,
   symbolKey: string,
   binding: TrackedObjectBinding,
+  onWidenedToTop?: (symbolKey: string, reason: string) => void,
 ): void {
   if (conflictedSymbolIds.has(symbolKey)) {
+    return;
+  }
+
+  if (isBindingPrefixOverDepth(binding)) {
+    trackedBySymbolId.delete(symbolKey);
+    conflictedSymbolIds.add(symbolKey);
+    onWidenedToTop?.(symbolKey, describeBindingDepthWidening(binding));
     return;
   }
 

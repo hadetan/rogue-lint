@@ -1,19 +1,8 @@
 import type ts from "typescript";
 
-import type {
-  PathSegment,
-  ProjectContext,
-  SuppressionContext,
-  TrackedObject,
-} from "../../../types.js";
-import type { AnalysisState } from "../../analysis-state.js";
-import type {
-  ArrayProjectionBinding,
-  CallableReturnSummary,
-  ExactAppendSlotPlan,
-  HelperParameterSummary,
-  TrackedObjectBinding,
-} from "../model.js";
+import type { PathSegment, ProjectContext, SuppressionContext, TrackedObject } from "../../../types.js";
+import type { ArrayProjectionBinding, CallableReturnSummary, ExactAppendSlotPlan, HelperParameterSummary, TrackedObjectBinding } from "../model.js";
+import type { TrackingAppendMethodName } from "../vocabulary.js";
 import type { ObjectPathOverlayState } from "./overlay.js";
 
 /**
@@ -30,7 +19,7 @@ export interface FiniteLookupCandidate {
 export interface HelperExactAppendPlan {
   call: ts.CallExpression;
   sourceFile: ts.SourceFile;
-  methodName: "push" | "unshift";
+  methodName: TrackingAppendMethodName;
   relativeCollectionPath: PathSegment[];
   slotPlans: ExactAppendSlotPlan[];
 }
@@ -45,11 +34,63 @@ export interface HelperProjectedUsagePlan {
 }
 
 /**
+ * Ordered bounded helper execution steps recorded for supported same-project helpers.
+ */
+export type BoundedHelperExecutionStep =
+  | {
+    kind: "projected-iteration-binding";
+    statement: ts.Statement;
+    relativeCollectionPath: PathSegment[];
+    elementSymbolKey: string;
+  }
+  | {
+    kind: "alias-write";
+    statement: ts.Statement;
+    targetSymbolKey: string;
+    sourceSymbolKey: string;
+    operator: "assign" | "coalesce-assign";
+  }
+  | {
+    kind: "exact-append-mutation";
+    call: ts.CallExpression;
+    sourceFile: ts.SourceFile;
+    methodName: TrackingAppendMethodName;
+    relativeCollectionPath: PathSegment[];
+    slotPlans: ExactAppendSlotPlan[];
+  }
+  | {
+    kind: "spread-materialization-prerequisite";
+    expression: ts.Expression;
+    sourceSymbolKey: string;
+  }
+  | {
+    kind: "returned-carrier-emission";
+    statement: ts.Statement;
+    sourceSymbolKey?: string;
+  };
+
+/**
+ * Bounded helper execution snapshot reused across object-path replay decisions.
+ */
+export interface BoundedHelperExecutionSnapshot {
+  exactReadPaths: PathSegment[][];
+  boundaryReason?: string;
+  steps: BoundedHelperExecutionStep[];
+}
+
+/**
  * Cached higher-order helper read summary reused across object-path visits.
  */
 export interface HigherOrderCallableReturnSummary {
   exactReadPaths: PathSegment[][];
   boundaryReason?: string;
+}
+
+export class HigherOrderCallableReturnSummaryState implements HigherOrderCallableReturnSummary {
+  constructor(
+    public exactReadPaths: PathSegment[][] = [],
+    public boundaryReason?: string,
+  ) {}
 }
 
 /**
@@ -67,6 +108,7 @@ export interface ObjectPathSourceFileContext {
   handledSpreadAppendStarts: Set<number>;
   parameterMeaningfulUse: Map<string, boolean | null>;
   parameterSummaryCache: Map<string, HelperParameterSummary | null>;
+  helperExecutionSnapshotCache: Map<string, BoundedHelperExecutionSnapshot | null>;
   helperExactAppendPlanCache: Map<string, HelperExactAppendPlan[] | null>;
   helperProjectedUsagePlanCache: Map<string, HelperProjectedUsagePlan[] | null>;
   higherOrderCallableReturnSummaryCache: Map<string, HigherOrderCallableReturnSummary | null>;
@@ -78,8 +120,8 @@ export interface ObjectPathSourceFileContext {
 export interface ObjectPathStageContext {
   project: ProjectContext;
   reachableFiles: Set<string>;
-  publicCallableIds: Set<string>;
-  state: AnalysisState;
+  publicSurfaceIds: Set<string>;
+  publiclyReachableCallableIds: Set<string>;
   suppressionContext: SuppressionContext;
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>;
   overlayState: ObjectPathOverlayState;

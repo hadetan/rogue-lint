@@ -1,6 +1,7 @@
 import ts from "typescript";
 
 import type { EntityKind, EntityRecord, FindingKind, Location } from "../types.js";
+import { getFindingKindForEntityKind } from "./finding-vocabulary.js";
 import { normalizeSlashes, toRelative } from "./path-utils.js";
 
 function createEntityId(
@@ -43,30 +44,5 @@ export function makeEntity(
 }
 
 export function kindToFinding(kind: EntityKind): FindingKind | undefined {
-  switch (kind) {
-    case "file":
-      return "unused-file";
-    case "export":
-      return "unused-export";
-    case "import":
-      return "unused-import";
-    case "local":
-      return "unused-local";
-    case "type":
-      return "unused-type";
-    case "enum-member":
-      return "unused-enum-member";
-    case "class-member":
-      return "unused-class-member";
-    case "array-element":
-      return "unused-array-element";
-    case "interface-member":
-      return "unused-interface-member";
-    case "object-key":
-      return "unused-object-key";
-    case "nested-path":
-      return "unused-nested-path";
-    default:
-      return undefined;
-  }
+  return getFindingKindForEntityKind(kind);
 }

@@ -11,13 +11,26 @@ The package keeps two thin entrypoints:
 
 Everything else should depend inward from those surfaces.
 
+## Prove-Or-Abstain Contract
+
+The engine's core invariant is **prove or abstain**: emit a `finding` only when the analyzer has bounded, syntactic justification; emit an explicit `skipped` entry everywhere else.
+
+The exact set of patterns for which the engine may emit findings is defined in [`src/engine/tracking/PERIMETER.md`](../src/engine/tracking/PERIMETER.md). That document is a binding constraint, not a guideline:
+
+- **Inside the perimeter** → engine may emit a `finding`.
+- **Outside the perimeter** → engine MUST emit `skipped` with a named category and reason.
+
+Silently omitting a `skipped` entry at a known boundary is a bug. Any expansion of the proof perimeter (promoting a skipped pattern to a finding) requires: a synthesized fixture, a bounded iteration proof, no new benchmark findings, and no corpus-specific branch conditions. See PERIMETER.md for the full gate.
+
 ## Maintainability Standards
 
 This repository uses owner-based organization instead of generic utility buckets.
 
 - Put shared helpers, constant tables, and support logic in the domain that owns their behavior.
-- Move repeated contract-bearing vocabulary such as skip reasons, capability labels, output labels, and supported method sets into focused owner modules instead of a repo-wide catch-all constants file.
-- Keep one-off local literals local when they are only meaningful beside one implementation detail.
+- Move repeated vocabulary such as skip reasons, capability labels, output labels, supported method sets, and other reused product-code strings into focused owner modules instead of a repo-wide catch-all constants file.
+- Keep a raw literal local only while it has a single use and is only meaningful beside one implementation detail.
+- Owner surfaces must be runtime-usable and single-sourced: derive related types, labels, predicates, and maps from one canonical literal source instead of re-spelling the raw value.
+- The first enforcement scope is managed product code under `src/**`; vendored, archived, generated, and fixture trees stay out of scope until a later change explicitly brings them under the contract.
 - Move shared types and interfaces into the smallest stable owning module, such as a domain `model`, `context`, or `contracts` file.
 - Keep stage entry modules orchestration-only or orchestration-mostly; behavior-heavy rules should live in focused sibling modules.
 - Rename files and symbols when the rename clarifies ownership, but avoid repo-wide naming churn that is disconnected from a real module-boundary improvement.
@@ -39,6 +52,8 @@ The initial vocabulary and type clusters to normalize are:
 - repeated tracking reason strings and method-name sets currently spread across `tracking/semantics.ts`, `tracking/object-paths/visitor.ts`, and nearby helpers
 - output-facing labels and grouped-rendering strings owned by `src/output/`
 - shared tracking types currently split across `tracking/model.ts`, `tracking/contracts.ts`, `tracking/object-paths/types.ts`, and focused stage helpers that still carry bounded planning shapes
+- benchmark states, gap scopes, and benchmark-owned labels currently repeated across `src/benchmark/`
+- capability ids, families, outcomes, and finding mappings currently repeated across `src/engine/capabilities/`, `src/shared/`, and public type surfaces
 
 ## Stable Facades During Refactors
 
