@@ -44,6 +44,7 @@ import type {
   TrackingStageArtifacts,
 } from "./contracts.js";
 import {
+  createConvergenceWarning,
   getTrackingDiagnosticFromError,
   OBJECT_PATHS_TRACKING_STAGE,
   TRACKING_CONTRACT_DIAGNOSTIC_CODE,
@@ -81,6 +82,8 @@ import {
  * This module defines which values remain exact-trackable and builds the tracked
  * object graph plus callable return summaries consumed by both heavy stages.
  */
+
+const RECOVER_OPAQUE_SUMMARY_DEFAULT_MAX_PASSES = 256;
 
 const HELPER_METADATA_ARRAY_ROOT_NAMES = new Set([
   "collectStringLiteralCandidates",
@@ -169,11 +172,16 @@ export function buildTrackedObjects(
   const reachableSourceFileCount = project.sourceFiles.filter((sourceFile) => reachableFiles.has(sourceFile.fileName)).length;
   const wideningSampleLimit = Math.max(1, options?.churnSampleLimit ?? 5);
   const wideningSummary = {
+    bindingChanges: 0,
     returnSummaryChanges: 0,
     reasons: {
       bindings: [] as string[],
       returnSummaries: [] as string[],
     },
+  };
+  const recordBindingWidening = (symbolKey: string, reason: string): void => {
+    wideningSummary.bindingChanges += 1;
+    recordWideningReason(wideningSummary.reasons.bindings, `${symbolKey}: ${reason}`);
   };
   const helperMetadataArrayRoleCache = new Map<string, TrackedObject[typeof _TRACKED_OBJECT_STRUCTURAL_ROLE_FIELD] | null>();
 
@@ -281,9 +289,42 @@ export function buildTrackedObjects(
     return stabilized;
   };
 
-  const recoverOpaqueFunctionReturnSummaries = (): void => {
+  const recoverOpaqueFunctionReturnSummaries = (): TrackingContractDiagnostic[] => {
+    const recoveryDiagnostics: TrackingContractDiagnostic[] = [];
+    const maxPasses = Math.max(1, options?.maxPasses ?? RECOVER_OPAQUE_SUMMARY_DEFAULT_MAX_PASSES);
+    const passBudgetMs = options?.maxPassElapsedMs;
+
+    const commitRecovered = (recoveredSummaries: ReadonlyMap<string, CallableReturnSummary>): void => {
+      functionReturnSummaries.clear();
+      recoveredSummaries.forEach((summary, symbolKey) => {
+        functionReturnSummaries.set(symbolKey, summary);
+      });
+    };
+
+    const countOpaqueSummaries = (summaries: ReadonlyMap<string, CallableReturnSummary>): number => {
+      let count = 0;
+      for (const summary of summaries.values()) {
+        if (summary.kind === TRACKING_RETURN_SUMMARY_KIND.opaque) {
+          count += 1;
+        }
+      }
+      return count;
+    };
+
+    let pass = 0;
     while (true) {
+      pass += 1;
+      if (pass > maxPasses) {
+        recoveryDiagnostics.push(createConvergenceWarning(
+          `opaque return-summary recovery did not stabilize within ${maxPasses} passes; ${countOpaqueSummaries(functionReturnSummaries)} callable return summaries remain opaque`,
+          { pass: maxPasses },
+        ));
+        return recoveryDiagnostics;
+      }
+
+      const passStartedAt = Date.now();
       let changed = false;
+      let exceededBudget = false;
       const recoveredSummaries = new Map(functionReturnSummaries);
 
       for (const sourceFile of project.sourceFiles) {
@@ -315,16 +356,29 @@ export function buildTrackedObjects(
         };
 
         ts.forEachChild(sourceFile, visit);
+
+        if (passBudgetMs !== undefined && Date.now() - passStartedAt > passBudgetMs) {
+          exceededBudget = true;
+          break;
+        }
+      }
+
+      if (exceededBudget) {
+        if (changed) {
+          commitRecovered(recoveredSummaries);
+        }
+        recoveryDiagnostics.push(createConvergenceWarning(
+          `opaque return-summary recovery pass ${pass} exceeded ${passBudgetMs}ms elapsed budget; ${countOpaqueSummaries(functionReturnSummaries)} callable return summaries remain opaque`,
+          { pass, elapsedMs: Date.now() - passStartedAt },
+        ));
+        return recoveryDiagnostics;
       }
 
       if (!changed) {
-        return;
+        return recoveryDiagnostics;
       }
 
-      functionReturnSummaries.clear();
-      recoveredSummaries.forEach((summary, symbolKey) => {
-        functionReturnSummaries.set(symbolKey, summary);
-      });
+      commitRecovered(recoveredSummaries);
     }
   };
 
@@ -483,7 +537,7 @@ export function buildTrackedObjects(
                   returnedAliasLiteral ?? node.name,
                 );
 
-                mergeTrackedBinding(nextTrackedBySymbolId, conflictedTrackedSymbolIds, symbolKey, binding);
+                mergeTrackedBinding(nextTrackedBySymbolId, conflictedTrackedSymbolIds, symbolKey, binding, recordBindingWidening);
               } else {
                 const resolved = resolveTrackedObjectAccess(
                   project,
@@ -498,6 +552,7 @@ export function buildTrackedObjects(
                     conflictedTrackedSymbolIds,
                     getCanonicalSymbolKey(project, symbol),
                     extendTrackedBinding(resolved.binding, resolved.segments),
+                    recordBindingWidening,
                   );
                 }
               }
@@ -524,6 +579,7 @@ export function buildTrackedObjects(
                   conflictedTrackedSymbolIds,
                   getGlobalThisBindingKey(globalThisProperty),
                   extendTrackedBinding(resolved.binding, resolved.segments),
+                  recordBindingWidening,
                 );
               } else if (ts.isIdentifier(node.left)) {
                 const target = project.checker.getSymbolAtLocation(node.left);
@@ -533,6 +589,7 @@ export function buildTrackedObjects(
                     conflictedTrackedSymbolIds,
                     getCanonicalSymbolKey(project, target),
                     extendTrackedBinding(resolved.binding, resolved.segments),
+                    recordBindingWidening,
                   );
                 }
               } else if (
@@ -547,6 +604,7 @@ export function buildTrackedObjects(
                     conflictedTrackedSymbolIds,
                     slotKey,
                     extendTrackedBinding(resolved.binding, resolved.segments),
+                    recordBindingWidening,
                   );
                 }
               }
@@ -591,6 +649,7 @@ export function buildTrackedObjects(
                     conflictedTrackedSymbolIds,
                     symbolKey,
                     binding,
+                    recordBindingWidening,
                   );
                 });
               }
@@ -615,6 +674,7 @@ export function buildTrackedObjects(
                     conflictedTrackedSymbolIds,
                     slotKey,
                     extendTrackedBinding(resolved.binding, resolved.segments),
+                    recordBindingWidening,
                   );
                 }
               }
@@ -631,6 +691,7 @@ export function buildTrackedObjects(
                   conflictedTrackedSymbolIds,
                   forwarded.paramSymbolKey,
                   forwarded.binding,
+                  recordBindingWidening,
                 );
               }
             }
@@ -725,7 +786,7 @@ export function buildTrackedObjects(
     }
   })();
 
-  recoverOpaqueFunctionReturnSummaries();
+  const recoveryDiagnostics = recoverOpaqueFunctionReturnSummaries();
 
   const runtimeSummary: MutableTrackingRuntimeSummary = {
     seed: {
@@ -745,7 +806,7 @@ export function buildTrackedObjects(
         returnSummaryChangedPasses: convergenceResult.churn.returnSummaryChangedPasses,
       },
       widening: {
-        bindingChanges: convergenceResult.widening.bindingChanges,
+        bindingChanges: convergenceResult.widening.bindingChanges + wideningSummary.bindingChanges,
         returnSummaryChanges: convergenceResult.widening.returnSummaryChanges + wideningSummary.returnSummaryChanges,
         reasons: {
           bindings: [...wideningSummary.reasons.bindings],
@@ -775,7 +836,10 @@ export function buildTrackedObjects(
     },
   };
 
-  const diagnostics: TrackingContractDiagnostic[] = convergenceResult.diagnostics.map(attachTrackingGraphBuildStage);
+  const diagnostics: TrackingContractDiagnostic[] = [
+    ...convergenceResult.diagnostics.map(attachTrackingGraphBuildStage),
+    ...recoveryDiagnostics.map(attachTrackingGraphBuildStage),
+  ];
 
   const observeTrackingSnapshotShape = (currentSnapshot: MutableTrackingSnapshot): void => {
     void currentSnapshot.sharedFacts.bindings.owner;

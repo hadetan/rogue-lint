@@ -65,7 +65,8 @@ Current defaults:
   "objectAnalysis": {
     "enabled": true,
     "maxPathDepth": 5
-  }
+  },
+  "internalNamespaceMethodCarriers": []
 }
 ```
 
@@ -272,6 +273,34 @@ Current fields:
 `enabled` toggles exact object and array path tracking.
 
 `maxPathDepth` limits how far nested path materialization goes for tracked object and array structures. The default is `5`.
+
+## `internalNamespaceMethodCarriers`
+
+Declares value-preserving call boundaries of the shape `<receiver>.<namespace>.<method>(payload)`, where the call is understood to *carry* the payload through unchanged.
+
+The default is the empty list — no namespaces are treated as carriers unless explicitly declared. Engine code contains no built-in carrier patterns; every carrier rule is sourced from this config.
+
+Each entry has:
+
+- `namespace` — property name of the internal namespace on the receiver (required)
+- `carrierMethods` — method names on the namespace that are interchangeable carriers; calls to any of these are treated as payload-preserving, and assignments to one are recognized as aliases of the others (required, may be empty)
+- `definitionPath` — optional path on the receiver that holds the carrier definition object, used to bind a callback's `def`-style parameter to that path on the receiver
+
+Example:
+
+```json
+{
+  "internalNamespaceMethodCarriers": [
+    {
+      "namespace": "_zod",
+      "carrierMethods": ["run", "parse"],
+      "definitionPath": ["_zod", "def"]
+    }
+  ]
+}
+```
+
+With this rule, the engine treats `schema._zod.run(payload)` and `schema._zod.parse(payload)` as value-preserving, recognizes closure-captured assignments like `inst._zod.run = (payload, ctx) => inst._zod.parse(payload, ctx)`, and binds the second parameter of a carrier initializer to `inst._zod.def`.
 
 ## Exit Codes
 

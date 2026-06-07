@@ -1,11 +1,10 @@
 import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { summarizeNonDeclarationReferences } from "../../references.js";
-import { getSuppressionAudit } from "../../suppressions.js";
 import { kindToFinding } from "../../shared/entity-utils.js";
-import { addAudit, addFinding, type AnalysisState } from "../analysis-state.js";
+import { addFinding, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { isPreserved } from "./preservation-gate.js";
 import {
-  buildPublicSurfaceAudit,
   collectExportCandidates,
   createReferenceKey,
 } from "./support.js";
@@ -43,11 +42,10 @@ export function analyzeUnusedExports(
         continue;
       }
 
-      const keepReason = artifacts.publicSurfaceIds.has(candidate.entity.id)
-        ? buildPublicSurfaceAudit(candidate.entity)
-        : getSuppressionAudit(project, suppressionContext, candidate.entity, candidate.node);
-
-      if (addAudit(state.kept, keepReason)) {
+      if (isPreserved(project, state, suppressionContext, candidate.entity, {
+        publicSurfaceIds: artifacts.publicSurfaceIds,
+        declarationNode: candidate.node,
+      })) {
         continue;
       }
 

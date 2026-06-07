@@ -20,8 +20,6 @@ import type {
   AnalyzableCallableBinding,
   CallableReturnSummary,
   ForwardedParameterBinding,
-  ProjectedArrayUsageContext,
-  ResolvedProjectionAccess,
   ResolvedTrackedObjectAccess,
   TrackedObjectBinding,
 } from "./model.js";
@@ -34,6 +32,7 @@ import {
   isGlobalThisIdentifier,
   sameTrackedBinding,
 } from "./bindings.js";
+import { getCarrierLookupsForProject } from "./carriers.js";
 import {
   getAnalyzableCallableBinding,
   getAnalyzableCallableBindingFromDeclaration,
@@ -42,7 +41,6 @@ import {
 import {
   bumpTrackedObjectDerivedStateRevision,
   getCollectionInfo,
-  getConcreteProjectionPaths,
   getTrackedArrayLength,
   hasTrackedChildren,
   indexTrackedObjectNode,
@@ -57,6 +55,11 @@ import {
 } from "./retained-bindings.js";
 import { visitResolvedSpreadPropertySegments } from "./spread-support.js";
 import { unwrapExpression } from "./syntax.js";
+import {
+  extractBoundedElementAccessSegment,
+  isDefinitelyNonNullishType,
+  resolveArrayAtIndex,
+} from "./element-access.js";
 import {
   TRACKING_CALL_SITE_SPECIALIZATION_KIND,
   TRACKING_ARRAY_END_REMOVAL_METHODS,
@@ -322,43 +325,32 @@ function getTrackedStructuredReturnBinding(
   return fallbackMatch ? new TrackedObjectBindingRecord(fallbackMatch, []) : undefined;
 }
 
-function getStaticObjectPropertyName(property: ts.ObjectLiteralElementLike): string | undefined {
-  if (ts.isShorthandPropertyAssignment(property)) {
-    return property.name.text;
-  }
-
-  if (!ts.isPropertyAssignment(property)) {
-    return undefined;
-  }
-
-  return ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
-    ? property.name.text
-    : undefined;
-}
-
-function getZodPayloadFallbackArgument(node: ts.CallExpression): ts.Expression | undefined {
-  if (
-    !ts.isPropertyAccessExpression(node.expression)
-    || (node.expression.name.text !== "run" && node.expression.name.text !== "parse")
-  ) {
+function getCarrierCallPayloadArgument(
+  project: ProjectContext,
+  node: ts.CallExpression,
+): ts.Expression | undefined {
+  if (!ts.isPropertyAccessExpression(node.expression)) {
     return undefined;
   }
 
   const receiver = unwrapExpression(node.expression.expression);
-  if (!ts.isPropertyAccessExpression(receiver) || receiver.name.text !== "_zod") {
+  if (!ts.isPropertyAccessExpression(receiver)) {
     return undefined;
   }
 
-  const payloadArgument = node.arguments[0];
-  if (!payloadArgument) {
+  const carriers = getCarrierLookupsForProject(project);
+  if (!carriers.isCarrierMethodFor(receiver.name.text, node.expression.name.text)) {
     return undefined;
   }
 
-  return payloadArgument;
+  return node.arguments[0];
 }
 
-function getRunPayloadFallbackLiteral(node: ts.CallExpression): ts.ObjectLiteralExpression | undefined {
-  const payloadArgument = getZodPayloadFallbackArgument(node);
+function getCarrierPayloadFallbackLiteral(
+  project: ProjectContext,
+  node: ts.CallExpression,
+): ts.ObjectLiteralExpression | undefined {
+  const payloadArgument = getCarrierCallPayloadArgument(project, node);
   if (!payloadArgument) {
     return undefined;
   }
@@ -368,26 +360,24 @@ function getRunPayloadFallbackLiteral(node: ts.CallExpression): ts.ObjectLiteral
     return undefined;
   }
 
-  const issuesProperty = payloadLiteral.properties.find((property) => (
-    getStaticObjectPropertyName(property) === "issues"
-  ));
-  if (!issuesProperty || !ts.isPropertyAssignment(issuesProperty)) {
-    return undefined;
-  }
+  const arrayBackedProperty = payloadLiteral.properties.find((property) => {
+    if (!ts.isPropertyAssignment(property)) {
+      return false;
+    }
+    return ts.isArrayLiteralExpression(unwrapExpression(property.initializer));
+  });
 
-  return ts.isArrayLiteralExpression(unwrapExpression(issuesProperty.initializer))
-    ? payloadLiteral
-    : undefined;
+  return arrayBackedProperty ? payloadLiteral : undefined;
 }
 
-function getRunPayloadFallbackBinding(
+function getCarrierPayloadFallbackBinding(
   project: ProjectContext,
   node: ts.CallExpression,
   trackedBySymbolId: Map<string, TrackedObjectBinding>,
   functionReturnSummaries: ReadonlyMap<string, CallableReturnSummary>,
   trackedObjectsById: Map<string, TrackedObject>,
 ): TrackedObjectBinding | undefined {
-  const payloadArgument = getZodPayloadFallbackArgument(node);
+  const payloadArgument = getCarrierCallPayloadArgument(project, node);
   if (!payloadArgument) {
     return undefined;
   }
@@ -403,13 +393,13 @@ function getRunPayloadFallbackBinding(
     return extendTrackedBinding(resolvedPayload.binding, resolvedPayload.segments);
   }
 
-  const payloadLiteral = getRunPayloadFallbackLiteral(node);
+  const payloadLiteral = getCarrierPayloadFallbackLiteral(project, node);
   if (!payloadLiteral) {
     return undefined;
   }
 
   const trackedObjectId = getCallSiteTrackedObjectId(
-    "unresolved-run-payload",
+    "unresolved-carrier-payload",
     TRACKING_CALL_SITE_SPECIALIZATION_KIND.returnedCall,
     node.getSourceFile().fileName,
     node.getStart(),
@@ -1265,114 +1255,6 @@ function getConstructedInstanceBinding(
   return new TrackedObjectBindingRecord(trackedObject, []);
 }
 
-function extractBoundedElementAccessSegment(
-  project: ProjectContext,
-  argument: ts.Expression,
-): PathSegment | undefined {
-  const node = unwrapExpression(argument);
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
-    return propertySegment(node.text);
-  }
-
-  if (ts.isNumericLiteral(node)) {
-    return indexSegment(Number(node.text));
-  }
-
-  if (
-    ts.isPrefixUnaryExpression(node)
-    && node.operator === ts.SyntaxKind.MinusToken
-    && ts.isNumericLiteral(node.operand)
-  ) {
-    return indexSegment(-Number(node.operand.text));
-  }
-
-  const type = project.checker.getTypeAtLocation(node);
-  const candidateTypes = type.isUnion() ? type.types : [type];
-  const seen = new Set<string>();
-  let segment: PathSegment | undefined;
-
-  for (const candidateType of candidateTypes) {
-    let nextSegment: PathSegment | undefined;
-
-    if (candidateType.flags & ts.TypeFlags.StringLiteral) {
-      nextSegment = propertySegment((candidateType as ts.StringLiteralType).value);
-    } else if (candidateType.flags & ts.TypeFlags.NumberLiteral) {
-      nextSegment = indexSegment((candidateType as ts.NumberLiteralType).value);
-    } else {
-      return undefined;
-    }
-
-    const key = `${nextSegment.kind}:${nextSegment.value}`;
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-    if (segment) {
-      return undefined;
-    }
-    segment = nextSegment;
-  }
-
-  return segment;
-}
-
-function resolveLiteralArrayIndex(argument: ts.Expression): number | undefined {
-  if (ts.isNumericLiteral(argument)) {
-    return Number(argument.text);
-  }
-
-  if (
-    ts.isPrefixUnaryExpression(argument)
-    && argument.operator === ts.SyntaxKind.MinusToken
-    && ts.isNumericLiteral(argument.operand)
-  ) {
-    return -Number(argument.operand.text);
-  }
-
-  return undefined;
-}
-
-function resolveArrayAtIndex(
-  trackedObject: TrackedObject,
-  segments: PathSegment[],
-  argument: ts.Expression,
-): number | undefined {
-  const collection = getCollectionInfo(trackedObject, segments);
-  if (!collection || collection.kind !== TRACKING_COLLECTION_KIND.array) {
-    return undefined;
-  }
-
-  const literalIndex = resolveLiteralArrayIndex(argument);
-  if (literalIndex === undefined) {
-    return undefined;
-  }
-
-  const arrayLength = getTrackedArrayLength(trackedObject, segments) ?? 0;
-
-  if (literalIndex >= 0) {
-    return literalIndex < arrayLength ? literalIndex : undefined;
-  }
-
-  const normalized = arrayLength + literalIndex;
-  return normalized >= 0 ? normalized : undefined;
-}
-
-function isDefinitelyNonNullishType(type: ts.Type): boolean {
-  const candidates = type.isUnion() ? type.types : [type];
-  return candidates.every((candidate) => {
-    const flags = candidate.flags;
-    return (flags & (
-      ts.TypeFlags.Any
-      | ts.TypeFlags.Unknown
-      | ts.TypeFlags.TypeParameter
-      | ts.TypeFlags.Null
-      | ts.TypeFlags.Undefined
-      | ts.TypeFlags.Void
-    )) === 0;
-  });
-}
-
 export function getAccessPath(
   node: ts.Node,
 ): { root: ts.Identifier; segments: PathSegment[]; dynamic: boolean } | undefined {
@@ -1412,13 +1294,14 @@ export function getAccessPath(
 }
 
 function matchesCapturedClosureAccessSegment(
+  project: ProjectContext,
   expected: PathSegment,
   actual: PathSegment,
   index: number,
   expectedSegments: readonly PathSegment[],
 ): boolean {
-  if (expected.kind === actual.kind) {
-    return expected.value === actual.value;
+  if (expected.kind === actual.kind && expected.value === actual.value) {
+    return true;
   }
 
   if (expected.kind !== "property" || actual.kind !== "property" || index === 0) {
@@ -1426,9 +1309,15 @@ function matchesCapturedClosureAccessSegment(
   }
 
   const previous = expectedSegments[index - 1];
-  return previous?.kind === "property"
-    && previous.value === "_zod"
-    && ((expected.value === "parse" && actual.value === "run") || (expected.value === "run" && actual.value === "parse"));
+  if (previous?.kind !== "property") {
+    return false;
+  }
+
+  return getCarrierLookupsForProject(project).areInterchangeableMethodsFor(
+    previous.value,
+    String(expected.value),
+    String(actual.value),
+  );
 }
 
 export function getCapturedClosureLocalBindingsForCall(
@@ -1468,6 +1357,7 @@ export function getCapturedClosureLocalBindingsForCall(
     callPath.segments.length < assignmentPath.segments.length
     || assignmentPath.segments.some(
       (segment, index) => !matchesCapturedClosureAccessSegment(
+        project,
         segment,
         callPath.segments[receiverSegments.length + index] ?? segment,
         index,
@@ -1515,10 +1405,18 @@ export function getCapturedClosureLocalBindingsForCall(
     ? getBindingSymbolKey(project, enclosingCallable.parameters[1])
     : undefined;
   if (definitionSymbolKey && !localBindings.has(definitionSymbolKey)) {
-    localBindings.set(
-      definitionSymbolKey,
-      extendTrackedBinding(receiverBinding, [propertySegment("_zod"), propertySegment("def")]),
-    );
+    const assignmentNamespaceSegment = assignmentPath.segments.length >= 2
+      ? assignmentPath.segments[assignmentPath.segments.length - 2]
+      : undefined;
+    const definitionPathSegments = assignmentNamespaceSegment?.kind === "property"
+      ? getCarrierLookupsForProject(project).getDefinitionPathSegments(assignmentNamespaceSegment.value)
+      : undefined;
+    if (definitionPathSegments) {
+      localBindings.set(
+        definitionSymbolKey,
+        extendTrackedBinding(receiverBinding, definitionPathSegments),
+      );
+    }
   }
 
   return localBindings;
@@ -1850,7 +1748,7 @@ export function resolveTrackedObjectAccess(
           functionReturnSummaries,
           trackedObjectsById,
         )
-      : getRunPayloadFallbackBinding(
+      : getCarrierPayloadFallbackBinding(
           project,
           node,
           trackedBySymbolId,
@@ -1986,10 +1884,25 @@ export function resolveAnalyzableCallableBinding(
     return exactCallable;
   }
 
-  if (nextSegment.kind === "property" && nextSegment.value === "run") {
-    return receiver.binding.trackedObject.callablePaths.get(
-      serializePath([...receiverPath, propertySegment("parse")]),
-    );
+  if (nextSegment.kind === "property" && receiverPath.length > 0) {
+    const namespaceSegment = receiverPath[receiverPath.length - 1];
+    if (namespaceSegment?.kind === "property") {
+      const carriers = getCarrierLookupsForProject(project);
+      const carrier = carriers.getCarrier(namespaceSegment.value);
+      if (carrier && carrier.carrierMethods.includes(nextSegment.value)) {
+        for (const siblingMethod of carrier.carrierMethods) {
+          if (siblingMethod === nextSegment.value) {
+            continue;
+          }
+          const sibling = receiver.binding.trackedObject.callablePaths.get(
+            serializePath([...receiverPath, propertySegment(siblingMethod)]),
+          );
+          if (sibling) {
+            return sibling;
+          }
+        }
+      }
+    }
   }
 
   return undefined;
@@ -2083,147 +1996,3 @@ export function getBindingSymbolKey(
   return undefined;
 }
 
-/**
- * Resolves projected callback element access while preserving exactness boundaries.
- */
-export function resolveProjectionAccess(
-  project: ProjectContext,
-  node: ts.Node,
-  context: ProjectedArrayUsageContext,
-): ResolvedProjectionAccess | undefined {
-  if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
-    return resolveProjectionAccess(project, node.expression, context);
-  }
-
-  if (ts.isIdentifier(node)) {
-    const symbol = project.checker.getSymbolAtLocation(node);
-    const projection = symbol ? context.elementBindings.get(getSymbolKey(symbol)) : undefined;
-    return projection ? { projection, suffix: [], dynamic: false } : undefined;
-  }
-
-  if (ts.isPropertyAccessExpression(node)) {
-    const nested = resolveProjectionAccess(project, node.expression, context);
-    if (nested?.dynamic) {
-      return nested;
-    }
-    return nested
-      ? {
-          projection: nested.projection,
-          suffix: [...nested.suffix, propertySegment(node.name.text)],
-          dynamic: nested.dynamic,
-          boundaryCategory: nested.boundaryCategory,
-          boundaryReason: nested.boundaryReason,
-        }
-      : undefined;
-  }
-
-  if (ts.isElementAccessExpression(node)) {
-    const nested = resolveProjectionAccess(project, node.expression, context);
-    if (!nested) {
-      const receiver = unwrapExpression(node.expression);
-      const index = unwrapExpression(node.argumentExpression);
-      if (!ts.isIdentifier(receiver) || !ts.isIdentifier(index)) {
-        return undefined;
-      }
-
-      const receiverSymbol = project.checker.getSymbolAtLocation(receiver);
-      const indexSymbol = project.checker.getSymbolAtLocation(index);
-      const receiverProjection = receiverSymbol ? context.receiverBindings.get(getSymbolKey(receiverSymbol)) : undefined;
-      const indexProjection = indexSymbol ? context.indexBindings.get(getSymbolKey(indexSymbol)) : undefined;
-      if (!receiverProjection || !indexProjection) {
-        return undefined;
-      }
-
-      const sameProjection = receiverProjection.trackedObject.id === indexProjection.trackedObject.id
-        && samePath(receiverProjection.sourcePath, indexProjection.sourcePath);
-      return sameProjection
-        ? {
-            projection: receiverProjection,
-            suffix: [],
-            dynamic: false,
-          }
-        : {
-            projection: receiverProjection,
-            suffix: [],
-            dynamic: true,
-            boundaryCategory: SKIP_CATEGORY.dynamicArrayIndex,
-            boundaryReason: "callback index cannot yet be correlated across different tracked arrays",
-          };
-    }
-
-    if (nested.dynamic) {
-      return nested;
-    }
-
-    const boundedSegment = extractBoundedElementAccessSegment(project, node.argumentExpression);
-    if (boundedSegment) {
-      return {
-        projection: nested.projection,
-        suffix: [
-          ...nested.suffix,
-          boundedSegment,
-        ],
-        dynamic: nested.dynamic,
-        boundaryCategory: nested.boundaryCategory,
-        boundaryReason: nested.boundaryReason,
-      };
-    }
-
-    const concreteTargets = getConcreteProjectionPaths(nested.projection, nested.suffix);
-    const isArrayIndex = concreteTargets.some((path) => getCollectionInfo(nested.projection.trackedObject, path)?.kind === TRACKING_COLLECTION_KIND.array);
-    return {
-      projection: nested.projection,
-      suffix: nested.suffix,
-      dynamic: true,
-      boundaryCategory: isArrayIndex ? SKIP_CATEGORY.dynamicArrayIndex : SKIP_CATEGORY.computedPropertyAccess,
-      boundaryReason: isArrayIndex
-        ? "dynamic array index prevents exact element analysis"
-        : "computed property access prevents exact path analysis",
-    };
-  }
-
-  if (
-    ts.isCallExpression(node)
-    && ts.isPropertyAccessExpression(node.expression)
-    && node.expression.name.text === TRACKING_ARRAY_INDEX_ACCESS_METHOD
-    && node.arguments.length === 1
-  ) {
-    const receiver = resolveProjectionAccess(project, node.expression.expression, context);
-    if (!receiver) {
-      return undefined;
-    }
-
-    if (receiver.dynamic) {
-      return receiver;
-    }
-
-    const elementPaths = getConcreteProjectionPaths(receiver.projection, receiver.suffix)
-      .map((receiverPath) => {
-        const resolvedIndex = resolveArrayAtIndex(receiver.projection.trackedObject, receiverPath, node.arguments[0]!);
-        return resolvedIndex === undefined ? undefined : [...receiverPath, indexSegment(resolvedIndex)];
-      })
-      .filter((path): path is PathSegment[] => Boolean(path));
-
-    if (elementPaths.length === 0) {
-      return {
-        projection: receiver.projection,
-        suffix: receiver.suffix,
-        dynamic: true,
-        boundaryCategory: "array-at-call",
-        boundaryReason: "non-literal .at(...) prevents exact array slot analysis",
-      };
-    }
-
-    return {
-      projection: {
-        trackedObject: receiver.projection.trackedObject,
-        sourcePath: receiver.projection.sourcePath,
-        elementPaths,
-      },
-      suffix: [],
-      dynamic: false,
-    };
-  }
-
-  return undefined;
-}

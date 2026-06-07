@@ -1,0 +1,10 @@
+{
+  "mode": "library",
+  "internalNamespaceMethodCarriers": [
+    {
+      "namespace": "_zod",
+      "carrierMethods": ["run", "parse"],
+      "definitionPath": ["_zod", "def"]
+    }
+  ]
+}

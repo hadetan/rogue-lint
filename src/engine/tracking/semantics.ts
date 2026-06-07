@@ -8,9 +8,9 @@ import { HelperParameterSummaryState } from "./model.js";
 import type { AnalyzableCallableBinding, CallableReturnSummary, HelperParameterSummary, ProjectedArrayUsageContext, TrackedObjectBinding, ValueAnalysisCaches } from "./model.js";
 import {
   getBindingSymbolKey,
-  resolveProjectionAccess,
   resolveTrackedObjectAccess,
 } from "./access.js";
+import { resolveProjectionAccess } from "./projection-access.js";
 import { extendTrackedBinding, getCanonicalSymbol, getCanonicalSymbolKey, getStaticGlobalThisPropertyName } from "./bindings.js";
 import { getAnalyzableCallableBinding, getAnalyzableCallableBindingFromDeclaration, resolveAnalyzableFunctionDeclaration } from "./callables.js";
 import { getObjectBackedRetainedBindingSlotKeyFromAccess, isSupportedRetainedBindingContainerType } from "./retained-bindings.js";
@@ -63,7 +63,7 @@ export interface HelperParameterSummaryContext {
   unboundInternalMemberFallbackSuffixes?: readonly string[];
 }
 
-export interface HelperMemberCallResolution {
+interface HelperMemberCallResolution {
   callables?: AnalyzableCallableBinding[];
   boundaryReason?: string;
 }

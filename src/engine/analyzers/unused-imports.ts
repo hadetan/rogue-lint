@@ -2,11 +2,11 @@ import ts from "typescript";
 
 import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { summarizeNonDeclarationReferences } from "../../references.js";
-import { getSuppressionAudit } from "../../suppressions.js";
 import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import { addAudit, type AnalysisState } from "../analysis-state.js";
+import { type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { isPreserved } from "./preservation-gate.js";
 import { createReferenceKey } from "./support.js";
 
 function hasLocalImportUsage(
@@ -28,14 +28,12 @@ function analyzeImportBinding(
   sourceFile: ts.SourceFile,
   nameNode: ts.Identifier,
   declarationNode: ts.Node,
-  findings: AnalysisState["findings"],
-  kept: AnalysisState["kept"],
+  state: AnalysisState,
   suppressionContext: SuppressionContext,
   artifacts: AnalysisArtifacts,
 ): void {
   const entity = makeEntity(project.rootPath, ENTITY_KIND.import, sourceFile, nameNode, nameNode.text);
-  const suppression = getSuppressionAudit(project, suppressionContext, entity, declarationNode);
-  if (addAudit(kept, suppression)) {
+  if (isPreserved(project, state, suppressionContext, entity, { declarationNode })) {
     return;
   }
 
@@ -50,7 +48,7 @@ function analyzeImportBinding(
     return;
   }
 
-  findings.push({
+  state.findings.push({
     id: entity.id,
     kind: "unused-import",
     entity,
@@ -72,9 +70,6 @@ export function analyzeUnusedImports(
       continue;
     }
 
-    const findings = state.findings;
-    const kept = state.kept;
-
     const visit = (node: ts.Node): void => {
       if (ts.isImportDeclaration(node) && node.importClause) {
         const { importClause } = node;
@@ -85,8 +80,7 @@ export function analyzeUnusedImports(
             sourceFile,
             importClause.name,
             importClause,
-            findings,
-            kept,
+            state,
             suppressionContext,
             artifacts,
           );
@@ -99,8 +93,7 @@ export function analyzeUnusedImports(
               sourceFile,
               importClause.namedBindings.name,
               importClause.namedBindings,
-                findings,
-                kept,
+              state,
               suppressionContext,
               artifacts,
             );
@@ -111,8 +104,7 @@ export function analyzeUnusedImports(
                 sourceFile,
                 element.name,
                 element,
-                findings,
-                kept,
+                state,
                 suppressionContext,
                 artifacts,
               );

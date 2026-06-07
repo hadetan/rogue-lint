@@ -7,24 +7,22 @@ import { ENTITY_KIND } from "../../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../../shared/entity-utils.js";
 import { TRACKED_OBJECT_NODE_ORIGIN } from "../../../shared/path-vocabulary.js";
 import { indexSegment, isSerializedPathWithin, propertySegment, renderPath, serializePath } from "../../../shared/path-utils.js";
-import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
-import { createCapabilityFactRecordId } from "../../capabilities/types.js";
-import {
-  ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
-  ANALYSIS_CAPABILITY_FACT_FAMILY,
-  ANALYSIS_CAPABILITY_FACT_OUTCOME,
-  ANALYSIS_CAPABILITY_ID,
-} from "../../capabilities/vocabulary.js";
 import { isTrackingProtectedStructuralRole } from "../ownership.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { TRACKING_COLLECTION_KIND, TRACKING_PLACE_STATE, TRACKING_RETAINED_BINDING_WRITE_METHOD } from "../vocabulary.js";
 import { getObjectBackedRetainedBindingSlotKeyFromAccess, getRetainedBindingContainerSlotKey, isLocallyOwnedRetainedBindingContainer, isSupportedRetainedBindingContainerType } from "../retained-bindings.js";
 import { getBindingSymbolKey, getCallSiteLiteralArgumentBinding, getCallSiteStructuredArgumentBinding, resolveAnalyzableCallableBinding, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, getCanonicalSymbolKey, getGlobalThisBindingKey, getStaticGlobalThisPropertyName, mergeTrackedBinding, sameTrackedBinding } from "../bindings.js";
+import { getCarrierLookupsForProject } from "../carriers.js";
 import { getAnalyzableCallableBindingFromDeclaration, getCallableReturnBinding } from "../callables.js";
 import type { AnalyzableCallableBinding, ArrayProjectionBinding, ResolvedTrackedObjectAccess, TrackedObjectBinding } from "../model.js";
 import { buildHelperBoundaryReason, classifySupportedCallArgumentUse, resolveHelperMemberCallCandidates, summarizeHelperParameterUse } from "../semantics.js";
-import { buildCollectionBoundaryEntity, ensureCollectionChildPath, getCollectionInfo, getProjectionBinding, hasTrackedChildren, indexTrackedObjectNode, registerExactPathAlias, resolveExactPathAlias } from "../state.js";
+import { ensureCollectionChildPath, getCollectionInfo, getProjectionBinding, hasTrackedChildren, indexTrackedObjectNode, registerExactPathAlias, resolveExactPathAlias } from "../state.js";
 import { unwrapExpression } from "../syntax.js";
+import {
+  registerBoundaryCapabilityFact as registerBoundaryCapabilityFactHelper,
+  registerLiveFiniteKeyedAccessFact,
+} from "./boundary-facts.js";
 import {
   handleSupportedValueFateCall as handleSupportedValueFateCallEffect, handleTrackedArrayMutation as handleTrackedArrayMutationEffect, maybeInvalidateReplacedTrackedPath as maybeInvalidateReplacedTrackedPathEffect,
   maybeReportInvalidatedRead as maybeReportInvalidatedReadEffect, recordArrayBoundary as recordArrayBoundaryEffect, tryRegisterExactArrayInsertion,
@@ -83,21 +81,12 @@ export function visitObjectPathSourceFile(
     higherOrderCallableReturnSummaryCache,
   } = sourceFileContext;
   const capabilityFacts = state.runState.capabilityFacts;
-  const findings = state.findings;
-  const kept = state.kept;
   const projectionContext = {
     elementBindings: projectionBindings,
     receiverBindings: projectionReceiverBindings,
     indexBindings: projectionIndexBindings,
   };
-  const zodInternalMember = "_zod";
-  const zodRunMember = "run";
-  const zodParseMember = "parse";
-  const zodDefMember = "def";
-  const zodCarrierMemberSuffixes = [
-    serializePath([propertySegment(zodInternalMember), propertySegment(zodRunMember)]),
-    serializePath([propertySegment(zodInternalMember), propertySegment(zodParseMember)]),
-  ];
+  const carrierLookups = getCarrierLookupsForProject(project);
 
   const markAliasObserved = (
     resolved: ResolvedTrackedObjectAccess,
@@ -114,11 +103,6 @@ export function visitObjectPathSourceFile(
     markObjectPathObservedChildPaths(overlayState, trackedObject, segments, aliasTrackedObjectsById);
   };
 
-  const getTrackedEntityAtPath = (
-    trackedObject: TrackedObject,
-    segments: PathSegment[],
-  ) => trackedObject.nodes.get(serializePath(segments))?.entity ?? trackedObject.rootEntity;
-
   const registerBoundaryCapabilityFact = (
     trackedObject: TrackedObject,
     boundarySourceFile: ts.SourceFile,
@@ -128,62 +112,17 @@ export function visitObjectPathSourceFile(
     reason: string,
     detailHint?: string,
   ): void => {
-    if (
-      category === SKIP_CATEGORY.arrayCallbackEscape
-      || category === SKIP_CATEGORY.arrayOpaqueMutation
-      || category === SKIP_CATEGORY.opaqueObjectCall
-    ) {
-      const entity = category === SKIP_CATEGORY.arrayCallbackEscape || category === SKIP_CATEGORY.arrayOpaqueMutation
-        ? buildCollectionBoundaryEntity(project, trackedObject, boundarySourceFile, node, segments)
-        : getTrackedEntityAtPath(trackedObject, segments);
-      const recordId = createCapabilityFactRecordId(
-        ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport,
-        entity,
-        ANALYSIS_CAPABILITY_ID.helperTransport,
-        detailHint,
-      );
-      if (!capabilityFacts.has(recordId)) {
-        capabilityFacts.set(recordId, {
-          id: recordId,
-          family: ANALYSIS_CAPABILITY_FACT_FAMILY.helperTransport,
-          capabilityId: ANALYSIS_CAPABILITY_ID.helperTransport,
-          entity,
-          outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.boundary,
-          category,
-          reason,
-          detailHint,
-        });
-      }
-      return;
-    }
-
-    if (
-      category === SKIP_CATEGORY.arrayAtCall
-      || category === SKIP_CATEGORY.computedPropertyAccess
-      || category === SKIP_CATEGORY.dynamicArrayIndex
-    ) {
-      const entity = category === SKIP_CATEGORY.arrayAtCall || category === SKIP_CATEGORY.dynamicArrayIndex
-        ? buildCollectionBoundaryEntity(project, trackedObject, boundarySourceFile, node, segments)
-        : getTrackedEntityAtPath(trackedObject, segments);
-      const recordId = createCapabilityFactRecordId(
-        ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-        entity,
-        ANALYSIS_CAPABILITY_ID.finiteKeyedAccess,
-        detailHint,
-      );
-      if (!capabilityFacts.has(recordId)) {
-        capabilityFacts.set(recordId, {
-          id: recordId,
-          family: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-          capabilityId: ANALYSIS_CAPABILITY_ID.finiteKeyedAccess,
-          entity,
-          outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.boundary,
-          category,
-          reason,
-          detailHint,
-        });
-      }
-    }
+    registerBoundaryCapabilityFactHelper(
+      capabilityFacts,
+      project,
+      trackedObject,
+      boundarySourceFile,
+      node,
+      segments,
+      category,
+      reason,
+      detailHint,
+    );
   };
 
   const markEscaped = (
@@ -195,19 +134,21 @@ export function visitObjectPathSourceFile(
   ): void => {
     registerBoundaryCapabilityFact(trackedObject, sourceFile, sourceFile, segments, category, reason, detailHint);
     const escapedPath = serializePath(segments);
-    for (const [aliasPath, alias] of trackedObject.exactPathAliases.entries()) {
-      if (!isSerializedPathWithin(aliasPath, escapedPath)) {
-        continue;
-      }
+    if (segments.length > 0) {
+      for (const [aliasPath, alias] of trackedObject.exactPathAliases.entries()) {
+        if (!isSerializedPathWithin(aliasPath, escapedPath)) {
+          continue;
+        }
 
-      const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
-      if (sourceTrackedObject) {
-        markObjectPathObservedSubtree(
-          overlayState,
-          sourceTrackedObject,
-          alias.sourcePath,
-          trackedObjectsById,
-        );
+        const sourceTrackedObject = trackedObjectsById.get(alias.sourceObjectId);
+        if (sourceTrackedObject) {
+          markObjectPathObservedSubtree(
+            overlayState,
+            sourceTrackedObject,
+            alias.sourcePath,
+            trackedObjectsById,
+          );
+        }
       }
     }
     const aliasResolved = resolveExactPathAlias(
@@ -366,12 +307,12 @@ export function visitObjectPathSourceFile(
         return true;
       }
 
-      return index > 0
-        && segments[index - 1] === zodInternalMember
-        && (
-          (expected === zodParseMember && actual === zodRunMember)
-          || (expected === zodRunMember && actual === zodParseMember)
-        );
+      if (index === 0) {
+        return false;
+      }
+
+      const namespaceSegment = segments[index - 1];
+      return Boolean(namespaceSegment) && carrierLookups.areInterchangeableMethodsFor(namespaceSegment!, expected, actual);
     };
 
     const receiverSegments = callPath.segments.slice(0, callPath.segments.length - assignmentPath.segments.length);
@@ -460,10 +401,18 @@ export function visitObjectPathSourceFile(
       return;
     }
 
+    const assignmentNamespaceSegment = assignmentPath.segments[assignmentPath.segments.length - 2];
+    const definitionPathSegments = assignmentNamespaceSegment
+      ? carrierLookups.getDefinitionPathSegments(assignmentNamespaceSegment)
+      : undefined;
+    if (!definitionPathSegments) {
+      return;
+    }
+
     setLocalHelperBinding(
       localBindings,
       definitionParameter.name,
-      extendTrackedBinding(receiverBinding, [propertySegment(zodInternalMember), propertySegment(zodDefMember)]),
+      extendTrackedBinding(receiverBinding, definitionPathSegments),
     );
   };
 
@@ -809,7 +758,17 @@ export function visitObjectPathSourceFile(
                 trackedObjectsById,
               )
             : undefined;
-          return structuredBinding ?? getCallSiteLiteralArgumentBinding(
+          if (structuredBinding) {
+            return structuredBinding;
+          }
+          const unwrappedArg = unwrapExpression(argument);
+          if (
+            ts.isObjectLiteralExpression(unwrappedArg)
+            && unwrappedArg.properties.some((p) => ts.isSpreadAssignment(p))
+          ) {
+            return undefined;
+          }
+          return getCallSiteLiteralArgumentBinding(
             project,
             node,
             argument,
@@ -867,7 +826,7 @@ export function visitObjectPathSourceFile(
       functionReturnSummaries,
       trackedObjectsById,
       allowUnboundInternalMemberFallback: true,
-      unboundInternalMemberFallbackSuffixes: zodCarrierMemberSuffixes,
+      unboundInternalMemberFallbackSuffixes: carrierLookups.getCarrierMemberSuffixKeys(),
     }).callables ?? [];
   };
 
@@ -1245,7 +1204,7 @@ export function visitObjectPathSourceFile(
   ): TrackedObjectBinding | undefined => {
     const path = getStaticAccessPath(node.expression);
     const pathKey = path ? serializePath(path.segments.map((segment) => propertySegment(segment))) : undefined;
-    if (!pathKey || !zodCarrierMemberSuffixes.some((suffix) => pathKey === suffix || pathKey.endsWith(`/${suffix}`))) {
+    if (!pathKey || !carrierLookups.pathEndsWithCarrierSuffix(pathKey)) {
       return undefined;
     }
 
@@ -1591,8 +1550,7 @@ export function visitObjectPathSourceFile(
     maybeReportInvalidatedReadEffect(
       project,
       readSourceFile,
-      findings,
-      kept,
+      state,
       suppressionContext,
       overlayState,
       trackedObject,
@@ -2046,6 +2004,13 @@ export function visitObjectPathSourceFile(
               slotKey,
               extendTrackedBinding(resolvedValue.binding, resolvedValue.segments),
             );
+          } else {
+            markEscaped(
+              resolvedValue.binding.trackedObject,
+              resolvedValue.segments,
+              SKIP_CATEGORY.externalContainerStore,
+              "value stored in external container; reads are not traceable from this scope",
+            );
           }
         }
       }
@@ -2074,23 +2039,7 @@ export function visitObjectPathSourceFile(
         if (finiteLookupRead) {
           for (const candidate of finiteLookupRead.candidates) {
             const fullPath = [...candidate.binding.prefix, ...candidate.segments, ...finiteLookupRead.suffix];
-            const entity = getTrackedEntityAtPath(candidate.binding.trackedObject, fullPath);
-            const recordId = createCapabilityFactRecordId(
-              ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-              entity,
-              ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-              ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
-            );
-            if (!capabilityFacts.has(recordId)) {
-              capabilityFacts.set(recordId, {
-                id: recordId,
-                family: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-                capabilityId: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-                entity,
-                outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.live,
-                detailHint: ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
-              });
-            }
+            registerLiveFiniteKeyedAccessFact(capabilityFacts, candidate.binding.trackedObject, fullPath);
             maybeReportInvalidatedRead(
               sourceFile,
               candidate.binding.trackedObject,
@@ -2321,23 +2270,7 @@ export function visitObjectPathSourceFile(
 
           for (const candidate of finiteLookupRead.candidates) {
             const fullPath = [...candidate.binding.prefix, ...candidate.segments, ...finiteLookupRead.suffix];
-            const entity = getTrackedEntityAtPath(candidate.binding.trackedObject, fullPath);
-            const recordId = createCapabilityFactRecordId(
-              ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-              entity,
-              ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-              ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
-            );
-            if (!capabilityFacts.has(recordId)) {
-              capabilityFacts.set(recordId, {
-                id: recordId,
-                family: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-                capabilityId: ANALYSIS_CAPABILITY_FACT_FAMILY.finiteKeyedAccess,
-                entity,
-                outcome: ANALYSIS_CAPABILITY_FACT_OUTCOME.live,
-                detailHint: ANALYSIS_CAPABILITY_DETAIL_LABEL_BOUNDED_FINITE_KEY_READ,
-              });
-            }
+            registerLiveFiniteKeyedAccessFact(capabilityFacts, candidate.binding.trackedObject, fullPath);
             maybeReportInvalidatedRead(
               sourceFile,
               candidate.binding.trackedObject,

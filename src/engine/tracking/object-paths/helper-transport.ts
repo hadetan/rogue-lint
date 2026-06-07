@@ -2,6 +2,7 @@ import ts from "typescript";
 
 import type { PathSegment, ProjectContext, SkipCategory, TrackedObject } from "../../../types.js";
 import { getSymbolKey } from "../../../compiler/ast-utils.js";
+import { unwrapExpression } from "../syntax.js";
 import { serializePath } from "../../../shared/path-utils.js";
 import {
   getCallSiteLiteralArgumentBinding,
@@ -165,14 +166,23 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
         )
       : undefined;
     const literalArgumentBinding = !resolvedBinding && !specializedArgumentBinding
-      ? getCallSiteLiteralArgumentBinding(
-          project,
-          node,
-          argument,
-          activeBindings,
-          functionReturnSummaries,
-          trackedObjectsById,
-        )
+      ? (() => {
+          const unwrapped = unwrapExpression(argument);
+          if (
+            ts.isObjectLiteralExpression(unwrapped)
+            && unwrapped.properties.some((p) => ts.isSpreadAssignment(p))
+          ) {
+            return undefined;
+          }
+          return getCallSiteLiteralArgumentBinding(
+            project,
+            node,
+            argument,
+            activeBindings,
+            functionReturnSummaries,
+            trackedObjectsById,
+          );
+        })()
       : undefined;
     const helperReplayBinding = resolvedBinding ?? specializedArgumentBinding ?? literalArgumentBinding;
     if (!helperReplayBinding) {
@@ -250,18 +260,19 @@ export function createHelperTransportHandler(options: HelperTransportHandlerOpti
       helperParameterBindings.set(candidateParameter.name, candidateReplayBinding);
     });
 
+    const summaryContext = {
+      trackedBySymbolId: localBindings,
+      specializedBindings: helperParameterSymbolBindings,
+      functionReturnSummaries,
+      trackedObjectsById,
+    };
     const summary = summarizeHelperParameterUse(
       project,
       analyzableCallable,
       parameter.name,
       parameterMeaningfulUse,
       parameterSummaryCache,
-      {
-        trackedBySymbolId: localBindings,
-        specializedBindings: helperParameterSymbolBindings,
-        functionReturnSummaries,
-        trackedObjectsById,
-      },
+      summaryContext,
     );
     const snapshot = getBoundedHelperExecutionSnapshot(analyzableCallable, parameter.name, helperParameterSymbolBindings);
     const exactReadPaths = snapshot?.exactReadPaths ?? summary.exactReadPaths;

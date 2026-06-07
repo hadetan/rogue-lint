@@ -1,13 +1,13 @@
 import ts from "typescript";
 
-import { getSuppressionAudit } from "../../../suppressions.js";
-import type { AuditRecord, EntityRecord, FindingRecord, PathSegment, ProjectContext, SkipCategory, SuppressionContext, TrackedObject } from "../../../types.js";
+import type { EntityRecord, PathSegment, ProjectContext, SkipCategory, SuppressionContext, TrackedObject } from "../../../types.js";
 import { FINDING_KIND } from "../../../shared/finding-vocabulary.js";
 import { makeEntity } from "../../../shared/entity-utils.js";
 import { PATH_SEGMENT_KIND } from "../../../shared/path-vocabulary.js";
 import { indexSegment, renderPathWithRoot } from "../../../shared/path-utils.js";
 import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
-import { addAudit } from "../../analysis-state.js";
+import { type AnalysisState } from "../../analysis-state.js";
+import { isPreserved } from "../../analyzers/preservation-gate.js";
 import { getAccessPath, resolveTrackedObjectAccess } from "../access.js";
 import { extendTrackedBinding, getBindingByNode } from "../bindings.js";
 import type { CallableReturnSummary, ExactAppendSlotPlan, TrackedObjectBinding } from "../model.js";
@@ -78,8 +78,7 @@ export function recordArrayBoundary(
 export function maybeReportInvalidatedRead(
   project: ProjectContext,
   sourceFile: ts.SourceFile,
-  findings: FindingRecord[],
-  kept: AuditRecord[],
+  state: AnalysisState,
   suppressionContext: SuppressionContext,
   overlayState: ObjectPathOverlayState,
   trackedObject: TrackedObject,
@@ -100,13 +99,12 @@ export function maybeReportInvalidatedRead(
   }
 
   const entity = buildReadExpressionEntity(project, trackedObject, sourceFile, node, fullPath);
-  const suppression = getSuppressionAudit(project, suppressionContext, entity, node);
-  if (addAudit(kept, suppression)) {
+  if (isPreserved(project, state, suppressionContext, entity, { declarationNode: node })) {
     return;
   }
 
   const renderedPath = renderPathWithRoot(trackedObject.rootName, fullPath);
-  findings.push({
+  state.findings.push({
     id: entity.id,
     kind: invalidated.findingKind,
     entity,

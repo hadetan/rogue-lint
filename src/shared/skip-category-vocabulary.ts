@@ -26,6 +26,8 @@ export const SKIP_CATEGORY = {
   spreadEscape: "spread-escape",
   objectRest: "object-rest",
   arrayRest: "array-rest",
+  externalContainerStore: "external-container-store",
+  helperCallBoundary: "helper-call-boundary",
 } as const;
 
 function observeSkipCategorySurface(): void {
@@ -52,6 +54,7 @@ function observeSkipCategorySurface(): void {
   void SKIP_CATEGORY.spreadEscape;
   void SKIP_CATEGORY.objectRest;
   void SKIP_CATEGORY.arrayRest;
+  void SKIP_CATEGORY.externalContainerStore;
 }
 
 observeSkipCategorySurface();

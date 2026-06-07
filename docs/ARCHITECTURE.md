@@ -11,6 +11,17 @@ The package keeps two thin entrypoints:
 
 Everything else should depend inward from those surfaces.
 
+## Prove-Or-Abstain Contract
+
+The engine's core invariant is **prove or abstain**: emit a `finding` only when the analyzer has bounded, syntactic justification; emit an explicit `skipped` entry everywhere else.
+
+The exact set of patterns for which the engine may emit findings is defined in [`src/engine/tracking/PERIMETER.md`](../src/engine/tracking/PERIMETER.md). That document is a binding constraint, not a guideline:
+
+- **Inside the perimeter** → engine may emit a `finding`.
+- **Outside the perimeter** → engine MUST emit `skipped` with a named category and reason.
+
+Silently omitting a `skipped` entry at a known boundary is a bug. Any expansion of the proof perimeter (promoting a skipped pattern to a finding) requires: a synthesized fixture, a bounded iteration proof, no new benchmark findings, and no corpus-specific branch conditions. See PERIMETER.md for the full gate.
+
 ## Maintainability Standards
 
 This repository uses owner-based organization instead of generic utility buckets.

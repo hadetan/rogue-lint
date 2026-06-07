@@ -1,14 +1,14 @@
 import ts from "typescript";
 
-import { getSuppressionAudit } from "../../suppressions.js";
 import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { FINDING_KIND } from "../../shared/finding-vocabulary.js";
 import { SKIP_CATEGORY } from "../../shared/skip-category-vocabulary.js";
 import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { getSymbolKey, isReadLikeUse } from "../../compiler/ast-utils.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import { addAudit, addFinding, addSkipped, type AnalysisState } from "../analysis-state.js";
+import { addFinding, addSkipped, type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
+import { isPreserved } from "../analyzers/preservation-gate.js";
 import { isTrackablePureExpression } from "./trackable-structures.js";
 import { TRACKING_ACCESS_KIND } from "./vocabulary.js";
 import type { ValueAccess } from "./model.js";
@@ -91,7 +91,6 @@ export function analyzeValueLiveness(
       callablePurity,
     } = sourceFileContext;
     const findings = state.findings;
-    const kept = state.kept;
     const valueAnalysisCaches = {
       parameterMeaningfulUse,
       callablePurity,
@@ -196,8 +195,7 @@ export function analyzeValueLiveness(
           node.expression,
           node.expression.getText(sourceFile),
         );
-        const suppression = getSuppressionAudit(project, suppressionContext, entity, node.expression);
-        if (addAudit(kept, suppression)) {
+        if (isPreserved(project, state, suppressionContext, entity, { declarationNode: node.expression })) {
           return ts.forEachChild(node, visit);
         }
 
@@ -289,13 +287,9 @@ export function analyzeValueLiveness(
 
         if (access.kind === TRACKING_ACCESS_KIND.write) {
           if (pendingWrite && canProveOverwrite(pendingWrite, access)) {
-            const suppression = getSuppressionAudit(
-              project,
-              suppressionContext,
-              pendingWrite.entity,
-              binding.declaration,
-            );
-            if (!addAudit(state.kept, suppression)) {
+            if (!isPreserved(project, state, suppressionContext, pendingWrite.entity, {
+              declarationNode: binding.declaration,
+            })) {
               addFinding(
                 state,
                 pendingWrite.entity,
@@ -317,13 +311,9 @@ export function analyzeValueLiveness(
       }
 
       if (pendingWrite && pendingWrite.nestedWrite && !hasAnyRead) {
-        const suppression = getSuppressionAudit(
-          project,
-          suppressionContext,
-          pendingWrite.entity,
-          binding.declaration,
-        );
-        if (!addAudit(state.kept, suppression)) {
+        if (!isPreserved(project, state, suppressionContext, pendingWrite.entity, {
+          declarationNode: binding.declaration,
+        })) {
           addFinding(
             state,
             pendingWrite.entity,

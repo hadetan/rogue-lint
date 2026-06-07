@@ -1,11 +1,13 @@
-import { getSuppressionAudit } from "../../../suppressions.js";
 import type { CollectionBoundaryRecord, PathSegment, ProjectContext, SuppressionContext, TrackedObject } from "../../../types.js";
 import { ENTITY_KIND } from "../../../shared/entity-vocabulary.js";
+import { SKIP_CATEGORY } from "../../../shared/skip-category-vocabulary.js";
 import { FINDING_KIND } from "../../../shared/finding-vocabulary.js";
 import { kindToFinding } from "../../../shared/entity-utils.js";
-import { renderPathWithRoot, serializePath } from "../../../shared/path-utils.js";
-import { addAudit, addFinding, addSkipped, registerCapabilityObligation, resolveCapabilityObligation, type AnalysisState } from "../../analysis-state.js";
+import { isSerializedPathWithin, renderPathWithRoot, serializePath } from "../../../shared/path-utils.js";
+import { TRACKING_VALUE_FATE } from "../vocabulary.js";
+import { addFinding, addSkipped, registerCapabilityObligation, resolveCapabilityObligation, type AnalysisState } from "../../analysis-state.js";
 import { ANALYSIS_CAPABILITY_OUTCOME } from "../../capabilities/vocabulary.js";
+import { isPreserved } from "../../analyzers/preservation-gate.js";
 import { getCollectionInfo, hasTrackedChildren } from "../state.js";
 import type { TrackedObjectBinding } from "../model.js";
 import { shouldSuppressStructuralPath, shouldSuppressStructuralRoot } from "../syntax.js";
@@ -178,6 +180,31 @@ export function finalizeObjectPathFindings(
       || getReportingObservedAliases(reportingObservedAliasesById, tracked).size
     );
 
+    // Literal call-site arguments and function-call return values cross call boundaries.
+    // Exact reads cannot be proven from the current scope — emit skipped per the proof perimeter.
+    if (tracked.rootName === "argument") {
+      for (const [, objectNode] of tracked.nodes) {
+        if (!shouldSuppressStructuralPath(tracked, objectNode.fullPath) && !isPreserved(project, state, suppressionContext, objectNode.entity)) {
+          addSkipped(state, objectNode.entity, SKIP_CATEGORY.helperCallBoundary, "literal argument passed to call; reads inside callee are not tracked");
+        }
+      }
+      continue;
+    }
+
+    if (
+      tracked.rootEntity.kind === ENTITY_KIND.expression
+      && tracked.rootName.endsWith("()")
+      && !hasDirectReportingObservation(overlayState, tracked)
+      && !hasAggregatedReportingObservation
+    ) {
+      for (const [, objectNode] of tracked.nodes) {
+        if (!shouldSuppressStructuralPath(tracked, objectNode.fullPath) && !isPreserved(project, state, suppressionContext, objectNode.entity)) {
+          addSkipped(state, objectNode.entity, SKIP_CATEGORY.returnedObject, "returned structure from function call; reads through return boundary are not tracked");
+        }
+      }
+      continue;
+    }
+
     if (
       tracked.rootEntity.kind === ENTITY_KIND.expression
       && tracked.rootName.endsWith("()")
@@ -198,8 +225,7 @@ export function finalizeObjectPathFindings(
       if (!shouldReportBoundary(overlayState, reportingObservedSubtreesById, tracked, boundary.path)) {
         continue;
       }
-      const suppression = getSuppressionAudit(project, suppressionContext, boundary.entity);
-      if (addAudit(state.kept, suppression)) {
+      if (isPreserved(project, state, suppressionContext, boundary.entity)) {
         continue;
       }
       addSkipped(state, boundary.entity, boundary.category, boundary.reason);
@@ -214,8 +240,7 @@ export function finalizeObjectPathFindings(
         && !hasBoundaryAtPath(getReportingBoundaries(overlayState, tracked), [])
         && !shouldSuppressStructuralRoot(tracked)
       ) {
-        const suppression = getSuppressionAudit(project, suppressionContext, tracked.rootEntity);
-        if (!addAudit(state.kept, suppression)) {
+        if (!isPreserved(project, state, suppressionContext, tracked.rootEntity)) {
           addFinding(
             state,
             tracked.rootEntity,
@@ -309,17 +334,19 @@ export function finalizeObjectPathFindings(
         continue;
       }
 
-      const suppression = getSuppressionAudit(project, suppressionContext, objectNode.entity);
-      if (addAudit(state.kept, suppression)) {
-        if (isReturnedContractMember) {
-          resolveCapabilityObligation(
-            state,
-            "returned-contract-member",
-            objectNode.entity,
-            ANALYSIS_CAPABILITY_OUTCOME.kept,
-            "returned-structure-transport",
-          );
-        }
+      if (isPreserved(project, state, suppressionContext, objectNode.entity, {
+        onKept: () => {
+          if (isReturnedContractMember) {
+            resolveCapabilityObligation(
+              state,
+              "returned-contract-member",
+              objectNode.entity,
+              ANALYSIS_CAPABILITY_OUTCOME.kept,
+              "returned-structure-transport",
+            );
+          }
+        },
+      })) {
         continue;
       }
 
@@ -328,6 +355,20 @@ export function finalizeObjectPathFindings(
         || objectNode.fullPath.length >= 1;
 
       if (!hasRead && hasWrite) {
+        const nodePath = serializePath(objectNode.fullPath);
+        const hasInsertedByReferenceAncestor = !hasAggregatedReportingObservation
+          && tracked.valueFates.some(
+            (fate) => fate.fate === TRACKING_VALUE_FATE.insertedByReference
+              && isSerializedPathWithin(nodePath, serializePath(fate.path)),
+          );
+        if (hasInsertedByReferenceAncestor) {
+          addSkipped(state, objectNode.entity, SKIP_CATEGORY.externalContainerStore, "value inserted by reference into another structure; reads through the reference chain are not tracked");
+          if (isReturnedContractMember) {
+            resolveCapabilityObligation(state, "returned-contract-member", objectNode.entity, ANALYSIS_CAPABILITY_OUTCOME.skipped, "returned-structure-transport");
+          }
+          continue;
+        }
+
         const findingKind = kindToFinding(objectNode.entity.kind);
         if (!findingKind) {
           continue;

@@ -16,7 +16,7 @@ export type UnrecognizedKeysIssue = IssueBase & {
 
 export type Issue = InvalidTypeIssue | UnrecognizedKeysIssue;
 
-type RawIssue<T extends IssueBase> = T extends any
+type RawIssue<T extends IssueBase> = T extends IssueBase
   ? Partial<T> & {
     readonly inst?: unknown;
     readonly continue?: boolean | undefined;

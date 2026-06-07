@@ -1,64 +1,73 @@
 # rogue-lint
 
-> The whole-project static analyzer that tracks what is truly live, what has gone rogue, and where JavaScript turns into fog.
+Whole-project dead code analysis for JavaScript and TypeScript with agent-friendly output.
 
-`rogue-lint` moves through a codebase like a careful rogue moving through a forest: it starts from entrypoints and public surface, follows only the paths it can actually prove, and keeps track of what is really consumed. It traces same-project reachability, imports, exports, locals, object paths, array slots, returned structures, helper-carried values, callback correlation, retained bindings, discarded results, and selected safety failures. That lets it report the code and values that have gone rogue from real use. When the proof holds, it emits a real finding. When the path disappears into dynamic JavaScript, it emits an explicit conservative boundary instead of pretending it still knows the way.
+`rogue-lint` starts from real project roots, follows usage it can actually justify, and reports what has gone dead without pretending dynamic JavaScript is more knowable than it is. When analysis stays exact, it emits a finding. When the proof breaks, it emits an explicit conservative boundary in `skipped`.
 
-```text
-→ starts from entrypoints and public surface
-→ follows proven usage across files, structures, returns, callbacks, and helpers
-→ reports dead code, dead structure, dead values, and selected safety failures
-→ preserves intentional API surface and explicit keep rules
-→ marks dynamic fog with explicit skipped boundaries
-→ stays truthful to JavaScript semantics
-```
+## What It Does
 
-[Quick Start](#quick-start) • [See It In Action](#see-it-in-action) • [Docs](#docs) • [Development](#development)
+- Finds dead code across a project, not just inside one file
+- Distinguishes actionable `findings` from intentional preservation in `kept`
+- Surfaces exactness limits explicitly in `skipped`
+- Supports both application-style reachability and library public-surface analysis
+- Emits output that works for humans in the terminal and tools in JSON
 
-## Why rogue-lint
+Current finding families include:
 
-Most code analysis tools fail in one of two ways:
+- `unused-file`, `unused-export`, `unused-import`, `unused-type`, `unused-enum-member`
+- `unused-local`, `unused-class-member`, `unused-interface-member`
+- `unused-array-element`, `unused-object-key`, `unused-nested-path`
+- `dead-store`, `unused-value`, `write-only-state`
+- `use-before-init`, `invalidated-read`, `stale-read-after-mutation`
 
-- they stay shallow and only see file-local syntax
-- they overreach in dynamic JavaScript and turn uncertainty into false positives
+For the grounded coverage map and known conservative boundaries, see [CAPABILITIES.md](CAPABILITIES.md).
 
-`rogue-lint` is built to avoid both.
+## Why Another Dead-Code Tool
 
-Use it when you want:
+Most dead-code tooling picks one of two bad tradeoffs:
 
-- whole-project reachability instead of isolated lint warnings
-- symbol-liveness analysis across imports, exports, locals, and members
-- export and type-surface analysis that understands application mode versus library mode
-- exact object and array path cleanup in the supported subset
-- explicit `findings`, `skipped`, and `diagnostics` by default, with `kept` available when you ask for it
-- output that humans can read and agents can automate against
+- stay shallow and miss cross-file reality
+- over-approximate dynamic code and generate noise
 
-## Quick Start
+`rogue-lint` is built around a stricter trust model:
 
-Requires Node.js 20 or newer.
+- `findings` means the analyzer has justification
+- `kept` means the entity would otherwise look dead but is intentionally preserved
+- `skipped` means exact reasoning stopped and the tool is being explicit about that limit
+- `diagnostics` means the project itself had loading or analysis issues worth surfacing
 
-Install in a project:
+That separation matters if you want output you can automate against without flattening uncertainty into false positives.
+
+## Install
+
+Node.js 20 or newer is required.
 
 ```bash
 npm install -D rogue-lint
 ```
 
-Run it:
-
-```bash
-npx rogue-lint .
-npx rogue-lint . --json
-npx rogue-lint . --kept
-npx rogue-lint . --mode library
-npx rogue-lint . --kinds unused-export,unused-file,use-before-init
-npx rogue-lint . --config rogue-lint.config.json
-```
-
-If you prefer a global install:
+You can also install it globally:
 
 ```bash
 npm install -g rogue-lint
-rogue-lint .
+```
+
+## Quick Start
+
+Run against the current project:
+
+```bash
+npx rogue-lint .
+```
+
+Useful variants:
+
+```bash
+npx rogue-lint . --json
+npx rogue-lint . --kept
+npx rogue-lint . --mode library
+npx rogue-lint . --kinds unused-file,unused-export
+npx rogue-lint . --config rogue-lint.config.json
 ```
 
 Default exit codes:
@@ -69,9 +78,7 @@ Default exit codes:
 
 Both non-zero exit codes are configurable.
 
-## See It In Action
-
-A fixture-backed text report looks like this:
+## Example Text Output
 
 ```text
 rogue-lint
@@ -79,65 +86,159 @@ rogue-lint
 Mode: application
 Files analyzed: 4
 Reachable files: 3
-Findings: 9
-Skipped: 2
+Findings: 2
+Skipped: 1
 
 Findings:
 unused-export
   src/lib.ts
-    unused-export                src/lib.ts:2:14 unusedExport - exported declaration has no non-declaration references outside its declaring file
+    unusedExport - exported declaration has no non-declaration references outside its declaring file
 unused-file
   src/unused.ts
-    unused-file                  src/unused.ts:1:1 unused.ts - file is unreachable from configured entrypoints
+    unused.ts - file is unreachable from configured entrypoints
 
 Skipped:
 object-key
   src/index.ts
-    object-key                   src/index.ts:24:3 maybe - computed property access prevents exact path analysis
+    maybe - computed property access prevents exact path analysis
 ```
 
-Pass `--kept` when you want preserved public-surface and suppression audits in either text or CLI JSON output.
+`--kept` adds the preservation audit bucket to both text and CLI JSON output.
 
-That structure is the trust model in practice:
+## Modes
 
-- `findings`: stale code or suspicious flows the analyzer can justify
+`rogue-lint` has two operating modes:
+
+- `application`: entrypoints are runtime roots; otherwise-unused exports are not preserved just because they are exported
+- `library`: the package public surface is preserved while internal-only code remains analyzable
+
+In `library` mode, configured entrypoints define the public surface directly. When roots are inferred, `package.json` `main` and `exports` are treated as public surface, while `bin` entries remain runtime roots without making every export part of the API.
+
+## Configuration
+
+Configuration can come from:
+
+1. `--config path/to/file.json`
+2. `rogue-lint.config.json`
+3. `package.json#rogueLint`
+4. built-in defaults
+
+Example `rogue-lint.config.json`:
+
+```json
+{
+  "mode": "application",
+  "tsconfig": "tsconfig.json",
+  "entrypoints": ["src/index.ts"],
+  "hiddenRoots": ["src/worker.ts"],
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.generated.ts"],
+  "includeKinds": ["unused-file", "unused-export"],
+  "keep": {
+    "files": ["src/generated/**"],
+    "symbols": ["futureApi"],
+    "members": ["Example.preservedMethod"]
+  },
+  "findingsExitCode": 1,
+  "failureExitCode": 2,
+  "objectAnalysis": {
+    "enabled": true,
+    "maxPathDepth": 5
+  }
+}
+```
+
+The same config can live in `package.json`:
+
+```json
+{
+  "rogueLint": {
+    "mode": "library",
+    "entrypoints": ["src/index.ts"]
+  }
+}
+```
+
+Inline preservation directives are also supported:
+
+```ts
+// rogue-lint-ignore-next
+const ignoredLocal = 1;
+
+/* rogue-lint-ignore-start */
+const ignoredA = 1;
+const ignoredB = 2;
+/* rogue-lint-ignore-end */
+
+// rogue-lint-externally-visible
+export const futureApi = 1;
+
+/** @externallyVisible */
+export const futureType = 1;
+```
+
+Detailed config semantics live in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## Output Model
+
+Every run can produce four top-level buckets:
+
+- `findings`: dead code or suspicious flows the analyzer can justify
+- `kept`: otherwise-dead entities intentionally preserved by API rules, suppressions, or keep rules
 - `skipped`: explicit conservative boundaries where exact reasoning stopped
-- `kept`: otherwise-dead entities intentionally preserved by public-surface rules, suppressions, or keep rules, available via `--kept` or the library API
+- `diagnostics`: project warnings or errors from loading and analysis
 
-## What It Can Catch
+CLI JSON mode:
 
-`rogue-lint` currently covers:
+```bash
+npx rogue-lint . --json
+```
 
-- whole-project reachability and API surface: `unused-file`, `unused-export`, `unused-type`, `unused-enum-member`
-- symbol-liveness across imports, local declarations, and members: `unused-import`, `unused-local`, `unused-class-member`, `unused-interface-member`
-- exact structural cleanup: `unused-array-element`, `unused-object-key`, `unused-nested-path`
-- value-flow and safety signals: `dead-store`, `unused-value`, `write-only-state`, `use-before-init`, `invalidated-read`, `stale-read-after-mutation`
-- same-project namespace or member helpers, callback correlation, awaited returns, and structured-return propagation in the supported exact subset
-- retained bindings through supported `Map.set` and `Map.get`, local object-backed static slots, module bindings, and static `globalThis` flows
-- JS-truthful value-fate modeling for supported `push`, `unshift`, `slice`, `concat`, `structuredClone`, and bounded single-item consume paths, plus explicit boundaries when those flows stop being exact
+Programmatic consumers always receive the full `AnalysisResult`, including `kept`.
 
-For the detailed coverage map and fixture-backed examples, see [CAPABILITIES.md](CAPABILITIES.md).
+See [docs/OUTPUT.md](docs/OUTPUT.md) for the exact report shape, entity kinds, and skip categories.
 
-## How It Works
+## Library API
 
-1. Load the project through TypeScript and the current `tsconfig` or `jsconfig` when present.
-2. Build the same-project module graph.
-3. Discover roots from configured entrypoints, package metadata, or conventional defaults.
-4. Compute reachable files.
-5. Layer exactness-gated object, array, helper, return, and value-flow analysis on top of semantic data.
-6. Emit `findings`, `kept`, `skipped`, and `diagnostics`.
+`rogue-lint` can also be used as a library:
 
-In `application` mode, entrypoints define runtime roots. In `library` mode, the analyzer preserves the public package surface inferred from configured entrypoints or from `package.json` `main` and `exports`, while still treating `bin` entrypoints as reachable roots.
+```ts
+import { analyzeProject } from "rogue-lint";
 
-## Docs
+const result = await analyzeProject({
+  cwd: process.cwd(),
+  mode: "library",
+  includeKinds: ["unused-export", "unused-file"],
+});
 
-- [CAPABILITIES.md](CAPABILITIES.md): tested coverage map, examples, and conservative boundaries
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): module ownership map and maintenance rules for the refactored engine
-- [docs/CONFIGURATION.md](docs/CONFIGURATION.md): modes, entrypoint discovery, filters, keep rules, suppressions, and config precedence
-- [docs/OUTPUT.md](docs/OUTPUT.md): text and JSON reports, `findings` versus `kept` versus `skipped`, `collection-boundary`, and skip-category reference
-- [CONTRIBUTING.md](CONTRIBUTING.md): repo workflow, fixture-first changes, and validation expectations
+console.log(result.summary.findings);
+console.log(result.findings);
+console.log(result.skipped);
+```
 
-## Development
+The package exports:
+
+- `analyzeProject`
+- `AnalysisOptions`
+- `AnalysisResult`
+- `RogueLintConfig`
+- `FindingKind`
+- `ReportFormat`
+
+## How Analysis Works
+
+At a high level, `rogue-lint`:
+
+1. Loads the project from `tsconfig.json`, `jsconfig.json`, or a source-file fallback walk
+2. Discovers roots from config, package metadata, or conventional defaults
+3. Builds the same-project module graph
+4. Computes reachability
+5. Layers symbol, value, return, helper, and structural-path analysis on top
+6. Emits `findings`, `kept`, `skipped`, and `diagnostics`
+
+Architecture details live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Repository Development
 
 For local development in this repository:
 
@@ -148,35 +249,35 @@ npm run build
 npm test
 ```
 
-Helpful repo-local commands:
+Primary repo gates:
 
 ```bash
+npm run check
 npm run self
 npm run self:json
-npm run check
-npm run pack:check
 npm run prep
 ```
 
-`npm run self` and `npm run self:json` build the package and run `rogue-lint` against this repository in `library` mode.
-The repository regression suite also keeps a normalized self-host baseline for that library-mode output, enforcing zero findings, zero skips, and zero diagnostics.
+- `npm run check` runs lint, build, and tests
+- `npm run self` analyzes this repository in `library` mode
+- `npm run prep` runs the current release gate, including a dry-run package check
 
-## Release Checks
+The repository keeps a self-host baseline with zero findings, zero skips, and zero diagnostics.
 
-Before publishing:
+Contribution workflow and fixture-first expectations are documented in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Benchmarking
+
+The repo also includes an offline benchmark harness for running `rogue-lint` against locally installed real-project corpora:
 
 ```bash
-npm run prep
+npm run benchmark
 ```
 
-That gate runs the build, lint, tests, self-analysis, and dry-run pack checks that currently define the package release flow.
+See [benchmark/README.md](benchmark/README.md) for corpus layout, manifest fields, and benchmark contract rules.
 
 ## License
 
 This project is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 
-The public license allows noncommercial use, study, modification, and redistribution. Commercial use is not permitted without separate permission from the licensor.
-
-In practical terms, uses that require separate permission include incorporating `rogue-lint` into paid products, internal company tooling, hosted services, or commercial AI and LLM products or capability bundles.
-
-Because the public license restricts commercial use, this project is not open source under the OSI Open Source Definition.
+Noncommercial use, study, modification, and redistribution are allowed under that license. Commercial use requires separate permission from the licensor.

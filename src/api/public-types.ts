@@ -35,6 +35,23 @@ interface KeepRules {
 }
 
 /**
+ * Declares an internal-namespace method carrier pattern that the tracking engine should treat as a value-preserving call boundary.
+ *
+ * A carrier call has the shape `<receiver>.<namespace>.<method>(payload)`, where the call is understood to *carry* the
+ * payload through unchanged. Listing such patterns here lets the engine resolve callable candidates, preserve exact
+ * payload bindings across the carrier hop, and recognize closure-captured callable assignments without baking any
+ * specific runtime (e.g., a particular validation library) into engine code.
+ */
+export interface InternalNamespaceMethodCarrier {
+  /** Property name of the internal namespace on the receiver. */
+  namespace: string;
+  /** Method names on the namespace that are interchangeable carriers. */
+  carrierMethods: string[];
+  /** Optional path on the receiver that holds the carrier definition object. */
+  definitionPath?: string[];
+}
+
+/**
  * User configuration loaded from CLI flags and `rogue-lint` config files.
  */
 export interface RogueLintConfig {
@@ -52,6 +69,7 @@ export interface RogueLintConfig {
     enabled?: boolean;
     maxPathDepth?: number;
   };
+  internalNamespaceMethodCarriers?: InternalNamespaceMethodCarrier[];
 }
 
 /**

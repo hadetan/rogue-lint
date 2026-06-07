@@ -15,6 +15,17 @@ import type { TrackedObjectBinding } from "./model.js";
  * stage code and graph construction share the same notion of binding equivalence.
  */
 
+/**
+ * Maximum allowed depth for a tracked-binding prefix before the binding is widened to "untracked".
+ *
+ * Path extension (extendTrackedBinding) has no natural fixed point: any code pattern that
+ * re-binds a symbol to itself extended by additional segments produces an infinite ascending
+ * chain in the binding lattice (A -> A.x -> A.x.x -> ...). Capping the depth turns the lattice
+ * into one of bounded height so the convergence loop is guaranteed to terminate. The cap is
+ * deliberately deeper than typical legitimate paths observed in fixtures.
+ */
+const MAX_BINDING_PREFIX_DEPTH = 8;
+
 export function sameTrackedBinding(left: TrackedObjectBinding, right: TrackedObjectBinding): boolean {
   return left.trackedObject.id === right.trackedObject.id && samePath(left.prefix, right.prefix);
 }
@@ -27,6 +38,14 @@ export function extendTrackedBinding(
     trackedObject: binding.trackedObject,
     prefix: [...binding.prefix, ...segments],
   };
+}
+
+function isBindingPrefixOverDepth(binding: TrackedObjectBinding): boolean {
+  return binding.prefix.length > MAX_BINDING_PREFIX_DEPTH;
+}
+
+function describeBindingDepthWidening(binding: TrackedObjectBinding): string {
+  return `binding prefix depth ${binding.prefix.length} exceeded cap ${MAX_BINDING_PREFIX_DEPTH}; widened to untracked`;
 }
 
 export interface TrackingMapDiff {
@@ -73,8 +92,16 @@ export function mergeTrackedBinding(
   conflictedSymbolIds: Set<string>,
   symbolKey: string,
   binding: TrackedObjectBinding,
+  onWidenedToTop?: (symbolKey: string, reason: string) => void,
 ): void {
   if (conflictedSymbolIds.has(symbolKey)) {
+    return;
+  }
+
+  if (isBindingPrefixOverDepth(binding)) {
+    trackedBySymbolId.delete(symbolKey);
+    conflictedSymbolIds.add(symbolKey);
+    onWidenedToTop?.(symbolKey, describeBindingDepthWidening(binding));
     return;
   }
 

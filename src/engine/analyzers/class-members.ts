@@ -2,13 +2,13 @@ import ts from "typescript";
 
 import type { ProjectContext, SuppressionContext } from "../../types.js";
 import { summarizeReferenceUsage } from "../../references.js";
-import { getSuppressionAudit } from "../../suppressions.js";
 import { getDeclarationNameNode, getNodeName } from "../../compiler/ast-utils.js";
 import { ENTITY_KIND } from "../../shared/entity-vocabulary.js";
 import { makeEntity } from "../../shared/entity-utils.js";
-import { addAudit, type AnalysisState } from "../analysis-state.js";
+import { type AnalysisState } from "../analysis-state.js";
 import type { AnalysisArtifacts } from "../analysis-artifacts.js";
-import { buildPublicSurfaceAudit, createReferenceKey } from "./support.js";
+import { isPreserved } from "./preservation-gate.js";
+import { createReferenceKey } from "./support.js";
 
 /**
  * Reports class members that are provably unread while recording decorator and computed-name boundaries conservatively.
@@ -26,7 +26,6 @@ export function analyzeClassMembers(
     }
 
     const findings = state.findings;
-    const kept = state.kept;
     const skipped = state.skipped;
 
     const visit = (node: ts.Node): void => {
@@ -52,13 +51,10 @@ export function analyzeClassMembers(
             className,
           );
 
-          if (artifacts.publicSurfaceIds.has(entity.id)) {
-            addAudit(kept, buildPublicSurfaceAudit(entity));
-            continue;
-          }
-
-          const suppression = getSuppressionAudit(project, suppressionContext, entity, member);
-          if (addAudit(kept, suppression)) {
+          if (isPreserved(project, state, suppressionContext, entity, {
+            publicSurfaceIds: artifacts.publicSurfaceIds,
+            declarationNode: member,
+          })) {
             continue;
           }
 
